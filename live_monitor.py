@@ -18,8 +18,9 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "backend", ".env"))
 
-MONGO_URI = os.getenv("MONGO_URI")
-DB_NAME   = os.getenv("MONGO_DB", "POC")
+MONGO_URI    = os.getenv("MONGO_URI")
+DB_NAME      = os.getenv("MONGO_DB", "POC")
+CLUSTER_NAME = os.getenv("ATLAS_CLUSTER", "atlas")
 
 client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
 db     = client[DB_NAME]
@@ -92,7 +93,7 @@ def render(read_ms, write_ms, last_doc):
     print(f"{BOLD}{CYAN}║   MongoDB Atlas — Cluster Live Monitor  {GRAY}(Ctrl+C para parar){CYAN}   ║{RESET}")
     print(f"{BOLD}{CYAN}╚══════════════════════════════════════════════════════════════╝{RESET}")
     print()
-    print(f"  {BOLD}Cluster:{RESET}  inter.eknp6n.mongodb.net   {BOLD}DB:{RESET} {DB_NAME}   {BOLD}Uptime:{RESET} {uptime}s")
+    print(f"  {BOLD}Cluster:{RESET}  {CLUSTER_NAME}   {BOLD}DB:{RESET} {DB_NAME}   {BOLD}Uptime:{RESET} {uptime}s")
     print(f"  {BOLD}Status:{RESET}   {GREEN}● OPERACIONAL{RESET}   Erros: {(RED if ERRORS else GREEN) + str(ERRORS) + RESET}   Ops total: {BOLD}{OPS_TOTAL:,}{RESET}")
     print()
     print(f"  {GRAY}─────────────────────────  Última operação  ─────────────────────────{RESET}")

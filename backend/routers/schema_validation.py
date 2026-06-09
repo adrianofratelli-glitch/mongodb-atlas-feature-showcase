@@ -101,7 +101,7 @@ def step3_activate():
         "message": "Schema JSON ativado na coleção. Os documentos já inseridos permanecem, mas novas inserções inválidas serão rejeitadas.",
         "schema_active": True,
         "existing_docs": count,
-        "note": "DocumentDB não suporta collMod com validator — essa operação falharia.",
+        "note": "Validação aplicada via collMod — ativa imediatamente, sem recriar a coleção.",
     }
 
 

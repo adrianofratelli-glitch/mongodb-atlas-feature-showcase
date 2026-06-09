@@ -39,7 +39,7 @@ export default function HotCold() {
       <div className="banner banner-info">
         <span>ℹ️</span>
         <div>
-          <strong>MongoDB Atlas Online Archive</strong> move dados históricos automaticamente para object storage de baixo custo, mantendo a <em>mesma connection string</em>. Queries são roteadas de forma transparente. O <strong>DocumentDB não possui equivalente</strong>.
+          <strong>MongoDB Atlas Online Archive</strong> move dados históricos automaticamente para object storage de baixo custo, mantendo a <em>mesma connection string</em>. Queries são roteadas de forma transparente entre as duas camadas.
         </div>
       </div>
 

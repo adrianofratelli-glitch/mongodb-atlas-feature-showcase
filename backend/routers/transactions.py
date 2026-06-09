@@ -27,8 +27,8 @@ def executar_transacao(simular_falha: bool = False):
       4. Registrar pagamento
 
     Se simular_falha=True, força erro no step 3 — todos os writes
-    anteriores são revertidos (ROLLBACK). Com DocumentDB, o pedido
-    do step 2 ficaria persistido gerando inconsistência.
+    anteriores são revertidos (ROLLBACK) e nenhuma coleção fica
+    com dados parciais.
     """
     steps = []
     pedido_id = str(uuid.uuid4())

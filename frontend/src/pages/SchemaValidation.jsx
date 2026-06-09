@@ -88,7 +88,7 @@ export default function SchemaValidation() {
   const STEPS = [
     {
       n: 1, title: 'Criar coleção sem schema',
-      desc: 'Cria a coleção schema_demo sem nenhuma validação ativa — equivalente a qualquer coleção no DocumentDB.',
+      desc: 'Cria a coleção schema_demo sem nenhuma validação ativa — o comportamento padrão de qualquer coleção.',
       action: 'Criar Coleção',
       fn: () => call('/schema/step1-create-collection', { method: 'POST' }),
     },
@@ -111,7 +111,7 @@ export default function SchemaValidation() {
       <div className="banner banner-info">
         <span>ℹ️</span>
         <div>
-          MongoDB Atlas suporta <strong>JSON Schema validation completo</strong> — enum, regex, ranges, campos required. O <strong>DocumentDB ignora silenciosamente</strong> essas regras (aceita documentos inválidos sem erro). Siga os passos abaixo para ver ao vivo.
+          MongoDB Atlas suporta <strong>JSON Schema validation completo</strong> — enum, regex, ranges, campos required — aplicado direto na camada do banco, sem mudar o código da aplicação. Siga os passos abaixo para ver ao vivo.
         </div>
       </div>
 
@@ -230,10 +230,10 @@ export default function SchemaValidation() {
         <SyntaxHighlighter language="javascript" style={atomOneDark} customStyle={{ borderRadius: 8, fontSize: 12 }}>
           {SCHEMA_CODE}
         </SyntaxHighlighter>
-        <div className="banner banner-warning" style={{ marginTop: 12 }}>
-          <span>⚠️</span>
+        <div className="banner banner-info" style={{ marginTop: 12 }}>
+          <span>💡</span>
           <div style={{ fontSize: 13 }}>
-            No <strong>DocumentDB</strong>, o comando <code>collMod</code> com <code>validator</code> é aceito mas as regras <code>enum</code>, <code>pattern</code> e <code>minimum</code> são <strong>ignoradas silenciosamente</strong> — documentos inválidos passam sem erro.
+            O <code>collMod</code> aplica o validador em uma coleção <strong>já existente</strong>, sem downtime — as regras <code>enum</code>, <code>pattern</code> e <code>minimum</code> passam a valer imediatamente para novas escritas.
           </div>
         </div>
       </div>

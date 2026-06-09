@@ -34,7 +34,7 @@ def create_index(
         "index_name": name,
         "fields": fields,
         "elapsed_seconds": elapsed,
-        "note": "Criado sem bloquear leituras/escritas (rolling build). No DocumentDB, esse processo travaria a coleção.",
+        "note": "Criado sem bloquear leituras/escritas (rolling build) — a coleção continua atendendo tráfego normalmente.",
     }
 
 
