@@ -46,8 +46,53 @@ function SunIcon() {
   )
 }
 
+function ApiErrorToast() {
+  const [toast, setToast] = useState(null)
+
+  useEffect(() => {
+    let timer
+    const onError = (e) => {
+      setToast(e.detail)
+      clearTimeout(timer)
+      timer = setTimeout(() => setToast(null), 6000)
+    }
+    window.addEventListener('api-error', onError)
+    return () => { window.removeEventListener('api-error', onError); clearTimeout(timer) }
+  }, [])
+
+  if (!toast) return null
+  return (
+    <div style={{
+      position: 'fixed', bottom: 24, right: 24, zIndex: 1000, maxWidth: 420,
+      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 16px',
+      background: '#FEF3F0', border: '1px solid #FCCBC5', borderRadius: 8,
+      boxShadow: '0 4px 16px rgba(0,0,0,.15)', fontSize: 13, color: '#C1271B',
+    }}>
+      <span style={{ flexShrink: 0 }}>⚠️</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 700, marginBottom: 2 }}>Erro na chamada à API</div>
+        <div style={{ wordBreak: 'break-word' }}>
+          <code style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 12 }}>{toast.path}</code>
+          {' — '}{toast.message}
+        </div>
+      </div>
+      <button onClick={() => setToast(null)} style={{
+        background: 'none', border: 'none', cursor: 'pointer', color: '#C1271B',
+        fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0,
+      }}>×</button>
+    </div>
+  )
+}
+
 export default function App() {
-  const [active, setActive] = useState('reindex')
+  const [active, setActive] = useState(() => {
+    const hash = window.location.hash.slice(1)
+    return MODULES.some(m => m.key === hash) ? hash : 'reindex'
+  })
+
+  useEffect(() => {
+    window.history.replaceState(null, '', `#${active}`)
+  }, [active])
   const [dark, setDark] = useState(() => localStorage.getItem('poc-dark') === 'true')
 
   useEffect(() => {
@@ -162,6 +207,7 @@ export default function App() {
           </div>
         </main>
       </div>
+      <ApiErrorToast />
     </div>
   )
 }

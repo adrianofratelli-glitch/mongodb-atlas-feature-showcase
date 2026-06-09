@@ -2,6 +2,8 @@
 
 An interactive demo app built with **FastAPI** + **React 18** that walks through six core MongoDB Atlas capabilities — live, against a real 5M-document cluster.
 
+![Online Reindexing module](docs/screenshots/reindex.png)
+
 ---
 
 ## Features
@@ -14,6 +16,12 @@ An interactive demo app built with **FastAPI** + **React 18** that walks through
 | 🛡️ **Schema Validation** | JSON Schema enforcement at the database layer (enum, regex, ranges, required fields) |
 | 📡 **Change Streams** | Real-time event feed — insert, update, delete — with `fullDocumentBeforeChange` and resume tokens |
 | 🔒 **ACID Transactions** | Multi-document, multi-collection transactions with step-by-step visualization and rollback demo |
+
+Each module is deep-linkable (`/#agg`, `/#streams`, `/#tx`, …) and the UI supports light and dark mode.
+
+| Aggregation Pipeline | Change Streams | ACID Transactions |
+|---|---|---|
+| ![Aggregations](docs/screenshots/agg.png) | ![Change Streams](docs/screenshots/streams.png) | ![Transactions](docs/screenshots/tx.png) |
 
 ---
 

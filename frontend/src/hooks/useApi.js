@@ -9,10 +9,21 @@ export function useApi() {
     setError(null)
     try {
       const res = await fetch(`/api${path}`, options)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const body = await res.json()
+          if (body.detail) detail = `${detail} — ${typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)}`
+        } catch { /* corpo não-JSON, mantém só o status */ }
+        throw new Error(detail)
+      }
       return await res.json()
     } catch (e) {
-      setError(e.message)
+      const message = e.message === 'Failed to fetch'
+        ? 'API indisponível — verifique se o backend está rodando na porta 8001'
+        : e.message
+      setError(message)
+      window.dispatchEvent(new CustomEvent('api-error', { detail: { path, message } }))
       return null
     } finally {
       setLoading(false)
