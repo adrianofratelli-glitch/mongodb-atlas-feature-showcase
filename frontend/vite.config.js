@@ -8,9 +8,10 @@ export default defineConfig({
     react(),
   ],
   server: {
+    port: 5174,
     proxy: {
       '/api': {
-        target: 'http://localhost:8001',
+        target: 'http://localhost:8002',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },

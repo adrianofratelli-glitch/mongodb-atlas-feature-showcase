@@ -20,7 +20,7 @@ export function useApi() {
       return await res.json()
     } catch (e) {
       const message = e.message === 'Failed to fetch'
-        ? 'API indisponível — verifique se o backend está rodando na porta 8001'
+        ? 'API indisponível — verifique se o backend está rodando na porta 8002'
         : e.message
       setError(message)
       window.dispatchEvent(new CustomEvent('api-error', { detail: { path, message } }))

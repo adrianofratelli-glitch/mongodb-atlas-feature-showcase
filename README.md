@@ -82,7 +82,7 @@ python seed_data.py --full     # 5M products + 1M reviews — full-scale demo da
 Start the API:
 
 ```bash
-uvicorn main:app --reload --port 8001
+uvicorn main:app --reload --port 8002
 ```
 
 ### 3. Frontend
@@ -93,7 +93,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173).
+Open [http://localhost:5174](http://localhost:5174).
 
 ---
 
