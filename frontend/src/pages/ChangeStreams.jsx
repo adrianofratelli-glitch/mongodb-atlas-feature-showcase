@@ -2,10 +2,10 @@ import React, { useState, useEffect, useRef } from 'react'
 import { useApi } from '../hooks/useApi'
 
 const OP_STYLE = {
-  insert: { bg: '#E3FCF7', border: '#71F6BA', text: '#00684A', label: 'NOVA TRANSAÇÃO' },
-  update: { bg: '#EBF1FF', border: '#BECEFF', text: '#083C90', label: 'ATUALIZAÇÃO'    },
-  delete: { bg: '#FEF3F0', border: '#FCCBC5', text: '#C1271B', label: 'REMOVIDA'       },
-  ERROR:  { bg: '#FEF3F0', border: '#FCCBC5', text: '#C1271B', label: 'ERRO'           },
+  insert: { bg: 'rgba(0,237,100,.08)', border: 'rgba(0,237,100,.3)', text: '#00ED64', label: 'NOVA TRANSAÇÃO' },
+  update: { bg: 'rgba(6,182,212,.08)', border: 'rgba(6,182,212,.3)', text: '#06b6d4', label: 'ATUALIZAÇÃO'    },
+  delete: { bg: 'rgba(255,105,96,.08)', border: 'rgba(255,105,96,.35)', text: '#ff6960', label: 'REMOVIDA'       },
+  ERROR:  { bg: 'rgba(255,105,96,.08)', border: 'rgba(255,105,96,.35)', text: '#ff6960', label: 'ERRO'           },
 }
 
 // 20 operações com ritmo variado para simular tráfego real
@@ -103,8 +103,8 @@ export default function ChangeStreams() {
               <em> "chegou alguma transação nova?"</em> — polling lento, caro e defasado.
             </div>
           </div>
-          <div style={{ padding: '12px 14px', background: 'var(--bg-card)', borderRadius: 6, border: '2px solid #00A35C' }}>
-            <div style={{ fontWeight: 600, marginBottom: 6, color: '#00A35C', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em' }}>Com Change Streams</div>
+          <div style={{ padding: '12px 14px', background: 'var(--bg-card)', borderRadius: 6, border: '2px solid #00ED64' }}>
+            <div style={{ fontWeight: 600, marginBottom: 6, color: '#00ED64', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em' }}>Com Change Streams</div>
             <div style={{ lineHeight: 1.65, color: 'var(--text-primary)' }}>
               O serviço se inscreve <strong>uma vez</strong> e o MongoDB avisa no momento
               exato que qualquer transação nova chega — sem perguntar, sem esperar.
@@ -141,8 +141,8 @@ export default function ChangeStreams() {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 {phase === 'running'
-                  ? <><span className="spinner" style={{ borderTopColor: '#00A35C', width: 16, height: 16, borderWidth: 2.5 }} />
-                      <span style={{ fontWeight: 600, fontSize: 14, color: '#00A35C' }}>Change stream ativo…</span></>
+                  ? <><span className="spinner" style={{ borderTopColor: '#00ED64', width: 16, height: 16, borderWidth: 2.5 }} />
+                      <span style={{ fontWeight: 600, fontSize: 14, color: '#00ED64' }}>Change stream ativo…</span></>
                   : <><span style={{ fontSize: 16 }}>✅</span>
                       <span style={{ fontWeight: 600, fontSize: 14 }}>Simulação concluída</span></>
                 }
@@ -155,9 +155,9 @@ export default function ChangeStreams() {
             {/* Counters */}
             <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
               {[
-                { label: 'Novas transações', value: insertCount, color: '#00684A', bg: '#E3FCF7', border: '#71F6BA' },
-                { label: 'Atualizações',     value: updateCount, color: '#083C90', bg: '#EBF1FF', border: '#BECEFF' },
-                { label: '⚠️ Suspeitas',      value: alertCount,  color: '#944F01', bg: '#FEF7E0', border: '#F9D96A' },
+                { label: 'Novas transações', value: insertCount, color: '#00ED64', bg: 'rgba(0,237,100,.08)', border: 'rgba(0,237,100,.3)' },
+                { label: 'Atualizações',     value: updateCount, color: '#06b6d4', bg: 'rgba(6,182,212,.08)', border: 'rgba(6,182,212,.3)' },
+                { label: '⚠️ Suspeitas',      value: alertCount,  color: '#f97316', bg: 'rgba(249,115,22,.08)', border: 'rgba(249,115,22,.4)' },
                 { label: 'Total capturado',  value: events.length, color: 'var(--text-primary)', bg: 'var(--bg-subtle)', border: 'var(--border-color)' },
               ].map(c => (
                 <div key={c.label} style={{ padding: '8px 14px', borderRadius: 6, background: c.bg, border: `1px solid ${c.border}`, textAlign: 'center' }}>
@@ -184,14 +184,14 @@ export default function ChangeStreams() {
                 return (
                   <div key={i} style={{
                     display: 'flex', gap: 10, alignItems: 'center', padding: '9px 12px',
-                    borderRadius: 6, background: ev.alerta ? '#FEF7E0' : s.bg,
-                    border: `1px solid ${ev.alerta ? '#F9D96A' : s.border}`,
+                    borderRadius: 6, background: ev.alerta ? 'rgba(249,115,22,.08)' : s.bg,
+                    border: `1px solid ${ev.alerta ? 'rgba(249,115,22,.4)' : s.border}`,
                   }}>
                     <span style={{
                       padding: '2px 7px', borderRadius: 3, fontSize: 10, fontWeight: 800,
                       letterSpacing: '.05em', flexShrink: 0,
-                      color: ev.alerta ? '#944F01' : s.text,
-                      background: ev.alerta ? '#F9D96A' : s.border,
+                      color: ev.alerta ? '#f97316' : s.text,
+                      background: ev.alerta ? 'rgba(249,115,22,.4)' : s.border,
                     }}>
                       {ev.alerta ? '⚠️ SUSPEITA' : s.label}
                     </span>

@@ -34,9 +34,9 @@ const INVALID_SCENARIOS = [
 ]
 
 const STEP_STATUS = {
-  idle:      { color: 'var(--mdb-gray-3)', bg: 'var(--mdb-gray-1)' },
-  active:    { color: '#016BF8',           bg: '#EBF1FF' },
-  done:      { color: 'var(--mdb-green-dark-2)', bg: '#E3FCF7' },
+  idle:      { color: 'var(--text-secondary)', bg: 'var(--bg-subtle)' },
+  active:    { color: '#06b6d4',           bg: 'rgba(6,182,212,.08)' },
+  done:      { color: 'var(--accent)', bg: 'rgba(0,237,100,.08)' },
 }
 
 function StepBadge({ n, status }) {
@@ -133,7 +133,7 @@ export default function SchemaValidation() {
           const stepStatus = step >= s.n ? 'done' : step === s.n - 1 ? 'active' : 'idle'
           const res = stepResults[s.n]
           return (
-            <div key={s.n} className="card" style={{ borderColor: stepStatus === 'done' ? '#71F6BA' : stepStatus === 'active' ? '#016BF8' : 'var(--mdb-gray-2)' }}>
+            <div key={s.n} className="card" style={{ borderColor: stepStatus === 'done' ? 'rgba(0,237,100,.3)' : stepStatus === 'active' ? '#06b6d4' : 'var(--border-subtle)' }}>
               <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 <StepBadge n={s.n} status={stepStatus} />
                 <div style={{ flex: 1 }}>
@@ -145,12 +145,12 @@ export default function SchemaValidation() {
                       </button>
                     )}
                   </div>
-                  <p style={{ color: 'var(--mdb-gray-5)', fontSize: 13 }}>{s.desc}</p>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{s.desc}</p>
                   {res && (
-                    <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--mdb-gray-1)', borderRadius: 6, fontSize: 13 }}>
-                      {s.n === 2 && <><strong>{res.inserted}</strong> documentos inseridos. <span style={{ color: 'var(--mdb-gray-5)' }}>{res.message}</span></>}
-                      {s.n === 3 && <span style={{ color: 'var(--mdb-green-dark-2)' }}>{res.message} <strong>{res.note}</strong></span>}
-                      {s.n === 1 && <span style={{ color: 'var(--mdb-green-dark-2)' }}>{res.message}</span>}
+                    <div style={{ marginTop: 10, padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 6, fontSize: 13 }}>
+                      {s.n === 2 && <><strong>{res.inserted}</strong> documentos inseridos. <span style={{ color: 'var(--text-secondary)' }}>{res.message}</span></>}
+                      {s.n === 3 && <span style={{ color: 'var(--accent)' }}>{res.message} <strong>{res.note}</strong></span>}
+                      {s.n === 1 && <span style={{ color: 'var(--accent)' }}>{res.message}</span>}
                     </div>
                   )}
                 </div>
@@ -162,12 +162,12 @@ export default function SchemaValidation() {
 
       {/* Step 4 — só aparece após step 3 */}
       {step >= 3 && (
-        <div className="card" style={{ borderColor: '#016BF8', borderWidth: 2 }}>
+        <div className="card" style={{ borderColor: '#06b6d4', borderWidth: 2 }}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
             <StepBadge n={4} status={step >= 4 ? 'done' : 'active'} />
             <div style={{ flex: 1 }}>
               <strong style={{ fontSize: 14 }}>Tentar inserir o mesmo documento inválido (com schema ativo)</strong>
-              <p style={{ color: 'var(--mdb-gray-5)', fontSize: 13, margin: '6px 0 12px' }}>
+              <p style={{ color: 'var(--text-secondary)', fontSize: 13, margin: '6px 0 12px' }}>
                 Agora com o schema ativo, os mesmos documentos são <strong>rejeitados pelo banco</strong> — sem nenhuma mudança no código da aplicação.
               </p>
 
@@ -175,7 +175,7 @@ export default function SchemaValidation() {
                 {INVALID_SCENARIOS.map(sc => (
                   <button key={sc.key} disabled={loading}
                     className="tag"
-                    style={activeScenario === sc.key ? { borderColor: 'var(--mdb-red)', color: 'var(--mdb-red)', background: 'var(--mdb-red-bg)' } : {}}
+                    style={activeScenario === sc.key ? { borderColor: '#ff6960', color: '#ff6960', background: 'rgba(255,105,96,.08)' } : {}}
                     onClick={async () => {
                       setActiveScenario(sc.key)
                       const d = await call(`/schema/step4-insert-invalid?scenario=${sc.key}`, { method: 'POST' })
@@ -187,13 +187,13 @@ export default function SchemaValidation() {
               </div>
 
               {stepResults[4] && (
-                <div style={{ padding: '12px 14px', background: 'var(--mdb-red-bg)', borderRadius: 8, border: '1px solid var(--mdb-red-light)', fontSize: 13 }}>
-                  <div style={{ fontWeight: 700, color: 'var(--mdb-red)', marginBottom: 6 }}>
+                <div style={{ padding: '12px 14px', background: 'rgba(255,105,96,.08)', borderRadius: 8, border: '1px solid rgba(255,105,96,.35)', fontSize: 13 }}>
+                  <div style={{ fontWeight: 700, color: '#ff6960', marginBottom: 6 }}>
                     ❌ Rejeitado pelo banco — {stepResults[4].scenario?.label}
                   </div>
                   <div style={{ marginBottom: 6 }}><strong>Documento tentado:</strong> <code>{JSON.stringify(stepResults[4].document_attempted)}</code></div>
-                  <div style={{ color: 'var(--mdb-gray-5)' }}><strong>Erro:</strong> {stepResults[4].error_message}</div>
-                  <div style={{ marginTop: 8, color: 'var(--mdb-green-dark-2)', fontSize: 12 }}>✅ {stepResults[4].note}</div>
+                  <div style={{ color: 'var(--text-secondary)' }}><strong>Erro:</strong> {stepResults[4].error_message}</div>
+                  <div style={{ marginTop: 8, color: 'var(--accent)', fontSize: 12 }}>✅ {stepResults[4].note}</div>
                 </div>
               )}
             </div>
@@ -214,9 +214,9 @@ export default function SchemaValidation() {
             <button className="btn btn-sm btn-default" onClick={fetchDocs}>↻ Atualizar</button>
           </div>
           {docs.documents.length === 0
-            ? <p style={{ color: 'var(--mdb-gray-5)' }}>Nenhum documento. Execute o passo 2 para inserir.</p>
+            ? <p style={{ color: 'var(--text-secondary)' }}>Nenhum documento. Execute o passo 2 para inserir.</p>
             : docs.documents.map((d, i) => (
-                <div key={i} style={{ padding: '8px 12px', background: 'var(--mdb-gray-1)', borderRadius: 6, marginBottom: 6, fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                <div key={i} style={{ padding: '8px 12px', background: 'var(--bg-subtle)', borderRadius: 6, marginBottom: 6, fontSize: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
                   {JSON.stringify(d)}
                 </div>
               ))

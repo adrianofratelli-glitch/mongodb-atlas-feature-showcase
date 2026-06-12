@@ -15,8 +15,8 @@ function StepRow({ step, last }) {
         <div style={{
           width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14,
-          background: isRollback ? '#FEF3F0' : isCommit ? '#E3FCF7' : ok ? 'var(--bg-subtle)' : '#FEF3F0',
-          border: `2px solid ${isRollback ? '#FCCBC5' : isCommit ? '#71F6BA' : ok ? 'var(--border-color)' : '#FCCBC5'}`,
+          background: isRollback ? 'rgba(255,105,96,.08)' : isCommit ? 'rgba(0,237,100,.08)' : ok ? 'var(--bg-subtle)' : 'rgba(255,105,96,.08)',
+          border: `2px solid ${isRollback ? 'rgba(255,105,96,.35)' : isCommit ? 'rgba(0,237,100,.3)' : ok ? 'var(--border-color)' : 'rgba(255,105,96,.35)'}`,
         }}>
           {icon}
         </div>
@@ -26,11 +26,11 @@ function StepRow({ step, last }) {
       <div style={{ flex: 1, paddingBottom: last ? 0 : 14, paddingLeft: 12 }}>
         <div style={{
           padding: '10px 14px', borderRadius: 6,
-          background: isRollback ? '#FEF3F0' : isCommit ? '#E3FCF7' : 'var(--bg-subtle)',
-          border: `1px solid ${isRollback ? '#FCCBC5' : isCommit ? '#71F6BA' : 'var(--border-color)'}`,
+          background: isRollback ? 'rgba(255,105,96,.08)' : isCommit ? 'rgba(0,237,100,.08)' : 'var(--bg-subtle)',
+          border: `1px solid ${isRollback ? 'rgba(255,105,96,.35)' : isCommit ? 'rgba(0,237,100,.3)' : 'var(--border-color)'}`,
         }}>
           <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4,
-            color: isRollback ? '#C1271B' : isCommit ? '#00684A' : 'var(--text-secondary)' }}>
+            color: isRollback ? '#ff6960' : isCommit ? '#00ED64' : 'var(--text-secondary)' }}>
             {isCommit ? 'COMMIT' : isRollback ? 'ROLLBACK' : `Step ${step.step}`}
           </div>
           <div style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', marginBottom: step.detalhe ? 4 : 0 }}>
@@ -55,22 +55,22 @@ function IDCard({ label, id, collection }) {
     setTimeout(() => setCopied(false), 1500)
   }
   return (
-    <div style={{ padding: '14px 16px', background: '#E3FCF7', border: '1px solid #71F6BA', borderRadius: 8 }}>
-      <div style={{ fontSize: 11, fontWeight: 700, color: '#00684A', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+    <div style={{ padding: '14px 16px', background: 'rgba(0,237,100,.08)', border: '1px solid rgba(0,237,100,.3)', borderRadius: 8 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: '#00ED64', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
         {label}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <code style={{ fontSize: 12.5, background: 'rgba(0,104,74,.08)', border: '1px solid #71F6BA', color: '#001E2B', flex: 1, padding: '5px 10px', borderRadius: 4, wordBreak: 'break-all' }}>
+        <code style={{ fontSize: 12.5, background: 'rgba(0,104,74,.08)', border: '1px solid rgba(0,237,100,.3)', color: '#fafafa', flex: 1, padding: '5px 10px', borderRadius: 4, wordBreak: 'break-all' }}>
           {id}
         </code>
         <button onClick={copy} className="btn btn-sm" style={{
-          background: copied ? '#00684A' : 'white', color: copied ? 'white' : '#00684A',
-          border: '1px solid #71F6BA', flexShrink: 0, transition: 'all .15s',
+          background: copied ? '#00ED64' : 'transparent', color: copied ? '#001E2B' : '#00ED64',
+          border: '1px solid rgba(0,237,100,.3)', flexShrink: 0, transition: 'all .15s',
         }}>
           {copied ? '✓' : 'Copiar'}
         </button>
       </div>
-      <div style={{ fontSize: 11, color: '#00684A', marginTop: 6 }}>
+      <div style={{ fontSize: 11, color: '#00ED64', marginTop: 6 }}>
         → verifique em <code style={{ background: 'transparent', border: 'none', padding: 0, fontSize: 11 }}>{collection}</code> no Atlas Data Explorer
       </div>
     </div>
@@ -241,7 +241,7 @@ export default function Transactions() {
             {Object.entries(status).map(([col, count]) => (
               <div key={col} style={{ padding: '8px 14px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border-color)', fontSize: 12 }}>
                 <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>{col}</span>
-                <span style={{ fontWeight: 700, marginLeft: 8, color: count > 0 ? '#00A35C' : 'var(--text-secondary)' }}>
+                <span style={{ fontWeight: 700, marginLeft: 8, color: count > 0 ? '#00ED64' : 'var(--text-secondary)' }}>
                   {count} doc{count !== 1 ? 's' : ''}
                 </span>
               </div>

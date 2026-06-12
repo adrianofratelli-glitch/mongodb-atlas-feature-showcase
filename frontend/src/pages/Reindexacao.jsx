@@ -85,8 +85,8 @@ export default function Reindexacao() {
 
       {result && (
         <div className="card" style={{
-          background: result.error ? '#FEF3F0' : '#E3FCF7',
-          borderColor: result.error ? '#FCCBC5' : '#71F6BA',
+          background: result.error ? 'rgba(255,105,96,.08)' : 'rgba(0,237,100,.08)',
+          borderColor: result.error ? 'rgba(255,105,96,.35)' : 'rgba(0,237,100,.3)',
         }}>
           {result.error
             ? <div>❌ {result.error}</div>

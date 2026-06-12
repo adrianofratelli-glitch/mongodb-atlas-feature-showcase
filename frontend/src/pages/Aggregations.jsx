@@ -7,12 +7,12 @@ import { useApi } from '../hooks/useApi'
 SyntaxHighlighter.registerLanguage('javascript', js)
 
 const TABS = [
-  { key: 'lookup', icon: '🔗', label: '$lookup',             color: '#00A35C' },
-  { key: 'facet',  icon: '📊', label: '$facet',              color: '#016BF8' },
-  { key: 'union',  icon: '🔀', label: '$unionWith',          color: '#7B61FF' },
-  { key: 'group',  icon: '📐', label: '$group + $addFields', color: '#E45825' },
-  { key: 'window', icon: '📈', label: '$setWindowFields',    color: '#00684A' },
-  { key: 'bucket', icon: '🪣', label: '$bucketAuto',         color: '#944F01' },
+  { key: 'lookup', icon: '🔗', label: '$lookup',             color: '#00ED64' },
+  { key: 'facet',  icon: '📊', label: '$facet',              color: '#06b6d4' },
+  { key: 'union',  icon: '🔀', label: '$unionWith',          color: '#a855f7' },
+  { key: 'group',  icon: '📐', label: '$group + $addFields', color: '#f97316' },
+  { key: 'window', icon: '📈', label: '$setWindowFields',    color: '#00ED64' },
+  { key: 'bucket', icon: '🪣', label: '$bucketAuto',         color: '#f97316' },
 ]
 
 const CODE = {
@@ -256,8 +256,8 @@ function UnionResults({ data }) {
   const produtos   = rows.filter(r => r.source === 'produtos')
   return (
     <div className="grid-2">
-      {[{ label: '📝 Reviews recentes', rows: avaliacoes, color: '#7B61FF' },
-        { label: '⭐ Produtos destaque', rows: produtos,   color: '#00A35C' }].map(({ label, rows: side, color }) => (
+      {[{ label: '📝 Reviews recentes', rows: avaliacoes, color: '#a855f7' },
+        { label: '⭐ Produtos destaque', rows: produtos,   color: '#00ED64' }].map(({ label, rows: side, color }) => (
         <div key={label} className="card" style={{ padding: '14px 16px' }}>
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color }}>{label}</div>
           {side.map((r, i) => (
