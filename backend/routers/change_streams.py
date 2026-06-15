@@ -96,8 +96,10 @@ def _watch_worker():
 def start_watch():
     if _state["active"]:
         return {"status": "already_watching", "events_so_far": len(_state["events"])}
-    if "transacoes_cs_demo" not in db.list_collection_names():
-        db.create_collection("transacoes_cs_demo")
+    # Recria a coleção limpa: os docs persistidos correspondem a esta simulação.
+    if "transacoes_cs_demo" in db.list_collection_names():
+        db["transacoes_cs_demo"].drop()
+    db.create_collection("transacoes_cs_demo")
     _state["active"]     = True
     _state["events"]     = []
     _state["started_at"] = datetime.now().isoformat()
@@ -150,11 +152,41 @@ def get_events():
     }
 
 
+@router.get("/collection")
+def get_collection():
+    """
+    Retorna os documentos realmente persistidos em transacoes_cs_demo.
+    Prova que os eventos não estão só na UI — estão gravados no banco e
+    podem ser conferidos no Atlas Data Explorer.
+    """
+    col = db["transacoes_cs_demo"]
+    total = col.count_documents({})
+    docs = list(col.find({}, {"_id": 0}).sort("created_at", -1).limit(50))
+    for d in docs:
+        for k in ("created_at", "updated_at"):
+            if d.get(k):
+                d[k] = d[k].isoformat()
+    return {
+        "colecao": "transacoes_cs_demo",
+        "db": db.name,
+        "total": total,
+        "documentos": docs,
+    }
+
+
 @router.post("/stop")
 def stop_watch():
+    """Para o watcher mas MANTÉM a coleção, para inspeção no Atlas Data Explorer."""
+    _state["active"] = False
+    return {"stopped": True, "total_events": len(_state["events"])}
+
+
+@router.delete("/clear")
+def clear_collection():
+    """Remove a coleção de demo (limpeza manual após a apresentação)."""
     _state["active"] = False
     try:
         db["transacoes_cs_demo"].drop()
     except Exception:
         pass
-    return {"stopped": True, "total_events": len(_state["events"])}
+    return {"cleared": True}

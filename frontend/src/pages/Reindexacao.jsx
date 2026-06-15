@@ -38,14 +38,46 @@ export default function Reindexacao() {
 
   useEffect(() => { fetchIndexes() }, [])
 
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms))
+
   const handleCreate = async (scenario) => {
     setSelected(scenario.key)
-    setResult(null)
+    setResult({ phase: 'starting', name: null })
+
     const params = new URLSearchParams()
     scenario.fields.forEach(f => params.append('fields', f))
-    const data = await call(`/reindexacao/create?${params.toString()}`, { method: 'POST' })
-    setResult(data)
+    const opts = { method: 'POST' }
+    if (scenario.partial_filter) {
+      opts.headers = { 'Content-Type': 'application/json' }
+      opts.body = JSON.stringify(scenario.partial_filter)
+    }
+
+    const data = await call(`/reindexacao/create?${params.toString()}`, opts)
+    if (!data) { setResult(null); return }
+
+    if (data.status === 'exists') {
+      setResult({ phase: 'exists', name: data.index_name })
+      await fetchIndexes()
+      return
+    }
+
+    // Build em background: acompanha o progresso via build-status.
+    setResult({ phase: 'building', name: data.index_name, note: data.note })
     await fetchIndexes()
+    for (let i = 0; i < 60; i++) {
+      await sleep(2000)
+      const st = await call(`/reindexacao/build-status?name=${data.index_name}`)
+      if (!st) continue
+      if (st.status === 'done') {
+        setResult({ phase: 'done', name: data.index_name, elapsed: st.elapsed_seconds, note: data.note })
+        await fetchIndexes()
+        return
+      }
+      if (st.status === 'error') {
+        setResult({ phase: 'error', name: data.index_name, error: st.error })
+        return
+      }
+    }
   }
 
   const handleDrop = async (name) => {
@@ -76,26 +108,45 @@ export default function Reindexacao() {
               {s.query}
             </SyntaxHighlighter>
             <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}
-              onClick={() => handleCreate(s)} disabled={loading && selected === s.key}>
-              {loading && selected === s.key ? <><span className="spinner" /> Criando...</> : 'Criar Índice'}
+              onClick={() => handleCreate(s)}
+              disabled={selected === s.key && result && (result.phase === 'starting' || result.phase === 'building')}>
+              {selected === s.key && result && (result.phase === 'starting' || result.phase === 'building')
+                ? <><span className="spinner" /> Construindo...</>
+                : 'Criar Índice'}
             </button>
           </div>
         ))}
       </div>
 
-      {result && (
+      {result && result.phase && (
         <div className="card" style={{
-          background: result.error ? 'rgba(255,105,96,.08)' : 'rgba(0,237,100,.08)',
-          borderColor: result.error ? 'rgba(255,105,96,.35)' : 'rgba(0,237,100,.3)',
+          background: result.phase === 'error' ? 'rgba(255,105,96,.08)' : 'rgba(0,237,100,.08)',
+          borderColor: result.phase === 'error' ? 'rgba(255,105,96,.35)' : 'rgba(0,237,100,.3)',
         }}>
-          {result.error
-            ? <div>❌ {result.error}</div>
-            : <>
-                <div>✅ Índice criado: <strong>{result.index_name}</strong></div>
-                <div style={{ marginTop: 4 }}>⏱ Tempo: <strong>{result.elapsed_seconds}s</strong></div>
-                <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 6 }}>{result.note}</div>
-              </>
-          }
+          {result.phase === 'starting' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span className="spinner" /> Iniciando build…</div>
+          )}
+          {result.phase === 'building' && (
+            <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="spinner" /> Construindo <strong>{result.name}</strong> em background (rolling build)…
+              </div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 6 }}>{result.note}</div>
+            </>
+          )}
+          {result.phase === 'done' && (
+            <>
+              <div>✅ Índice criado: <strong>{result.name}</strong></div>
+              <div style={{ marginTop: 4 }}>⏱ Build concluído em <strong>{result.elapsed}s</strong></div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 6 }}>{result.note}</div>
+            </>
+          )}
+          {result.phase === 'exists' && (
+            <div>ℹ️ O índice <strong>{result.name}</strong> já existe na coleção.</div>
+          )}
+          {result.phase === 'error' && (
+            <div>❌ {result.error}</div>
+          )}
         </div>
       )}
 

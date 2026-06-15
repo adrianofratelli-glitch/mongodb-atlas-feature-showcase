@@ -110,15 +110,16 @@ def step3_activate():
 def step4_insert_invalid(scenario: str = "preco_negativo"):
     if not _col_exists() or not _has_validator():
         return {"error": "Ative o schema primeiro (step3)"}
-    doc = INVALID_SCENARIOS.get(scenario, INVALID_SCENARIOS["preco_negativo"])
+    base = INVALID_SCENARIOS.get(scenario, INVALID_SCENARIOS["preco_negativo"])
+    doc = dict(base)  # cópia: insert_one injeta _id no dict original
     try:
         db[COL].insert_one(doc)
         return {"status": "inesperado — documento deveria ter sido rejeitado"}
-    except WriteError as e:
+    except (WriteError, OperationFailure) as e:
         return {
             "status": "rejeitado",
             "scenario": scenario,
-            "document_attempted": doc,
+            "document_attempted": base,  # sem o _id que o driver injetou
             "error_message": str(e).split(" full error:")[0],
             "note": "Rejeitado na camada do banco — sem precisar de validação no código da aplicação.",
         }

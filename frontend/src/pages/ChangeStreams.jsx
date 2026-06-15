@@ -36,6 +36,7 @@ export default function ChangeStreams() {
   const { call } = useApi()
   const [phase,    setPhase]    = useState('idle')
   const [events,   setEvents]   = useState([])
+  const [collection, setCollection] = useState(null)
   const pollRef  = useRef(null)
   const timerRef = useRef([])
   const listRef  = useRef(null)
@@ -71,6 +72,8 @@ export default function ChangeStreams() {
       const data = await call('/change-streams/events')
       if (data) setEvents(data.events || [])
       await call('/change-streams/stop', { method: 'POST' })
+      const col = await call('/change-streams/collection')
+      if (col) setCollection(col)
       setPhase('done')
     }, lastDelay)
     timerRef.current.push(tStop)
@@ -82,7 +85,13 @@ export default function ChangeStreams() {
     timerRef.current = []
     setPhase('idle')
     setEvents([])
+    setCollection(null)
     call('/change-streams/stop', { method: 'POST' })
+  }
+
+  const clearCollection = async () => {
+    await call('/change-streams/clear', { method: 'DELETE' })
+    setCollection(null)
   }
 
   const insertCount = events.filter(e => e.operation === 'insert').length
@@ -213,6 +222,50 @@ export default function ChangeStreams() {
           </div>
         )}
       </div>
+
+      {/* Documentos reais persistidos na coleção */}
+      {phase === 'done' && collection && (
+        <div className="card" style={{ padding: '18px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>
+              Documentos reais gravados na coleção
+            </div>
+            <button className="btn btn-default btn-sm" onClick={clearCollection}>🗑 Limpar coleção</button>
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6, marginBottom: 14 }}>
+            Estes <strong>{collection.total}</strong> documentos estão persistidos em{' '}
+            <code>{collection.db}.{collection.colecao}</code>. Não é algo só da tela — abra o{' '}
+            <strong>Atlas Data Explorer</strong> nessa coleção e você verá exatamente os mesmos registros.
+          </div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="lg-table">
+              <thead>
+                <tr><th>transacao_id</th><th>pagador → recebedor</th><th>valor</th><th>tipo</th><th>status</th></tr>
+              </thead>
+              <tbody>
+                {collection.documentos.slice(0, 12).map((d, i) => (
+                  <tr key={i}>
+                    <td><code style={{ fontSize: 11 }}>{(d.transacao_id || '').slice(0, 8)}…</code></td>
+                    <td>{d.pagador} → {d.recebedor}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {Number(d.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                    <td>{d.tipo}</td>
+                    <td>
+                      <span className={`badge ${d.status === 'recusada' ? 'badge-red' : d.status === 'pendente' ? 'badge-yellow' : 'badge-green'}`}>
+                        {d.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {collection.total > 12 && (
+            <div style={{ fontSize: 11.5, color: 'var(--text-secondary)', marginTop: 8 }}>
+              Mostrando 12 de {collection.total} documentos.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* How it works */}
       <div className="card" style={{ padding: '16px 18px' }}>

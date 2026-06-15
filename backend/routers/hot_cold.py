@@ -14,27 +14,92 @@ ATLAS_CLUSTER     = os.getenv("ATLAS_CLUSTER", "myCluster")
 ATLAS_BASE        = "https://cloud.mongodb.com/api/atlas/v1.0"
 
 
+class AtlasUnavailable(Exception):
+    """Erro amigável quando a Atlas Admin API não está acessível/configurada."""
+
+
+def _atlas_friendly_error(resp=None, exc=None) -> str:
+    """Converte falhas da Atlas API em uma mensagem clara e acionável."""
+    if exc is not None:
+        return f"Não foi possível alcançar a Atlas Admin API: {exc}"
+    try:
+        body = resp.json()
+    except Exception:
+        body = {}
+    code = body.get("errorCode", "")
+    if code == "IP_ADDRESS_NOT_ON_ACCESS_LIST":
+        ip = (body.get("parameters") or ["seu IP"])[0]
+        return (
+            f"A API key do Atlas não autoriza o IP {ip}. "
+            "Adicione-o em Access Manager → API Keys → Access List "
+            "(ou em Project Settings) e tente novamente."
+        )
+    if resp.status_code == 401:
+        return "Credenciais da Atlas API inválidas (ATLAS_PUBLIC_KEY / ATLAS_PRIVATE_KEY)."
+    return body.get("detail") or f"Atlas API retornou HTTP {resp.status_code}."
+
+
+def _atlas_request(method: str, url: str, **kwargs) -> dict:
+    """Faz a chamada à Atlas API e levanta AtlasUnavailable com mensagem amigável."""
+    if not (ATLAS_PUBLIC_KEY and ATLAS_PRIVATE_KEY and ATLAS_PROJECT_ID):
+        raise AtlasUnavailable(
+            "Credenciais da Atlas API não configuradas no backend "
+            "(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY, ATLAS_PROJECT_ID)."
+        )
+    try:
+        resp = requests.request(
+            method, url, auth=HTTPDigestAuth(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY),
+            timeout=15, **kwargs,
+        )
+    except requests.RequestException as e:
+        raise AtlasUnavailable(_atlas_friendly_error(exc=e))
+    if resp.status_code not in (200, 201, 204):
+        raise AtlasUnavailable(_atlas_friendly_error(resp=resp))
+    return resp.json() if resp.text else {}
+
+
+SAMPLE_SIZE = 5_000
+
+
 @router.get("/distribution")
 def data_distribution():
+    """
+    Distribuição de documentos por ano. Para resposta instantânea na demo,
+    roda sobre uma amostra aleatória ($sample) e extrapola as contagens para
+    o total da coleção, em vez de varrer os 5M de documentos.
+    """
     pipeline = [
+        {"$sample": {"size": SAMPLE_SIZE}},
         {"$group": {"_id": {"$year": "$created_at"}, "count": {"$sum": 1}, "avg_preco": {"$avg": "$preco"}}},
         {"$sort": {"_id": -1}},
         {"$limit": 10},
     ]
     result = list(db[COLLECTION].aggregate(pipeline))
+
+    total_docs   = db[COLLECTION].estimated_document_count()
+    sampled      = sum(r["count"] for r in result) or 1
+    factor       = total_docs / sampled  # extrapola amostra → total
     current_year = datetime.now(timezone.utc).year
+
     rows = []
     for r in result:
         year = r["_id"]
         rows.append({
             "year": year,
-            "count": r["count"],
+            "count": round(r["count"] * factor),
             "avg_preco": round(r["avg_preco"] or 0, 2),
-            "tier": "🔥 Hot (ativo)" if year >= current_year - 1 else "❄️  Cold (arquivo)",
+            "tier": "🔥 Hot (ativo)" if year and year >= current_year - 1 else "❄️  Cold (arquivo)",
         })
     return {
         "distribution": rows,
-        "note": "Documentos criados há mais de 1 ano seriam movidos automaticamente para o Online Archive.",
+        "sampled": True,
+        "sample_size": SAMPLE_SIZE,
+        "total_docs": total_docs,
+        "note": (
+            f"Estimativa a partir de uma amostra de {SAMPLE_SIZE:,} documentos "
+            "(resposta instantânea). Documentos com mais de 1 ano seriam movidos "
+            "automaticamente para o Online Archive."
+        ),
     }
 
 
@@ -42,9 +107,23 @@ def data_distribution():
 def archive_simulation():
     current_year = datetime.now(timezone.utc).year
     cutoff = datetime(current_year - 1, 1, 1, tzinfo=timezone.utc)
-    hot_count  = db[COLLECTION].count_documents({"created_at": {"$gte": cutoff}})
-    cold_count = db[COLLECTION].count_documents({"created_at": {"$lt": cutoff}})
-    total = hot_count + cold_count
+
+    # Amostra para split hot/cold instantâneo, extrapolado para o total.
+    pipeline = [
+        {"$sample": {"size": SAMPLE_SIZE}},
+        {"$group": {
+            "_id": None,
+            "hot":  {"$sum": {"$cond": [{"$gte": ["$created_at", cutoff]}, 1, 0]}},
+            "cold": {"$sum": {"$cond": [{"$lt":  ["$created_at", cutoff]}, 1, 0]}},
+        }},
+    ]
+    agg = list(db[COLLECTION].aggregate(pipeline))
+    sampled_hot  = agg[0]["hot"]  if agg else 0
+    sampled_cold = agg[0]["cold"] if agg else 0
+    sampled = (sampled_hot + sampled_cold) or 1
+    total   = db[COLLECTION].estimated_document_count()
+    hot_count  = round(total * sampled_hot  / sampled)
+    cold_count = round(total * sampled_cold / sampled)
     return {
         "hot":  {"count": hot_count,  "pct": round(hot_count / total * 100, 1) if total else 0, "tier": "Cluster Atlas (NVMe SSD)", "latency": "< 5ms"},
         "cold": {"count": cold_count, "pct": round(cold_count / total * 100, 1) if total else 0, "tier": "Online Archive (Object Storage)", "latency": "~ 100-300ms"},
@@ -83,10 +162,11 @@ def query_transparent(categoria: str = "Eletrônicos"):
 def list_online_archives():
     """Lista as regras de Online Archive configuradas no cluster via Atlas API."""
     url = f"{ATLAS_BASE}/groups/{ATLAS_PROJECT_ID}/clusters/{ATLAS_CLUSTER}/onlineArchives"
-    resp = requests.get(url, auth=HTTPDigestAuth(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY))
-    if resp.status_code != 200:
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    data = resp.json()
+    try:
+        data = _atlas_request("GET", url)
+    except AtlasUnavailable as e:
+        # Não dispara erro no front: a tela mostra um aviso acionável.
+        return {"archives": [], "atlas_error": str(e)}
     archives = data.get("results", [])
     return {
         "archives": [
@@ -125,14 +205,10 @@ def create_online_archive(expire_after_days: int = 365):
         ],
         "schedule": {"type": "DEFAULT"},
     }
-    resp = requests.post(
-        url,
-        json=payload,
-        auth=HTTPDigestAuth(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY),
-    )
-    if resp.status_code not in (200, 201):
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
-    result = resp.json()
+    try:
+        result = _atlas_request("POST", url, json=payload)
+    except AtlasUnavailable as e:
+        return {"atlas_error": str(e)}
     return {
         "archive_id": result.get("_id"),
         "status": result.get("state"),
@@ -147,7 +223,8 @@ def create_online_archive(expire_after_days: int = 365):
 @router.delete("/online-archive/{archive_id}")
 def delete_online_archive(archive_id: str):
     url = f"{ATLAS_BASE}/groups/{ATLAS_PROJECT_ID}/clusters/{ATLAS_CLUSTER}/onlineArchives/{archive_id}"
-    resp = requests.delete(url, auth=HTTPDigestAuth(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY))
-    if resp.status_code not in (200, 204):
-        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    try:
+        _atlas_request("DELETE", url)
+    except AtlasUnavailable as e:
+        return {"atlas_error": str(e)}
     return {"deleted": archive_id}

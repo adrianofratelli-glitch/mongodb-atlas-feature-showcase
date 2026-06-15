@@ -8,12 +8,16 @@ export default function HotCold() {
   const [transparent, setTransparent]     = useState(null)
   const [archives, setArchives]           = useState(null)
   const [archiveResult, setArchiveResult] = useState(null)
+  const [archiveError, setArchiveError]   = useState(null)
   const [active, setActive]               = useState(null)
   const [days, setDays]                   = useState(365)
 
   const fetchArchives = async () => {
     const d = await call('/hot-cold/online-archive/list')
-    if (d) setArchives(d.archives)
+    if (d) {
+      setArchives(d.archives || [])
+      setArchiveError(d.atlas_error || null)
+    }
   }
 
   useEffect(() => { fetchArchives() }, [])
@@ -25,7 +29,10 @@ export default function HotCold() {
   const createArchive = async () => {
     setActive('create')
     const d = await call(`/hot-cold/online-archive/create?expire_after_days=${days}`, { method: 'POST' })
-    if (d) { setArchiveResult(d); await fetchArchives() }
+    if (d) {
+      if (d.atlas_error) { setArchiveError(d.atlas_error); setArchiveResult(null) }
+      else { setArchiveResult(d); setArchiveError(null); await fetchArchives() }
+    }
   }
 
   const deleteArchive = async (id) => {
@@ -166,6 +173,15 @@ export default function HotCold() {
             {loading && active === 'create' ? <><span className="spinner" /> Criando...</> : '+ Criar Regra no Atlas'}
           </button>
         </div>
+
+        {archiveError && (
+          <div className="banner banner-warning" style={{ marginBottom: 16 }}>
+            <span>⚠️</span>
+            <div>
+              <strong>Online Archive indisponível.</strong> {archiveError}
+            </div>
+          </div>
+        )}
 
         {archiveResult && (
           <div style={{ padding: '12px 16px', background: 'rgba(0,237,100,.08)', borderRadius: 8, border: '1px solid rgba(0,237,100,.3)', marginBottom: 16, fontSize: 13 }}>
