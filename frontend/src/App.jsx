@@ -5,6 +5,7 @@ import Aggregations from './pages/Aggregations'
 import SchemaValidation from './pages/SchemaValidation'
 import ChangeStreams from './pages/ChangeStreams'
 import Transactions from './pages/Transactions'
+import RedisVsChangeStreams from './pages/RedisVsChangeStreams'
 
 const MODULES = [
   { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Sem downtime, sem lock na coleção',              color: '#00ED64', component: Reindexacao },
@@ -13,6 +14,7 @@ const MODULES = [
   { key: 'schema',  num: '04', title: 'Schema Validation',    subtitle: 'JSON Schema enforcement no banco',               color: '#f97316', component: SchemaValidation },
   { key: 'streams', num: '05', title: 'Change Streams',       subtitle: 'Eventos em tempo real — insert, update, delete', color: '#14b8a6', component: ChangeStreams },
   { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#eab308', component: Transactions },
+  { key: 'rvc',     num: '07', title: 'Redis vs Change Streams', subtitle: 'Request-reply device-facing: dual-write × single source of truth', color: '#e11d48', component: RedisVsChangeStreams },
 ]
 
 // MongoDB leaf logo SVG (official mark)
@@ -65,15 +67,39 @@ function ApiErrorToast() {
   )
 }
 
+// Formata contagens grandes: 5_000_000 → "5M", 100_000 → "100k"
+function fmtCount(n) {
+  if (n == null) return '…'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 >= 100_000 ? 1 : 0)}M`
+  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+  return String(n)
+}
+
 export default function App() {
   const [active, setActive] = useState(() => {
     const hash = window.location.hash.slice(1)
     return MODULES.some(m => m.key === hash) ? hash : 'reindex'
   })
+  const [stats, setStats] = useState(null)
 
   useEffect(() => {
     window.history.replaceState(null, '', `#${active}`)
   }, [active])
+
+  // Deep-link: reage a mudanças de hash com a app aberta
+  useEffect(() => {
+    const onHash = () => {
+      const hash = window.location.hash.slice(1)
+      if (MODULES.some(m => m.key === hash)) setActive(hash)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  // Contagens reais do cluster (nada hard-coded na UI)
+  useEffect(() => {
+    fetch('/api/stats').then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d) }).catch(() => {})
+  }, [])
 
   const mod = MODULES.find(m => m.key === active)
   const Component = mod.component
@@ -105,7 +131,9 @@ export default function App() {
         {/* Right side */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span className="badge badge-green">Atlas M20</span>
-          <span className="badge badge-gray">5M docs · Atlas cluster</span>
+          <span className="badge badge-gray">
+            {stats ? `${fmtCount(stats.produtos + stats.avaliacoes)} docs · Atlas cluster` : 'Atlas cluster'}
+          </span>
         </div>
       </header>
 
@@ -153,8 +181,8 @@ export default function App() {
           }}>
             <div className="kicker" style={{ marginBottom: 10, fontSize: 10 }}>Dataset</div>
             <div style={{ fontSize: 12.5, display: 'flex', flexDirection: 'column', gap: 5, color: 'var(--text-primary)' }}>
-              <div>📦 <strong style={{ fontFamily: 'var(--font-mono)' }}>5M</strong> produtos</div>
-              <div>⭐ <strong style={{ fontFamily: 'var(--font-mono)' }}>1M</strong> avaliações</div>
+              <div>📦 <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.produtos)}</strong> produtos</div>
+              <div>⭐ <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.avaliacoes)}</strong> avaliações</div>
               <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas M20</div>
             </div>
           </div>

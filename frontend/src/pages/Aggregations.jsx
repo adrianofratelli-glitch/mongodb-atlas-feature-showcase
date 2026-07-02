@@ -16,21 +16,24 @@ const TABS = [
 ]
 
 const CODE = {
-  lookup: `// Parte de avaliacoes (índice produto_id_1) para garantir
-// que o join sempre retorna resultados populados
+  lookup: `// O $group varre avaliacoes; o índice produto_id_1 (produtos)
+// é usado pelo $lookup para o join ser barato
 db.avaliacoes.aggregate([
   { $group: {
       _id: "$produto_id",
       total_reviews: { $sum: 1 },
       avg_nota: { $avg: "$nota" },
-      top_reviews: { $push: { usuario: "$usuario", nota: "$nota" } }
+      top_reviews: { $topN: {           // 5.2+: só as 3 melhores
+        output: { usuario: "$usuario", nota: "$nota" },
+        sortBy: { nota: -1 }, n: 3
+      }}
   }},
   { $sort: { total_reviews: -1 } },
   { $limit: 5 },
   { $lookup: {
       from: "produtos",
       localField: "_id",
-      foreignField: "produto_id",
+      foreignField: "produto_id",   // ← usa o índice produto_id_1
       as: "produto",
       pipeline: [   // sub-pipeline: só os campos necessários
         { $project: { nome: 1, categoria: 1, preco: 1, marca: 1, _id: 0 } }
@@ -89,18 +92,16 @@ db.produtos.aggregate([
       total_produtos: { $sum: 1 },
       preco_medio:    { $avg: "$preco" },
       preco_max:      { $max: "$preco" },
-      em_estoque:     { $sum: { $cond: ["$em_estoque", 1, 0] } }
+      preco_min:      { $min: "$preco" }
   }},
-  { $addFields: {
-      pct_estoque: { $multiply: [
-        { $divide: ["$em_estoque", "$total_produtos"] }, 100
-      ]}
+  { $addFields: {   // campo derivado, calculado no banco
+      amplitude_preco: { $subtract: ["$preco_max", "$preco_min"] }
   }},
   { $sort: { total_produtos: -1 } }
 ])`,
 
   window: `// Working set limitado ANTES das janelas:
-// match + sort + limit = 100 docs via índice categoria/total_avaliacoes
+// match + sort + limit = 100 docs via índice cat_total_av_idx
 db.produtos.aggregate([
   { $match: { categoria: "Eletrônicos", em_estoque: true } },
   { $sort: { total_avaliacoes: -1 } },
@@ -142,13 +143,13 @@ const DESCRIPTIONS = {
   lookup: {
     title: '$lookup com sub-pipeline',
     what: 'Realiza joins entre coleções diretamente no banco. O sub-pipeline embutido projeta apenas os campos necessários do lado joined — sem trazer dados desnecessários para a aplicação.',
-    why: 'Partindo de avaliacoes (com índice produto_id_1), o join sempre retorna resultados populados. O sub-pipeline evita trazer documentos completos — só os campos usados chegam ao resultado.',
-    index: 'produto_id_1 (avaliacoes) + produto_id_1 (produtos)',
+    why: 'O $group varre as avaliações e o $topN guarda só as 3 melhores por produto (memória limitada). O join usa o índice produto_id_1 do lado produtos — e o sub-pipeline traz só os campos usados.',
+    index: 'produto_id_1 (produtos) — usado pelo $lookup',
   },
   facet: {
-    title: '$facet — múltiplas agregações em paralelo',
-    what: 'Executa diversas pipelines de agregação independentes sobre o mesmo conjunto de dados em um único round-trip. Cada facet processa em paralelo e todos os resultados chegam juntos.',
-    why: 'Um único comando retorna distribuição por categoria, faixas de preço e top marcas. O $match inicial em em_estoque usa índice para reduzir o working set antes de ramificar.',
+    title: '$facet — múltiplas agregações em um único round-trip',
+    what: 'Executa diversas pipelines de agregação independentes sobre o mesmo conjunto de dados numa única passada — N visões (categorias, faixas de preço, marcas) chegam juntas em um único comando.',
+    why: 'Um único comando retorna distribuição por categoria, faixas de preço e top marcas — sem N queries e N round-trips. O $match inicial em em_estoque usa índice para reduzir o working set antes de ramificar.',
     index: 'em_estoque_1',
   },
   union: {
@@ -160,14 +161,14 @@ const DESCRIPTIONS = {
   group: {
     title: '$group + $addFields — métricas e campos derivados',
     what: '$group agrupa documentos e calcula acumuladores (soma, média, min, max). $addFields injeta campos calculados sobre os grupos — percentuais, razões, labels condicionais.',
-    why: 'O $match inicial em em_estoque usa índice para reduzir o working set antes do $group. Campos derivados como pct_estoque chegam prontos — sem cálculos na aplicação.',
+    why: 'O $match inicial em em_estoque usa índice para reduzir o working set antes do $group. Campos derivados como amplitude_preco (max − min) chegam prontos do banco — sem cálculos na aplicação.',
     index: 'em_estoque_1',
   },
   window: {
     title: '$setWindowFields — Window Functions',
     what: 'Calcula rank dentro de partições, somas acumuladas e médias móveis — o equivalente ao OVER (PARTITION BY) do SQL — sem agrupar nem remover linhas do resultado.',
     why: 'Working set de 100 docs criado com match + sort + limit via índice ANTES das janelas. As janelas rodam sobre um conjunto mínimo, não sobre os 5M documentos completos.',
-    index: 'categoria_1_avaliacao_media_-1_preco_1 → limit 100 docs',
+    index: 'cat_total_av_idx (categoria + total_avaliacoes) → limit 100 docs',
   },
   bucket: {
     title: '$bucketAuto — faixas automáticas de distribuição',
@@ -281,7 +282,7 @@ const TABLE_COLS = {
     { key: 'total_produtos',  label: 'Produtos',    render: r => r.total_produtos?.toLocaleString() },
     { key: 'preco_medio',     label: 'Preço Médio', render: r => `R$ ${r.preco_medio?.toFixed(2)}` },
     { key: 'preco_max',       label: 'Preço Máx',   render: r => `R$ ${r.preco_max?.toFixed(0)}` },
-    { key: 'pct_estoque',     label: '% Estoque',   render: r => `${r.pct_estoque?.toFixed(1)}%` },
+    { key: 'amplitude_preco', label: 'Amplitude',   render: r => `R$ ${r.amplitude_preco?.toFixed(0)}` },
     { key: 'avaliacao_media', label: 'Avg ⭐',      render: r => r.avaliacao_media?.toFixed(2) },
   ],
   window: [

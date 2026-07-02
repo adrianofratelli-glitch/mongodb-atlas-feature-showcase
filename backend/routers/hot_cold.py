@@ -128,7 +128,7 @@ def archive_simulation():
         "hot":  {"count": hot_count,  "pct": round(hot_count / total * 100, 1) if total else 0, "tier": "Cluster Atlas (NVMe SSD)", "latency": "< 5ms"},
         "cold": {"count": cold_count, "pct": round(cold_count / total * 100, 1) if total else 0, "tier": "Online Archive (Object Storage)", "latency": "~ 100-300ms"},
         "savings_estimate": "Redução de ~60-80% no custo de armazenamento para dados históricos",
-        "transparencia": "Mesma connection string — o Atlas roteia automaticamente",
+        "transparencia": "Endpoint federado dedicado — uma única query lê hot + cold, sem mudar o código de leitura",
     }
 
 
@@ -147,11 +147,13 @@ def query_transparent(categoria: str = "Eletrônicos"):
     cold = list(db[COLLECTION].find({"categoria": categoria, "created_at": {"$lt":  cutoff}}, {"nome": 1, "preco": 1, "created_at": 1, "_id": 0}).limit(3))
 
     return {
-        "query_used": f"db.produtos.find({{ categoria: '{categoria}' }}) // sem filtro de data",
+        "query_used": f"db.produtos.find({{ categoria: '{categoria}' }}) // via endpoint federado (cluster + archive)",
         "explanation": (
-            "Com o Online Archive ativo, uma única query sem filtro de data retorna "
-            "documentos de AMBAS as camadas (hot e cold). O Atlas roteia internamente — "
-            "a aplicação não sabe de onde veio cada documento."
+            "Com o Online Archive ativo, o Atlas expõe um endpoint federado dedicado: "
+            "nele, UMA query sem filtro de data retorna documentos de AMBAS as camadas "
+            "(hot e cold) — a query é a mesma, sem mudança de código. Leituras analíticas "
+            "apontam para esse endpoint; escritas seguem no endpoint do cluster. "
+            "(Abaixo, uma simulação didática do resultado usando o corte de 1 ano.)"
         ),
         "hot_samples":  fmt(hot),
         "cold_samples": fmt(cold),
@@ -198,7 +200,8 @@ def create_online_archive(expire_after_days: int = 365):
             "dateFormat": "ISODATE",
             "expireAfterDays": expire_after_days,
         },
-        "dataExpirationRule": {"expireAfterDays": expire_after_days * 2},
+        # Sem dataExpirationRule de propósito: expiração APAGA dados do archive —
+        # perigoso demais para uma demo sobre a coleção que os outros módulos usam.
         "partitionFields": [
             {"fieldName": "categoria",   "order": 0},
             {"fieldName": "created_at",  "order": 1},

@@ -1,6 +1,6 @@
 # MongoDB Atlas Feature Showcase
 
-An interactive demo application that exercises six core MongoDB Atlas capabilities
+An interactive demo application that exercises seven core MongoDB Atlas capabilities
 against a live cluster. Built with FastAPI and React 18.
 
 > The application UI is in Portuguese (pt-BR).
@@ -16,7 +16,8 @@ against a live cluster. Built with FastAPI and React 18.
 | Aggregation Pipeline | `$lookup` with sub-pipeline, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto` |
 | Schema Validation | JSON Schema enforcement at the database layer (enum, regex, ranges, required fields) |
 | Change Streams | Real-time event feed (insert, update, delete) with `fullDocumentBeforeChange` and resume tokens |
-| ACID Transactions | Multi-document, multi-collection transactions with step-by-step visualization and a rollback demo |
+| ACID Transactions | Multi-document, multi-collection transactions (`with_transaction` callback API) with step-by-step visualization and a rollback demo |
+| Redis vs Change Streams | Dual-write vs single source of truth — live side-by-side proof of consistency under crashes and consumer recovery via resume token |
 
 Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`, and so on).
 
@@ -36,7 +37,7 @@ Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`
 
 - Python 3.11+
 - Node.js 18+
-- A MongoDB Atlas cluster (M10 or higher is required for transactions and change streams)
+- A MongoDB Atlas cluster (transactions and change streams work on any replica set, including free/Flex tiers; Online Archive requires M10+)
 
 ### 1. Clone
 
@@ -142,8 +143,9 @@ python live_monitor.py
 
 ## Notes
 
-- Change Streams require a replica set or sharded cluster (Atlas M10+).
+- Change Streams require a replica set or sharded cluster (every Atlas cluster qualifies, including free/Flex tiers).
 - ACID Transactions require MongoDB 4.0 or later on a replica set.
+- Online Archive (Hot/Cold Tiering) requires a dedicated cluster (M10+).
 - The Hot/Cold Tiering module calls the Atlas Admin API, so `ATLAS_PUBLIC_KEY`,
   `ATLAS_PRIVATE_KEY`, `ATLAS_PROJECT_ID`, and `ATLAS_CLUSTER` must be set.
 - `backend/.env` is gitignored. Never commit real credentials.

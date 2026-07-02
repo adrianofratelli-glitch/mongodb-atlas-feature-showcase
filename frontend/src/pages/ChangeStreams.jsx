@@ -272,10 +272,10 @@ export default function ChangeStreams() {
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Capacidades do Change Streams</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
           {[
-            { icon: '📄', title: 'fullDocumentBeforeChange', desc: 'Recebe o estado do documento antes e depois da alteração — útil para audit trail' },
-            { icon: '🔁', title: 'Resume token',             desc: 'Retoma exatamente de onde parou após uma queda de conexão, sem perder eventos' },
+            { icon: '📄', title: 'fullDocumentBeforeChange', desc: 'Recebe o estado do documento antes e depois da alteração — repare no "status: pendente → aprovada" do feed acima' },
+            { icon: '🔁', title: 'Resume token',             desc: 'Retoma de onde parou após uma queda de conexão, dentro da janela de retenção do oplog — sem perder eventos' },
             { icon: '🔍', title: 'Pipeline de filtro',       desc: 'Escuta apenas os eventos relevantes com $match e $project, reduzindo tráfego' },
-            { icon: '🌐', title: 'Multi-cluster',            desc: 'Funciona em replica sets e sharded clusters sem configuração adicional' },
+            { icon: '🌐', title: 'Replica sets & sharded',   desc: 'Funciona em replica sets e sharded clusters sem configuração adicional' },
           ].map(c => (
             <div key={c.title} style={{ padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border-color)' }}>
               <div style={{ fontSize: 18, marginBottom: 6 }}>{c.icon}</div>

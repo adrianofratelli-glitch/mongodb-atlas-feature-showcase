@@ -4,6 +4,14 @@ from pymongo import ASCENDING, DESCENDING
 import threading
 import time
 
+# Queries representativas para o explain() de cada cenário. sort+limit usa
+# top-K sort (memória limitada), então o COLLSCAN funciona mesmo sem índice.
+EXPLAIN_SCENARIOS = {
+    "simples":  {"filter": {"categoria": "Eletrônicos"}, "limit": 100},
+    "composto": {"filter": {"categoria": "Eletrônicos"}, "sort": {"preco": -1}, "limit": 100},
+    "parcial":  {"filter": {"em_estoque": True, "preco": {"$lt": 100}}, "limit": 100},
+}
+
 router = APIRouter(prefix="/reindexacao", tags=["Reindexação"])
 
 COLLECTION = "produtos"
@@ -57,7 +65,9 @@ def create_index(
         return {"status": "exists", "index_name": name, "message": "Índice já existe na coleção."}
 
     key = [(f.lstrip("-"), DESCENDING if f.startswith("-") else ASCENDING) for f in fields]
-    kwargs: dict = {"background": True, "sparse": sparse}
+    # Desde o MongoDB 4.2 todo build de índice é "hybrid": não bloqueia leituras
+    # nem escritas (a antiga opção background foi deprecada e é ignorada).
+    kwargs: dict = {"sparse": sparse}
     if partial_filter:
         kwargs["partialFilterExpression"] = partial_filter
 
@@ -69,8 +79,8 @@ def create_index(
         "index_name": name,
         "fields": fields,
         "note": (
-            "Build iniciado em background (rolling build). A coleção continua "
-            "atendendo leituras e escritas normalmente enquanto o índice é construído."
+            "Build iniciado (hybrid build, MongoDB 4.2+). A coleção continua "
+            "atendendo leituras e escritas normalmente durante toda a construção."
         ),
     }
 
@@ -100,6 +110,65 @@ def drop_index(index_name: str):
     db[COLLECTION].drop_index(index_name)
     _builds.pop(index_name, None)
     return {"dropped": index_name}
+
+
+@router.get("/read-probe")
+def read_probe():
+    """
+    Leitura curta usada pela UI durante o build do índice, para provar que a
+    coleção segue atendendo leituras normalmente (sem lock) enquanto constrói.
+    """
+    t0 = time.time()
+    doc = db[COLLECTION].find_one(
+        {"categoria": "Eletrônicos"}, {"nome": 1, "preco": 1, "_id": 0}
+    )
+    return {"ok": doc is not None, "latency_ms": round((time.time() - t0) * 1000, 1)}
+
+
+def _walk_stages(plan: dict, acc: list):
+    """Percorre o winningPlan coletando os stages (IXSCAN, COLLSCAN, SORT...)."""
+    if not isinstance(plan, dict):
+        return
+    stage = plan.get("stage")
+    if stage:
+        acc.append({"stage": stage, "index_name": plan.get("indexName")})
+    for child_key in ("inputStage", "innerStage", "outerStage"):
+        if child_key in plan:
+            _walk_stages(plan[child_key], acc)
+    for child in plan.get("inputStages", []):
+        _walk_stages(child, acc)
+
+
+@router.get("/explain")
+def explain(scenario: str = "simples"):
+    """
+    Roda a query representativa do cenário com explain(executionStats).
+    Antes do índice: COLLSCAN varrendo a coleção inteira. Depois: IXSCAN
+    examinando só as chaves necessárias — a prova objetiva do ganho.
+    """
+    spec = EXPLAIN_SCENARIOS.get(scenario, EXPLAIN_SCENARIOS["simples"])
+    find_cmd = {"find": COLLECTION, "filter": spec["filter"], "limit": spec["limit"]}
+    if "sort" in spec:
+        find_cmd["sort"] = spec["sort"]
+    result = db.command("explain", find_cmd, verbosity="executionStats")
+
+    stats = result.get("executionStats", {})
+    stages: list = []
+    _walk_stages(result.get("queryPlanner", {}).get("winningPlan", {}), stages)
+    index_name = next((s["index_name"] for s in stages if s.get("index_name")), None)
+    scan = "IXSCAN" if any(s["stage"] == "IXSCAN" for s in stages) else "COLLSCAN"
+
+    return {
+        "scenario": scenario,
+        "query": {k: v for k, v in spec.items()},
+        "scan": scan,
+        "index_name": index_name,
+        "stages": [s["stage"] for s in stages],
+        "execution_ms": stats.get("executionTimeMillis"),
+        "docs_examined": stats.get("totalDocsExamined"),
+        "keys_examined": stats.get("totalKeysExamined"),
+        "n_returned": stats.get("nReturned"),
+    }
 
 
 @router.get("/demo-scenarios")

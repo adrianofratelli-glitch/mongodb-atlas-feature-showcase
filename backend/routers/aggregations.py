@@ -6,17 +6,20 @@ router = APIRouter(prefix="/aggregations", tags=["Aggregations"])
 
 @router.get("/lookup")
 def lookup_produtos_avaliacoes(limit: int = 5):
-    """`$lookup` com sub-pipeline — parte de avaliacoes para garantir join sempre populado."""
+    """`$lookup` com sub-pipeline — parte de avaliacoes para garantir join sempre populado.
+    O $group varre as avaliações (grupo não usa índice); quem usa índice é o
+    $lookup, via produto_id_1 do lado produtos. $topN limita a memória do acumulador."""
     pipeline = [
-        # Agrupa por produto_id usando o índice produto_id_1
         {"$group": {
             "_id": "$produto_id",
             "total_reviews": {"$sum": 1},
             "avg_nota":      {"$avg": "$nota"},
-            "top_reviews":   {"$push": {
-                "usuario": "$usuario",
-                "nota":    "$nota",
-                "titulo":  "$titulo",
+            # $topN (5.2+): guarda só as 3 melhores por grupo — memória limitada,
+            # sem $push do array inteiro + $slice depois.
+            "top_reviews":   {"$topN": {
+                "output": {"usuario": "$usuario", "nota": "$nota", "titulo": "$titulo"},
+                "sortBy": {"nota": -1},
+                "n": 3,
             }},
         }},
         {"$sort": {"total_reviews": -1}},
@@ -41,10 +44,10 @@ def lookup_produtos_avaliacoes(limit: int = 5):
             "marca":         "$produto.marca",
             "total_reviews": 1,
             "avg_nota":      {"$round": ["$avg_nota", 2]},
-            "top_reviews":   {"$slice": ["$top_reviews", 3]},
+            "top_reviews":   1,
         }},
     ]
-    return {"results": list(db["avaliacoes"].aggregate(pipeline))}
+    return {"results": list(db["avaliacoes"].aggregate(pipeline, allowDiskUse=True))}
 
 
 @router.get("/facet")
@@ -137,11 +140,11 @@ def group_advanced():
             "preco_medio":   {"$avg": "$preco"},
             "preco_max":     {"$max": "$preco"},
             "preco_min":     {"$min": "$preco"},
-            "em_estoque":    {"$sum": {"$cond": ["$em_estoque", 1, 0]}},
             "avaliacao_media":{"$avg": "$avaliacao_media"},
         }},
+        # Campo derivado calculado no banco — chega pronto para a aplicação
         {"$addFields": {
-            "pct_estoque": {"$multiply": [{"$divide": ["$em_estoque", "$total_produtos"]}, 100]}
+            "amplitude_preco": {"$subtract": ["$preco_max", "$preco_min"]}
         }},
         {"$sort": {"total_produtos": -1}},
         {"$limit": 8},
@@ -150,7 +153,7 @@ def group_advanced():
     for r in result:
         r["preco_medio"]     = round(r.get("preco_medio") or 0, 2)
         r["avaliacao_media"] = round(r.get("avaliacao_media") or 0, 2)
-        r["pct_estoque"]     = round(r.get("pct_estoque") or 0, 1)
+        r["amplitude_preco"] = round(r.get("amplitude_preco") or 0, 2)
     return {"results": result}
 
 
@@ -159,7 +162,8 @@ def window_functions():
     """`$setWindowFields` — rank, acumulado e média móvel.
     Working set reduzido: match + sort + limit ANTES das janelas."""
     pipeline = [
-        # Limita o working set a 100 docs via índice (categoria + total_avaliacoes)
+        # Limita o working set a 100 docs via índice cat_total_av_idx
+        # (categoria: 1, total_avaliacoes: -1) — atende o match E o sort.
         {"$match": {"categoria": "Eletrônicos", "em_estoque": True}},
         {"$sort":  {"total_avaliacoes": -1}},
         {"$limit": 100},
@@ -189,7 +193,7 @@ def window_functions():
             "media_movel_preco": {"$round": ["$media_movel_preco", 2]},
         }},
     ]
-    result = list(db["produtos"].aggregate(pipeline))
+    result = list(db["produtos"].aggregate(pipeline, allowDiskUse=True))
     for r in result:
         r["preco"]             = round(r.get("preco") or 0, 2)
         r["media_movel_preco"] = round(r.get("media_movel_preco") or 0, 2)

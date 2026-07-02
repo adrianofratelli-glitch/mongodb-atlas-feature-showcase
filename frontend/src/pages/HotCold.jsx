@@ -46,7 +46,7 @@ export default function HotCold() {
       <div className="banner banner-info">
         <span>ℹ️</span>
         <div>
-          <strong>MongoDB Atlas Online Archive</strong> move dados históricos automaticamente para object storage de baixo custo, mantendo a <em>mesma connection string</em>. Queries são roteadas de forma transparente entre as duas camadas.
+          <strong>MongoDB Atlas Online Archive</strong> move dados históricos automaticamente para object storage de baixo custo. O Atlas expõe um <em>endpoint federado dedicado</em> que consulta as duas camadas (cluster + archive) com <strong>a mesma query, sem mudar o código</strong> — leituras analíticas apontam para ele; escritas seguem no endpoint do cluster.
         </div>
       </div>
 
@@ -55,7 +55,7 @@ export default function HotCold() {
         {[
           { key: 'dist',   icon: '📊', title: 'Distribuição por Ano',  desc: 'Quando foram criados os documentos — base para a política de arquivo', fn: fetchDistribution },
           { key: 'sim',    icon: '🧮', title: 'Simulação de Arquivo',  desc: '60% dos documentos seriam arquivados com política de 1 ano', fn: fetchSimulation },
-          { key: 'transp', icon: '🔗', title: 'Query Transparente',    desc: 'Com OA ativo, a mesma query retorna hot + cold sem mudar o código', fn: fetchTransparent },
+          { key: 'transp', icon: '🔗', title: 'Query Federada',        desc: 'Pelo endpoint federado, a mesma query retorna hot + cold — sem mudar o código', fn: fetchTransparent },
         ].map(c => (
           <div key={c.key} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ fontSize: 22 }}>{c.icon}</div>
@@ -113,7 +113,7 @@ export default function HotCold() {
 
       {transparent && (
         <div className="card">
-          <strong style={{ fontSize: 15, display: 'block', marginBottom: 6 }}>Query Transparente — como funciona</strong>
+          <strong style={{ fontSize: 15, display: 'block', marginBottom: 6 }}>Query Federada — como funciona</strong>
           <div style={{ padding: '10px 14px', background: 'var(--bg-subtle)', borderRadius: 6, marginBottom: 12, fontSize: 13 }}>
             <code>{transparent.query_used}</code>
           </div>
@@ -152,6 +152,15 @@ export default function HotCold() {
             <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>
               Cria a regra diretamente no cluster via Atlas API — visível no painel do Atlas após criar.
             </p>
+          </div>
+        </div>
+
+        <div className="banner banner-warning" style={{ marginBottom: 16 }}>
+          <span>⚠️</span>
+          <div style={{ fontSize: 12.5 }}>
+            <strong>Demo ao vivo:</strong> documentos arquivados <em>saem do cluster</em> (ficam read-only no archive) — e a
+            coleção <code>produtos</code> é usada pelos outros módulos desta PoV. Prefira a janela de <strong>2 anos</strong> e
+            <strong> remova a regra</strong> logo após demonstrar.
           </div>
         </div>
 

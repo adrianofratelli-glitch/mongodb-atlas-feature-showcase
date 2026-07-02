@@ -12,7 +12,7 @@ Requer backend/.env configurado (MONGO_URI, MONGO_DB).
 import argparse
 import random
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from pymongo import MongoClient
@@ -52,7 +52,7 @@ def gerar_produto():
         "em_estoque":       random.random() < 0.7,
         "avaliacao_media":  round(random.uniform(1.0, 5.0), 1) if total_av else None,
         "total_avaliacoes": total_av,
-        "created_at":       datetime.now() - timedelta(days=random.randint(0, 1825)),
+        "created_at":       datetime.now(timezone.utc) - timedelta(days=random.randint(0, 1825)),
     }
 
 
@@ -63,7 +63,7 @@ def gerar_avaliacao(produto_ids):
         "nota":       random.choices([1, 2, 3, 4, 5], weights=[5, 8, 15, 35, 37])[0],
         "titulo":     random.choice(TITULOS),
         "comentario": random.choice(COMENTARIOS),
-        "data":       datetime.now() - timedelta(days=random.randint(0, 730)),
+        "data":       datetime.now(timezone.utc) - timedelta(days=random.randint(0, 730)),
     }
 
 
@@ -104,6 +104,9 @@ def seed(n_produtos, n_avaliacoes):
     db["produtos"].create_index("em_estoque")
     db["produtos"].create_index("categoria")
     db["produtos"].create_index([("total_avaliacoes", -1)], name="total_av_idx")
+    # Atende o match (categoria) + sort (total_avaliacoes desc) do módulo
+    # $setWindowFields sem blocking sort em memória.
+    db["produtos"].create_index([("categoria", 1), ("total_avaliacoes", -1)], name="cat_total_av_idx")
     db["produtos"].create_index("produto_id")
     db["avaliacoes"].create_index("produto_id")
     db["avaliacoes"].create_index([("data", -1)])

@@ -15,8 +15,8 @@ const SCHEMA_CODE = `db.runCommand({
       properties: {
         nome:       { bsonType: "string",  minLength: 2 },
         preco:      { bsonType: "number",  minimum: 0 },
-        categoria:  { bsonType: "string",
-          enum: ["Eletrônicos","Vestuário","Alimentos","Esportes","Casa"] },
+        categoria:  { bsonType: "string",  // mesmas categorias do dataset
+          enum: ["Eletrônicos","Moda","Casa","Esportes","Livros","Brinquedos"] },
         em_estoque: { bsonType: "bool" },
         sku:        { bsonType: "string",  pattern: "^[A-Z]{2}-[0-9]{4}$" }
       }
@@ -193,6 +193,17 @@ export default function SchemaValidation() {
                   </div>
                   <div style={{ marginBottom: 6 }}><strong>Documento tentado:</strong> <code>{JSON.stringify(stepResults[4].document_attempted)}</code></div>
                   <div style={{ color: 'var(--text-secondary)' }}><strong>Erro:</strong> {stepResults[4].error_message}</div>
+                  {stepResults[4].error_detail && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: 'pointer', fontSize: 12, color: 'var(--text-secondary)' }}>
+                        📋 <code>errInfo</code> — o banco aponta exatamente qual regra falhou (estruturado)
+                      </summary>
+                      <pre style={{
+                        marginTop: 6, padding: '10px 12px', background: 'var(--bg-subtle)', borderRadius: 6,
+                        fontSize: 11, lineHeight: 1.5, maxHeight: 260, overflow: 'auto', whiteSpace: 'pre-wrap',
+                      }}>{JSON.stringify(stepResults[4].error_detail, null, 2)}</pre>
+                    </details>
+                  )}
                   <div style={{ marginTop: 8, color: 'var(--accent)', fontSize: 12 }}>✅ {stepResults[4].note}</div>
                 </div>
               )}

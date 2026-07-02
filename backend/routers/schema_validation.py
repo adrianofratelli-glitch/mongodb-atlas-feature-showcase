@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 from database import db
+import json
 import os
 from pymongo.errors import WriteError, OperationFailure
 
@@ -15,7 +16,8 @@ SCHEMA = {
         "properties": {
             "nome":       {"bsonType": "string", "minLength": 2},
             "preco":      {"bsonType": "number",  "minimum": 0},
-            "categoria":  {"bsonType": "string",  "enum": ["Eletrônicos", "Vestuário", "Alimentos", "Esportes", "Casa"]},
+            # Mesmas categorias do dataset da POC (seed_data.py)
+            "categoria":  {"bsonType": "string",  "enum": ["Eletrônicos", "Moda", "Casa", "Esportes", "Livros", "Brinquedos"]},
             "em_estoque": {"bsonType": "bool"},
             "sku":        {"bsonType": "string",  "pattern": "^[A-Z]{2}-[0-9]{4}$"},
         },
@@ -116,11 +118,18 @@ def step4_insert_invalid(scenario: str = "preco_negativo"):
         db[COL].insert_one(doc)
         return {"status": "inesperado — documento deveria ter sido rejeitado"}
     except (WriteError, OperationFailure) as e:
+        # errInfo: o MongoDB devolve ESTRUTURADO exatamente qual regra do
+        # $jsonSchema falhou — diferencial real vs validação na aplicação.
+        # (json round-trip com default=str converte tipos BSON, ex. ObjectId)
+        err_info = (e.details or {}).get("errInfo") if hasattr(e, "details") else None
+        if err_info is not None:
+            err_info = json.loads(json.dumps(err_info, default=str))
         return {
             "status": "rejeitado",
             "scenario": scenario,
             "document_attempted": base,  # sem o _id que o driver injetou
             "error_message": str(e).split(" full error:")[0],
+            "error_detail": err_info,
             "note": "Rejeitado na camada do banco — sem precisar de validação no código da aplicação.",
         }
 

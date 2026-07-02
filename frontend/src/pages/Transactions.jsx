@@ -137,7 +137,9 @@ export default function Transactions() {
           ))}
         </div>
         <p style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          Todos os 4 steps ocorrem dentro de uma única sessão. Se qualquer step falhar,
+          Todos os 4 steps ocorrem dentro de uma única sessão, via{' '}
+          <code>session.with_transaction()</code> — a callback API recomendada, com retry automático
+          de erros transientes e commit ao fim do callback. Se qualquer step falhar,
           todos os writes anteriores são revertidos automaticamente.
         </p>
       </div>
@@ -164,7 +166,8 @@ export default function Transactions() {
             <strong style={{ fontSize: 14 }}>Simular falha (ROLLBACK)</strong>
           </div>
           <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            Força um erro no step 3. O MongoDB reverte tudo automaticamente — nenhuma coleção fica com dados parciais.
+            Força um timeout no step 4 (gateway de pagamento). O MongoDB reverte o pedido e a reserva
+            de estoque automaticamente — nenhuma coleção fica com dados parciais.
           </p>
           <button className="btn btn-default" style={{ marginTop: 'auto' }}
             onClick={() => executar(true)} disabled={loading}>
@@ -216,9 +219,9 @@ export default function Transactions() {
             <div className="banner banner-warning">
               <span>💡</span>
               <div>
-                O pedido criado no step 2 foi revertido. As coleções <code>pedidos_demo</code>,{' '}
-                <code>estoque_demo</code> e <code>pagamentos_demo</code> permanecem exatamente
-                como estavam antes da transação iniciar.
+                O pedido (step 2) e a reserva de estoque (step 3) foram revertidos. As coleções{' '}
+                <code>pedidos_demo</code>, <code>estoque_demo</code> e <code>pagamentos_demo</code>{' '}
+                permanecem exatamente como estavam antes da transação iniciar.
               </div>
             </div>
           )}

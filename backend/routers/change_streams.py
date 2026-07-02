@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 from database import db
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 import time
 import uuid
@@ -33,7 +33,7 @@ def _gerar_transacao():
         "tipo":         random.choice(_TIPOS),
         "status":       "pendente",
         "suspeita":     valor > 8000,
-        "created_at":   datetime.now(),
+        "created_at":   datetime.now(timezone.utc),
     }
 
 def _resumo(op: str, doc: dict, prev: dict) -> dict:
@@ -44,11 +44,12 @@ def _resumo(op: str, doc: dict, prev: dict) -> dict:
             "alerta":  doc.get("suspeita", False),
         }
     if op == "update":
-        novo   = doc.get("status", "?")
-        pagador = doc.get("pagador", doc.get("transacao_id","?")[:8])
+        novo    = doc.get("status", "?")
+        antigo  = prev.get("status")  # before-image (changeStreamPreAndPostImages)
+        pagador = doc.get("pagador", doc.get("transacao_id", "?")[:8])
         return {
             "texto":   f"Status atualizado: {pagador}",
-            "detalhe": f"novo status → {novo}",
+            "detalhe": f"status: {antigo} → {novo}" if antigo else f"novo status → {novo}",
             "alerta":  False,
         }
     if op == "delete":
@@ -97,9 +98,14 @@ def start_watch():
     if _state["active"]:
         return {"status": "already_watching", "events_so_far": len(_state["events"])}
     # Recria a coleção limpa: os docs persistidos correspondem a esta simulação.
+    # Pre/post images habilitados para o stream entregar o before-image real
+    # (fullDocumentBeforeChange) nos updates — base do audit trail.
     if "transacoes_cs_demo" in db.list_collection_names():
         db["transacoes_cs_demo"].drop()
-    db.create_collection("transacoes_cs_demo")
+    db.create_collection(
+        "transacoes_cs_demo",
+        changeStreamPreAndPostImages={"enabled": True},
+    )
     _state["active"]     = True
     _state["events"]     = []
     _state["started_at"] = datetime.now().isoformat()
@@ -126,7 +132,7 @@ def trigger_event(operacao: str = "insert"):
         novo_status = random.choice(["aprovada", "aprovada", "aprovada", "recusada"])
         db["transacoes_cs_demo"].update_one(
             {"_id": doc["_id"]},
-            {"$set": {"status": novo_status, "updated_at": datetime.now()}},
+            {"$set": {"status": novo_status, "updated_at": datetime.now(timezone.utc)}},
         )
         return {"triggered": "update", "novo_status": novo_status}
 
