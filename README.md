@@ -5,7 +5,7 @@ against a live cluster. Built with FastAPI and React 18.
 
 > The application UI is in Portuguese (pt-BR).
 
-![Online Reindexing module](docs/screenshots/reindex.png)
+![Online Reindexing module](docs/screenshots/01-reindex.png)
 
 ## Features
 
@@ -21,9 +21,19 @@ against a live cluster. Built with FastAPI and React 18.
 
 Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`, and so on).
 
-| Aggregation Pipeline | Change Streams | ACID Transactions |
-|---|---|---|
-| ![Aggregations](docs/screenshots/agg.png) | ![Change Streams](docs/screenshots/streams.png) | ![Transactions](docs/screenshots/tx.png) |
+## Screenshots
+
+| Hot / Cold Tiering | Aggregation Pipeline |
+|---|---|
+| ![Hot/Cold Tiering](docs/screenshots/02-hotcold.png) | ![Aggregations](docs/screenshots/03-aggregations.png) |
+
+| Schema Validation | Change Streams |
+|---|---|
+| ![Schema Validation](docs/screenshots/04-schema.png) | ![Change Streams](docs/screenshots/05-changestreams.png) |
+
+| ACID Transactions | Redis vs Change Streams |
+|---|---|
+| ![Transactions](docs/screenshots/06-transactions.png) | ![Redis vs Change Streams](docs/screenshots/07-redis-vs-changestreams.png) |
 
 ## Stack
 
