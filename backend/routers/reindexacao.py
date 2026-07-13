@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from database import db
 from pymongo import ASCENDING, DESCENDING
 import threading
@@ -18,6 +18,11 @@ COLLECTION = "produtos"
 
 # Estado dos builds em andamento (em memória). name -> {...}
 _builds: dict[str, dict] = {}
+_builds_lock = threading.RLock()
+ALLOWED_INDEX_FIELDS = {
+    "categoria", "preco", "em_estoque", "total_avaliacoes",
+    "avaliacao_media", "marca", "created_at", "produto_id",
+}
 
 
 def _index_name(fields: list[str]) -> str:
@@ -44,9 +49,11 @@ def _build_worker(name: str, key, kwargs):
     start = time.time()
     try:
         db[COLLECTION].create_index(key, **kwargs)
-        _builds[name] = {"status": "done", "elapsed_seconds": round(time.time() - start, 1), "error": None}
+        with _builds_lock:
+            _builds[name] = {"status": "done", "elapsed_seconds": round(time.time() - start, 1), "error": None}
     except Exception as e:  # noqa: BLE001
-        _builds[name] = {"status": "error", "elapsed_seconds": round(time.time() - start, 1), "error": str(e)}
+        with _builds_lock:
+            _builds[name] = {"status": "error", "elapsed_seconds": round(time.time() - start, 1), "error": type(e).__name__}
 
 
 @router.post("/create")
@@ -59,6 +66,14 @@ def create_index(
     Inicia a criação de um índice na coleção produtos em background (rolling build).
     Retorna imediatamente — a UI acompanha o progresso via /build-status.
     """
+    if not fields or len(fields) > 4:
+        raise HTTPException(status_code=422, detail="Informe entre 1 e 4 campos para o índice.")
+    normalized = [field.lstrip("-") for field in fields]
+    if len(normalized) != len(set(normalized)) or any(field not in ALLOWED_INDEX_FIELDS for field in normalized):
+        raise HTTPException(status_code=422, detail="Campo de índice não permitido ou duplicado.")
+    if partial_filter not in (None, {"em_estoque": True}):
+        raise HTTPException(status_code=422, detail="Filtro parcial não permitido nesta demonstração.")
+
     name = _index_name(fields)
 
     if name in _existing_index_names():
@@ -71,7 +86,11 @@ def create_index(
     if partial_filter:
         kwargs["partialFilterExpression"] = partial_filter
 
-    _builds[name] = {"status": "building", "elapsed_seconds": 0, "error": None}
+    with _builds_lock:
+        current = _builds.get(name)
+        if current and current.get("status") == "building":
+            return {"status": "building", "index_name": name, "message": "Build já está em andamento."}
+        _builds[name] = {"status": "building", "elapsed_seconds": 0, "error": None}
     threading.Thread(target=_build_worker, args=(name, key, kwargs), daemon=True).start()
 
     return {
@@ -92,7 +111,8 @@ def build_status(name: str):
     (índices em construção já aparecem em listIndexes, então não basta checar
     existência). Sem estado rastreado, infere pela existência.
     """
-    state = _builds.get(name)
+    with _builds_lock:
+        state = dict(_builds[name]) if name in _builds else None
     if state is not None:
         return {"index_name": name, **state}
     try:
@@ -106,9 +126,15 @@ def build_status(name: str):
 @router.delete("/drop/{index_name}")
 def drop_index(index_name: str):
     if index_name == "_id_":
-        return {"error": "Não é possível remover o índice _id"}
+        raise HTTPException(status_code=403, detail="Não é possível remover o índice _id.")
+    with _builds_lock:
+        if _builds.get(index_name, {}).get("status") == "building":
+            raise HTTPException(status_code=409, detail="Aguarde o término do build antes de remover o índice.")
+    if index_name not in _existing_index_names():
+        raise HTTPException(status_code=404, detail="Índice não encontrado.")
     db[COLLECTION].drop_index(index_name)
-    _builds.pop(index_name, None)
+    with _builds_lock:
+        _builds.pop(index_name, None)
     return {"dropped": index_name}
 
 
@@ -140,7 +166,7 @@ def _walk_stages(plan: dict, acc: list):
 
 
 @router.get("/explain")
-def explain(scenario: str = "simples"):
+def explain(scenario: str = Query("simples", pattern=r"^(simples|composto|parcial)$")):
     """
     Roda a query representativa do cenário com explain(executionStats).
     Antes do índice: COLLSCAN varrendo a coleção inteira. Depois: IXSCAN

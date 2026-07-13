@@ -31,7 +31,7 @@ import random
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
 from pymongo import ReadPreference
 from pymongo.read_concern import ReadConcern
 from pymongo.write_concern import WriteConcern
@@ -40,6 +40,17 @@ from pymongo.errors import PyMongoError
 from database import db
 
 router = APIRouter(prefix="/redis-changestream", tags=["Redis vs Change Streams"])
+_demo_lock = asyncio.Lock()
+
+
+async def _exclusive_demo():
+    if _demo_lock.locked():
+        raise HTTPException(status_code=409, detail="Outra rodada Redis vs Change Streams já está em execução.")
+    await _demo_lock.acquire()
+    try:
+        yield
+    finally:
+        _demo_lock.release()
 
 # Coleções exclusivas da demo (prefixo demo_rvc_) — não colidem com a POC.
 COL_JOBS = "demo_rvc_jobs"
@@ -319,7 +330,7 @@ def _op_base(i, p):
             "valor": p["valor"], "origem": p["origem"]}
 
 
-@router.post("/demo/lote-resiliencia")
+@router.post("/demo/lote-resiliencia", dependencies=[Depends(_exclusive_demo)])
 async def lote_resiliencia(n: int = 20):
     """ETAPA 2 — Resiliência. O consumidor cai numa janela no meio da rotina.
     No Pub/Sub as notificações da janela se PERDEM; no change stream o
@@ -399,7 +410,7 @@ async def lote_resiliencia(n: int = 20):
     }
 
 
-@router.post("/demo/lote-consistencia")
+@router.post("/demo/lote-consistencia", dependencies=[Depends(_exclusive_demo)])
 async def lote_consistencia(n: int = 20):
     """ETAPA 3 — Consistência. Crashes aleatórios do worker no meio do fluxo.
     No dual-write do Redis, parte das ops fica INCONSISTENTE; no MongoDB o mesmo

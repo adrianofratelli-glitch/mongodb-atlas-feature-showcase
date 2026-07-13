@@ -56,9 +56,11 @@ def gerar_produto():
     }
 
 
-def gerar_avaliacao(produto_ids):
+def gerar_avaliacao(produtos_ref):
+    produto_id, categoria = random.choice(produtos_ref)
     return {
-        "produto_id": random.choice(produto_ids),
+        "produto_id": produto_id,
+        "categoria":  categoria,
         "usuario":    random.choice(USUARIOS),
         "nota":       random.choices([1, 2, 3, 4, 5], weights=[5, 8, 15, 35, 37])[0],
         "titulo":     random.choice(TITULOS),
@@ -72,13 +74,13 @@ def seed(n_produtos, n_avaliacoes):
     db = client[os.getenv("MONGO_DB", "POC")]
 
     print(f"Inserindo {n_produtos:,} produtos…")
-    produto_ids = []
+    produtos_ref = []
     buf = []
     for i in range(n_produtos):
         p = gerar_produto()
         # guarda uma amostra de ids para vincular as avaliações
-        if len(produto_ids) < 50_000:
-            produto_ids.append(p["produto_id"])
+        if len(produtos_ref) < 50_000:
+            produtos_ref.append((p["produto_id"], p["categoria"]))
         buf.append(p)
         if len(buf) >= BATCH:
             db["produtos"].insert_many(buf, ordered=False)
@@ -88,10 +90,13 @@ def seed(n_produtos, n_avaliacoes):
         db["produtos"].insert_many(buf, ordered=False)
     print(f"\n✓ produtos: {db['produtos'].estimated_document_count():,}")
 
+    if n_avaliacoes and not produtos_ref:
+        raise ValueError("Não é possível gerar avaliações sem ao menos um produto.")
+
     print(f"Inserindo {n_avaliacoes:,} avaliações…")
     buf = []
     for i in range(n_avaliacoes):
-        buf.append(gerar_avaliacao(produto_ids))
+        buf.append(gerar_avaliacao(produtos_ref))
         if len(buf) >= BATCH:
             db["avaliacoes"].insert_many(buf, ordered=False)
             buf.clear()
@@ -107,9 +112,13 @@ def seed(n_produtos, n_avaliacoes):
     # Atende o match (categoria) + sort (total_avaliacoes desc) do módulo
     # $setWindowFields sem blocking sort em memória.
     db["produtos"].create_index([("categoria", 1), ("total_avaliacoes", -1)], name="cat_total_av_idx")
-    db["produtos"].create_index("produto_id")
+    db["produtos"].create_index("produto_id", unique=True)
+    db["produtos"].create_index(
+        [("em_estoque", 1), ("total_avaliacoes", -1), ("avaliacao_media", -1)],
+        name="destaque_idx",
+    )
     db["avaliacoes"].create_index("produto_id")
-    db["avaliacoes"].create_index([("data", -1)])
+    db["avaliacoes"].create_index([("data", -1), ("nota", -1)], name="recent_nota_idx")
     print("✓ índices criados. Pronto!")
 
 
@@ -119,6 +128,9 @@ if __name__ == "__main__":
     parser.add_argument("--produtos", type=int, default=100_000)
     parser.add_argument("--avaliacoes", type=int, default=20_000)
     args = parser.parse_args()
+
+    if args.produtos < 0 or args.avaliacoes < 0:
+        parser.error("As quantidades devem ser maiores ou iguais a zero.")
 
     if args.full:
         seed(5_000_000, 1_000_000)

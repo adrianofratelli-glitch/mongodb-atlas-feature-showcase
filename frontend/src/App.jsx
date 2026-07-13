@@ -20,7 +20,7 @@ const MODULES = [
 // MongoDB leaf logo SVG (official mark)
 function MongoDBLogo({ size = 32 }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 256 549" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg aria-hidden="true" width={size} height={size} viewBox="0 0 256 549" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M175.622 61.108C152.612 33.807 132.797 5.315 128.69.239c-.5-.32-1.0-.239-1.0-.239s-.5-.081-1.0.239C122.583 5.315 102.768 33.807 79.758 61.108 24.914 128.23 0 188.949 0 245.85c0 68.687 31.064 130.1 79.875 171.037l1.872 1.253c1.522 16.09 4.254 51.884 3.551 75.43 0 0 4.596 3.112 9.94 3.928 5.343.816 11.435.816 11.435.816l-1.114-15.274c8.828 1.952 17.9 3.025 27.22 3.025 9.323 0 18.393-1.073 27.22-3.025l-1.114 15.274s6.093 0 11.435-.816c5.343-.816 9.94-3.928 9.94-3.928-.703-23.546 2.029-59.34 3.55-75.43l1.873-1.253C233.936 375.95 265 314.537 265 245.85c0-56.901-24.914-117.62-89.378-184.742z" fill="#00ED64"/>
       <path d="M134.03 468.678s0-175.178.816-175.255c4.474-.504 8.947-1.253 13.338-2.248-.041 0-14.154 177.503-14.154 177.503z" fill="#00684A"/>
       <path d="M128.69 493.092c-4.596-17.18-5.734-34.441-5.734-34.441s-4.148 2.818-4.148 6.745c0 3.928.816 27.696.816 27.696h9.066z" fill="#00684A"/>
@@ -59,7 +59,7 @@ function ApiErrorToast() {
           {' — '}{toast.message}
         </div>
       </div>
-      <button onClick={() => setToast(null)} style={{
+      <button aria-label="Fechar aviso" onClick={() => setToast(null)} style={{
         background: 'none', border: 'none', cursor: 'pointer', color: '#ff9b94',
         fontSize: 16, lineHeight: 1, padding: 0, flexShrink: 0,
       }}>×</button>
@@ -81,6 +81,7 @@ export default function App() {
     return MODULES.some(m => m.key === hash) ? hash : 'reindex'
   })
   const [stats, setStats] = useState(null)
+  const [preflight, setPreflight] = useState(null)
 
   useEffect(() => {
     window.history.replaceState(null, '', `#${active}`)
@@ -99,6 +100,7 @@ export default function App() {
   // Contagens reais do cluster (nada hard-coded na UI)
   useEffect(() => {
     fetch('/api/stats').then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d) }).catch(() => {})
+    fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
   }, [])
 
   const mod = MODULES.find(m => m.key === active)
@@ -131,15 +133,19 @@ export default function App() {
         {/* Right side */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span className="badge badge-green">Atlas M20</span>
+          <span className={`badge ${preflight?.ready ? 'badge-green' : 'badge-yellow'}`}
+            title={preflight?.ready ? 'Pré-voo concluído' : 'Verifique o diagnóstico no menu lateral'}>
+            {preflight?.ready ? '● Pronto' : '● Verificar'}
+          </span>
           <span className="badge badge-gray">
             {stats ? `${fmtCount(stats.produtos + stats.avaliacoes)} docs · Atlas cluster` : 'Atlas cluster'}
           </span>
         </div>
       </header>
 
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div className="app-shell-body" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* ── Sidebar ── */}
-        <aside style={{
+        <aside className="app-sidebar" aria-label="Módulos da demonstração" style={{
           width: 264, background: 'var(--bg-secondary)',
           borderRight: '1px solid var(--border-subtle)',
           padding: '18px 0', flexShrink: 0, overflowY: 'auto',
@@ -149,7 +155,7 @@ export default function App() {
           </div>
 
           {MODULES.map(m => (
-            <button key={m.key} onClick={() => setActive(m.key)} style={{
+            <button key={m.key} aria-current={active === m.key ? 'page' : undefined} onClick={() => setActive(m.key)} style={{
               width: '100%', padding: '11px 18px',
               background: active === m.key ? `${m.color}10` : 'transparent',
               border: 'none', borderLeft: `3px solid ${active === m.key ? m.color : 'transparent'}`,
@@ -186,10 +192,20 @@ export default function App() {
               <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas M20</div>
             </div>
           </div>
+
+          <div style={{ margin: '12px 14px 0', padding: 12, borderRadius: 10, border: '1px solid var(--border-subtle)', fontSize: 11 }}>
+            <div className="kicker" style={{ marginBottom: 7 }}>Pré-voo</div>
+            <div style={{ color: preflight?.ready ? 'var(--accent)' : '#fbbf24', fontWeight: 700 }}>
+              {preflight?.ready ? '✓ Ambiente pronto' : '⚠ Verificação necessária'}
+            </div>
+            {preflight?.checks && Object.entries(preflight.checks).filter(([, c]) => !c.ok).map(([key, check]) => (
+              <div key={key} style={{ color: 'var(--text-secondary)', marginTop: 5 }}>{key}: {check.message}</div>
+            ))}
+          </div>
         </aside>
 
         {/* ── Main ── */}
-        <main style={{ flex: 1, overflowY: 'auto', padding: '32px 36px', background: 'var(--bg-primary)' }}>
+        <main className="app-main" style={{ flex: 1, overflowY: 'auto', padding: '32px 36px', background: 'var(--bg-primary)' }}>
           <div style={{ maxWidth: 980, margin: '0 auto' }} key={active} className="fade-in">
             {/* Page header */}
             <div style={{ marginBottom: 26 }}>

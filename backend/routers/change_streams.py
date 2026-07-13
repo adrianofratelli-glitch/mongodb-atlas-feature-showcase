@@ -1,10 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from database import db
 from datetime import datetime, timezone
 import threading
 import time
 import uuid
 import random
+import logging
 
 router = APIRouter(prefix="/change-streams", tags=["Change Streams"])
 
@@ -14,6 +15,14 @@ _state = {
     "started_at": None,
     "thread":     None,
 }
+_state_lock = threading.RLock()
+logger = logging.getLogger("showcase.change_streams")
+
+
+def _append_event(event: dict):
+    with _state_lock:
+        _state["events"].append(event)
+        _state["events"] = _state["events"][-250:]
 
 # Dados financeiros realistas para a demo
 _PAGADORES   = ["João Silva", "Maria Oliveira", "Carlos Santos", "Ana Lima",
@@ -67,14 +76,17 @@ def _watch_worker():
             max_await_time_ms=400,
         ) as stream:
             deadline = time.time() + 120
-            while time.time() < deadline and _state["active"]:
+            while time.time() < deadline:
+                with _state_lock:
+                    if not _state["active"]:
+                        break
                 change = stream.try_next()
                 if change:
                     op   = change["operationType"]
                     doc  = change.get("fullDocument") or {}
                     prev = change.get("fullDocumentBeforeChange") or {}
                     info = _resumo(op, doc, prev)
-                    _state["events"].append({
+                    _append_event({
                         "ts":        datetime.now().strftime("%H:%M:%S.%f")[:-3],
                         "operation": op,
                         "texto":     info["texto"],
@@ -84,39 +96,48 @@ def _watch_worker():
                 else:
                     time.sleep(0.15)
     except Exception as e:
-        _state["events"].append({
+        logger.exception("Change Stream worker falhou")
+        _append_event({
             "ts": datetime.now().strftime("%H:%M:%S"),
             "operation": "ERROR",
-            "texto": str(e), "detalhe": "", "alerta": False,
+            "texto": "Change Stream indisponível", "detalhe": type(e).__name__, "alerta": False,
         })
     finally:
-        _state["active"] = False
+        with _state_lock:
+            _state["active"] = False
 
 
 @router.post("/start")
 def start_watch():
-    if _state["active"]:
-        return {"status": "already_watching", "events_so_far": len(_state["events"])}
+    with _state_lock:
+        if _state["active"]:
+            return {"status": "already_watching", "events_so_far": len(_state["events"])}
+        _state["active"] = True
+        _state["events"] = []
+        _state["started_at"] = datetime.now(timezone.utc).isoformat()
     # Recria a coleção limpa: os docs persistidos correspondem a esta simulação.
     # Pre/post images habilitados para o stream entregar o before-image real
     # (fullDocumentBeforeChange) nos updates — base do audit trail.
-    if "transacoes_cs_demo" in db.list_collection_names():
-        db["transacoes_cs_demo"].drop()
-    db.create_collection(
-        "transacoes_cs_demo",
-        changeStreamPreAndPostImages={"enabled": True},
-    )
-    _state["active"]     = True
-    _state["events"]     = []
-    _state["started_at"] = datetime.now().isoformat()
+    try:
+        if "transacoes_cs_demo" in db.list_collection_names():
+            db["transacoes_cs_demo"].drop()
+        db.create_collection(
+            "transacoes_cs_demo",
+            changeStreamPreAndPostImages={"enabled": True},
+        )
+    except Exception:
+        with _state_lock:
+            _state["active"] = False
+        raise
     t = threading.Thread(target=_watch_worker, daemon=True)
-    _state["thread"] = t
+    with _state_lock:
+        _state["thread"] = t
     t.start()
     return {"status": "watching", "colecao": "transacoes_cs_demo", "timeout_seconds": 120}
 
 
 @router.post("/trigger")
-def trigger_event(operacao: str = "insert"):
+def trigger_event(operacao: str = Query("insert", pattern=r"^(insert|update|delete)$")):
     if operacao == "insert":
         tx = _gerar_transacao()
         db["transacoes_cs_demo"].insert_one(tx)
@@ -141,20 +162,24 @@ def trigger_event(operacao: str = "insert"):
         if not doc:
             doc = db["transacoes_cs_demo"].find_one()
         if not doc:
-            return {"error": "Nenhuma transação para remover"}
+            raise HTTPException(status_code=409, detail="Nenhuma transação disponível para remover.")
         db["transacoes_cs_demo"].delete_one({"_id": doc["_id"]})
         return {"triggered": "delete"}
 
-    return {"error": f"Operação desconhecida: {operacao}"}
+    raise HTTPException(status_code=422, detail="Operação inválida.")
 
 
 @router.get("/events")
 def get_events():
+    with _state_lock:
+        active = _state["active"]
+        started_at = _state["started_at"]
+        events = list(_state["events"])
     return {
-        "active":     _state["active"],
-        "started_at": _state["started_at"],
-        "total":      len(_state["events"]),
-        "events":     _state["events"],
+        "active": active,
+        "started_at": started_at,
+        "total": len(events),
+        "events": events,
     }
 
 
@@ -183,16 +208,19 @@ def get_collection():
 @router.post("/stop")
 def stop_watch():
     """Para o watcher mas MANTÉM a coleção, para inspeção no Atlas Data Explorer."""
-    _state["active"] = False
-    return {"stopped": True, "total_events": len(_state["events"])}
+    with _state_lock:
+        _state["active"] = False
+        total = len(_state["events"])
+    return {"stopped": True, "total_events": total}
 
 
 @router.delete("/clear")
 def clear_collection():
     """Remove a coleção de demo (limpeza manual após a apresentação)."""
-    _state["active"] = False
+    with _state_lock:
+        _state["active"] = False
     try:
         db["transacoes_cs_demo"].drop()
     except Exception:
-        pass
+        logger.exception("Falha ao remover coleção de Change Streams")
     return {"cleared": True}

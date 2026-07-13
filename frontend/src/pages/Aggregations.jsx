@@ -63,14 +63,18 @@ db.produtos.aggregate([
 ])`,
 
   union: `// Cada lado usa sort + limit sobre um índice — sem $group caro
-// Lado 1: reviews recentes (índice data_-1)
-// Lado 2: produtos destaque (índice total_av_idx)
+// Lado 1: reviews recentes (índice recent_nota_idx)
+// Lado 2: produtos destaque (índice destaque_idx)
 db.avaliacoes.aggregate([
   { $sort: { data: -1 } },
   { $match: { nota: { $gte: 4 } } },
   { $limit: 8 },
+  { $lookup: { from: "produtos", localField: "produto_id",
+      foreignField: "produto_id", as: "produto_ref",
+      pipeline: [{ $project: { categoria: 1, _id: 0 } }] } },
   { $project: { source: "avaliacoes", tipo: "Review recente",
-      descricao: "$titulo", valor: "$nota", categoria: 1 } },
+      descricao: "$titulo", valor: "$nota",
+      categoria: { $ifNull: ["$categoria", { $arrayElemAt: ["$produto_ref.categoria", 0] }] } } },
   { $unionWith: {
       coll: "produtos",
       pipeline: [

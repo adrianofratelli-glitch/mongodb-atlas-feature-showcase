@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from database import db
 import json
 import os
@@ -109,10 +109,12 @@ def step3_activate():
 
 # ── Step 4: tenta inserir documento inválido (com schema ativo) ──────────────
 @router.post("/step4-insert-invalid")
-def step4_insert_invalid(scenario: str = "preco_negativo"):
+def step4_insert_invalid(
+    scenario: str = Query("preco_negativo", pattern=r"^(preco_negativo|categoria_invalida|campo_faltando|sku_formato_errado)$")
+):
     if not _col_exists() or not _has_validator():
-        return {"error": "Ative o schema primeiro (step3)"}
-    base = INVALID_SCENARIOS.get(scenario, INVALID_SCENARIOS["preco_negativo"])
+        raise HTTPException(status_code=409, detail="Ative o schema primeiro (step3).")
+    base = INVALID_SCENARIOS[scenario]
     doc = dict(base)  # cópia: insert_one injeta _id no dict original
     try:
         db[COL].insert_one(doc)

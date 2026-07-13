@@ -1,14 +1,19 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 
 export function useApi() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const pending = useRef(0)
 
   const call = useCallback(async (path, options = {}) => {
+    pending.current += 1
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api${path}`, options)
+      const headers = new Headers(options.headers || {})
+      const demoToken = import.meta.env.VITE_DEMO_API_TOKEN
+      if (demoToken) headers.set('X-Demo-Token', demoToken)
+      const res = await fetch(`/api${path}`, { ...options, headers })
       if (!res.ok) {
         let detail = `HTTP ${res.status}`
         try {
@@ -26,7 +31,8 @@ export function useApi() {
       window.dispatchEvent(new CustomEvent('api-error', { detail: { path, message } }))
       return null
     } finally {
-      setLoading(false)
+      pending.current = Math.max(0, pending.current - 1)
+      setLoading(pending.current > 0)
     }
   }, [])
 

@@ -2,8 +2,10 @@ from fastapi import APIRouter
 from database import db, client
 from datetime import datetime, timezone
 import uuid
+import logging
 
 router = APIRouter(prefix="/transactions", tags=["Transactions"])
+logger = logging.getLogger("showcase.transactions")
 
 DEMO_COLLECTIONS = ["pedidos_demo", "pagamentos_demo", "estoque_demo"]
 
@@ -128,14 +130,18 @@ def executar_transacao(simular_falha: bool = False):
 
         except Exception as e:
             # with_transaction já abortou a transação antes de propagar
+            expected_failure = simular_falha and "gateway de pagamento" in str(e)
+            public_error = str(e) if expected_failure else "A transação não pôde ser concluída. Consulte o log do backend."
+            if not expected_failure:
+                logger.exception("Falha na demonstração de transação")
             steps.append({
                 "step": "ROLLBACK", "ok": False,
-                "descricao": f"Erro no step 4: {e}",
+                "descricao": f"Rollback executado: {public_error}",
                 "detalhe":   "Pedido (step 2) e reserva de estoque (step 3) revertidos — banco permanece consistente",
             })
             return {
                 "success": False,
-                "error":   str(e),
+                "error":   public_error,
                 "steps":   steps,
             }
 

@@ -1,12 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { nodePolyfills } from 'vite-plugin-node-polyfills'
 
 export default defineConfig({
-  plugins: [
-    nodePolyfills({ include: ['buffer', 'process'] }),
-    react(),
-  ],
+  plugins: [react()],
   server: {
     port: 5174,
     proxy: {

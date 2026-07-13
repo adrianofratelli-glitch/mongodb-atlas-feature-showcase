@@ -93,6 +93,13 @@ Start the API:
 uvicorn main:app --reload --port 8002
 ```
 
+Before presenting, verify that MongoDB, the required collections, and the
+mutation guard are ready:
+
+```bash
+curl http://localhost:8002/preflight
+```
+
 ### 3. Frontend
 
 ```bash
@@ -102,6 +109,29 @@ npm run dev
 ```
 
 Open http://localhost:5174.
+
+Or start both processes with readiness checks:
+
+```bash
+./start.sh --foreground
+```
+
+## Security model
+
+The application contains intentionally destructive demonstrations (index and
+collection removal, schema changes, and Online Archive administration). The
+default local setup therefore:
+
+- binds the launcher to `127.0.0.1`;
+- accepts browser mutations only from the configured local origins;
+- rejects remote mutations unless `DEMO_ADMIN_TOKEN` is configured;
+- limits request bodies and validates user-controlled query parameters;
+- returns request IDs instead of exposing internal exception details.
+
+For a shared network, set a long random `DEMO_ADMIN_TOKEN` in `backend/.env`
+and the same value as `VITE_DEMO_API_TOKEN` in `frontend/.env`. This protects
+the PoV control surface but is not a replacement for production user
+authentication or a reverse proxy.
 
 ## Dataset
 
@@ -122,7 +152,9 @@ Use `--full` to reproduce the large-scale dataset.
 .
 ├── backend/
 │   ├── main.py                  # FastAPI app and CORS
-│   ├── database.py              # MongoClient singleton
+│   ├── database.py              # MongoClient, timeouts and readiness
+│   ├── security.py              # Mutation guard and defensive headers
+│   ├── settings.py              # Centralized environment configuration
 │   ├── requirements.txt
 │   ├── .env.example             # Environment template (copy to .env)
 │   └── routers/
@@ -131,7 +163,8 @@ Use `--full` to reproduce the large-scale dataset.
 │       ├── aggregations.py      # Aggregation pipeline demos
 │       ├── schema_validation.py # JSON Schema collMod demo
 │       ├── change_streams.py    # Change stream watcher
-│       └── transactions.py      # ACID multi-document transactions
+│       ├── transactions.py      # ACID multi-document transactions
+│       └── redis_vs_changestream.py
 └── frontend/
     ├── src/
     │   ├── App.jsx              # Shell, sidebar, navigation
@@ -159,6 +192,8 @@ python live_monitor.py
 - The Hot/Cold Tiering module calls the Atlas Admin API, so `ATLAS_PUBLIC_KEY`,
   `ATLAS_PRIVATE_KEY`, `ATLAS_PROJECT_ID`, and `ATLAS_CLUSTER` must be set.
 - `backend/.env` is gitignored. Never commit real credentials.
+- Run `pip install -r backend/requirements-dev.txt && pytest` for backend tests.
+- GitHub Actions builds both applications, runs tests/lint, and audits dependencies.
 
 ## License
 

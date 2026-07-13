@@ -1,11 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from database import db
 
 router = APIRouter(prefix="/aggregations", tags=["Aggregations"])
 
 
 @router.get("/lookup")
-def lookup_produtos_avaliacoes(limit: int = 5):
+def lookup_produtos_avaliacoes(limit: int = Query(5, ge=1, le=20)):
     """`$lookup` com sub-pipeline — parte de avaliacoes para garantir join sempre populado.
     O $group varre as avaliações (grupo não usa índice); quem usa índice é o
     $lookup, via produto_id_1 do lado produtos. $topN limita a memória do acumulador."""
@@ -91,10 +91,19 @@ def union_with():
     """`$unionWith` — combina reviews recentes (avaliacoes) com produtos destaque (produtos).
     Ambos os lados usam sort + limit sobre índices, sem aggregation cara."""
     pipeline = [
-        # Lado 1: reviews recentes com nota alta — usa índice data_-1 + cat_nota_idx
+        # Lado 1: reviews recentes com nota alta — usa recent_nota_idx
         {"$sort":  {"data": -1}},
         {"$match": {"nota": {"$gte": 4}}},
         {"$limit": 8},
+        # Compatível com datasets antigos, cujas avaliações não carregavam
+        # a categoria denormalizada no seed.
+        {"$lookup": {
+            "from": "produtos",
+            "localField": "produto_id",
+            "foreignField": "produto_id",
+            "as": "produto_ref",
+            "pipeline": [{"$project": {"categoria": 1, "_id": 0}}],
+        }},
         {"$project": {
             "_id":        0,
             "source":     {"$literal": "avaliacoes"},
@@ -103,9 +112,9 @@ def union_with():
             "descricao":  "$titulo",
             "valor":      "$nota",
             "usuario":    "$usuario",
-            "categoria":  "$categoria",
+            "categoria":  {"$ifNull": ["$categoria", {"$arrayElemAt": ["$produto_ref.categoria", 0]}]},
         }},
-        # Lado 2: produtos em destaque — usa total_av_idx + avaliacao_media_-1
+        # Lado 2: produtos em destaque — usa destaque_idx
         {"$unionWith": {
             "coll": "produtos",
             "pipeline": [

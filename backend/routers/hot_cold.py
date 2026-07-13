@@ -1,16 +1,19 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Path, Query
 from database import db
 from datetime import datetime, timezone
-import os, requests
+import requests
+import logging
 from requests.auth import HTTPDigestAuth
+from settings import settings
 
 router = APIRouter(prefix="/hot-cold", tags=["Hot/Cold"])
+logger = logging.getLogger("showcase.hot_cold")
 
 COLLECTION = "produtos"
-ATLAS_PUBLIC_KEY  = os.getenv("ATLAS_PUBLIC_KEY", "")
-ATLAS_PRIVATE_KEY = os.getenv("ATLAS_PRIVATE_KEY", "")
-ATLAS_PROJECT_ID  = os.getenv("ATLAS_PROJECT_ID", "")
-ATLAS_CLUSTER     = os.getenv("ATLAS_CLUSTER", "myCluster")
+ATLAS_PUBLIC_KEY  = settings.atlas_public_key
+ATLAS_PRIVATE_KEY = settings.atlas_private_key
+ATLAS_PROJECT_ID  = settings.atlas_project_id
+ATLAS_CLUSTER     = settings.atlas_cluster
 ATLAS_BASE        = "https://cloud.mongodb.com/api/atlas/v1.0"
 
 
@@ -21,7 +24,8 @@ class AtlasUnavailable(Exception):
 def _atlas_friendly_error(resp=None, exc=None) -> str:
     """Converte falhas da Atlas API em uma mensagem clara e acionável."""
     if exc is not None:
-        return f"Não foi possível alcançar a Atlas Admin API: {exc}"
+        logger.warning("Atlas Admin API indisponível: %s", type(exc).__name__)
+        return "Não foi possível alcançar a Atlas Admin API. Verifique conectividade e access list."
     try:
         body = resp.json()
     except Exception:
@@ -133,7 +137,7 @@ def archive_simulation():
 
 
 @router.get("/query-transparent")
-def query_transparent(categoria: str = "Eletrônicos"):
+def query_transparent(categoria: str = Query("Eletrônicos", min_length=2, max_length=40)):
     current_year = datetime.now(timezone.utc).year
     cutoff = datetime(current_year - 1, 1, 1, tzinfo=timezone.utc)
 
@@ -185,7 +189,7 @@ def list_online_archives():
 
 
 @router.post("/online-archive/create")
-def create_online_archive(expire_after_days: int = 365):
+def create_online_archive(expire_after_days: int = Query(365, ge=30, le=3650)):
     """
     Cria uma regra de Online Archive via Atlas API.
     Documentos com created_at > expire_after_days dias serão movidos automaticamente.
@@ -193,7 +197,7 @@ def create_online_archive(expire_after_days: int = 365):
     url = f"{ATLAS_BASE}/groups/{ATLAS_PROJECT_ID}/clusters/{ATLAS_CLUSTER}/onlineArchives"
     payload = {
         "collName": COLLECTION,
-        "dbName": "POC",
+        "dbName": settings.mongo_db,
         "criteria": {
             "type": "DATE",
             "dateField": "created_at",
@@ -224,7 +228,9 @@ def create_online_archive(expire_after_days: int = 365):
 
 
 @router.delete("/online-archive/{archive_id}")
-def delete_online_archive(archive_id: str):
+def delete_online_archive(
+    archive_id: str = Path(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+):
     url = f"{ATLAS_BASE}/groups/{ATLAS_PROJECT_ID}/clusters/{ATLAS_CLUSTER}/onlineArchives/{archive_id}"
     try:
         _atlas_request("DELETE", url)
