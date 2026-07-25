@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import random
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -152,9 +153,19 @@ def _new_transacao() -> dict[str, Any]:
 
 
 class Generator:
-    """Task asyncio que insere em micro-batches; o TPS exibido é o MEDIDO."""
+    """
+    Task asyncio que insere em micro-batches a cada 100 ms; o TPS exibido é o
+    MEDIDO (janela deslizante de 5 s), nunca o pedido.
+
+    O insert_many roda numa thread e NÃO é aguardado dentro do tick: um
+    round-trip ao Atlas custa mais que os 100 ms do tick, então esperar por ele
+    derrubaria o TPS efetivo. Os batches em voo são limitados por MAX_INFLIGHT —
+    ao atingir o teto, os documentos voltam para o carry (backpressure) em vez
+    de acumular tasks indefinidamente.
+    """
 
     TICK_S = 0.1
+    MAX_INFLIGHT = 16
 
     def __init__(self) -> None:
         self.task: asyncio.Task | None = None
@@ -162,20 +173,28 @@ class Generator:
         self.inserted = 0
         self.started_at: datetime | None = None
         self._recent: list[tuple[float, int]] = []   # (monotonic, docs) p/ TPS medido
+        self._lock = threading.Lock()                # _recent/_inserted são tocados pelas threads de insert
 
     @property
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
+    def _record(self, docs: int) -> None:
+        with self._lock:
+            self.inserted += docs
+            self._recent.append((time.monotonic(), docs))
+
     def measured_tps(self) -> float:
         cutoff = time.monotonic() - 5.0
-        self._recent = [(t, n) for t, n in self._recent if t >= cutoff]
-        if len(self._recent) < 2:
+        with self._lock:
+            self._recent = [(t, n) for t, n in self._recent if t >= cutoff]
+            recent = list(self._recent)
+        if len(recent) < 2:
             return 0.0
-        span = self._recent[-1][0] - self._recent[0][0]
+        span = recent[-1][0] - recent[0][0]
         if span <= 0:
             return 0.0
-        return round(sum(n for _, n in self._recent[1:]) / span, 1)
+        return round(sum(n for _, n in recent[1:]) / span, 1)
 
     async def start(self, tps: int) -> None:
         await asyncio.to_thread(_ensure_indexes)
@@ -197,24 +216,37 @@ class Generator:
         self.tps_alvo = 0
 
     def reset_counters(self) -> None:
-        self.inserted = 0
-        self._recent = [(time.monotonic(), 0)]
+        with self._lock:
+            self.inserted = 0
+            self._recent = [(time.monotonic(), 0)]
+
+    def _insert_batch(self, docs: list[dict[str, Any]]) -> None:
+        """Roda na thread: insere e contabiliza no mesmo passo, para que um
+        cancelamento do gerador nunca perca a contagem de um batch já gravado."""
+        sdb[COL_TX].insert_many(docs, ordered=False)
+        self._record(len(docs))
+
+    async def _batch(self, docs: list[dict[str, Any]]) -> None:
+        try:
+            await asyncio.to_thread(self._insert_batch, docs)
+        except PyMongoError:
+            logger.exception("Falha ao inserir micro-batch do gerador")
 
     async def _run(self) -> None:
         carry = 0.0
+        inflight: set[asyncio.Task] = set()
         next_tick = time.monotonic()
         while True:
             carry += self.tps_alvo * self.TICK_S
             batch_size = int(carry)
             carry -= batch_size
             if batch_size > 0:
-                docs = [_new_transacao() for _ in range(batch_size)]
-                try:
-                    await asyncio.to_thread(sdb[COL_TX].insert_many, docs, ordered=False)
-                    self.inserted += batch_size
-                    self._recent.append((time.monotonic(), batch_size))
-                except PyMongoError:
-                    logger.exception("Falha ao inserir micro-batch do gerador")
+                if len(inflight) >= self.MAX_INFLIGHT:
+                    carry += batch_size          # Atlas não acompanha: devolve ao próximo tick
+                else:
+                    task = asyncio.create_task(self._batch([_new_transacao() for _ in range(batch_size)]))
+                    inflight.add(task)
+                    task.add_done_callback(inflight.discard)
             next_tick += self.TICK_S
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -304,8 +336,6 @@ class ChangeStreamWorker:
     def ensure_started(self, loop: asyncio.AbstractEventLoop) -> None:
         if self.active:
             return
-        import threading
-
         self._loop = loop
         self.active = True
         self.thread = threading.Thread(target=self._run, daemon=True, name="streaming-cs")
@@ -644,8 +674,6 @@ class AspWatcher:
     def ensure_started(self, loop: asyncio.AbstractEventLoop) -> None:
         if self.active:
             return
-        import threading
-
         self._loop = loop
         self.active = True
         for col, kind in ((COL_WINDOWS, "janela"), (COL_DLQ, "dlq")):
