@@ -82,6 +82,8 @@ export default function App() {
   })
   const [stats, setStats] = useState(null)
   const [preflight, setPreflight] = useState(null)
+  // O cluster tem auto-scaling: anunciar um tier fixo faria a tela mentir.
+  const [cluster, setCluster] = useState(null)
   // Barra recolhida por padrão: expande no hover ou quando fixada no alfinete.
   const [sidebarHover, setSidebarHover] = useState(false)
   const [sidebarFixa, setSidebarFixa] = useState(false)
@@ -105,6 +107,11 @@ export default function App() {
   useEffect(() => {
     fetch('/api/stats').then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d) }).catch(() => {})
     fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
+    const lerCluster = () => fetch('/api/streaming/cluster').then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setCluster(d) }).catch(() => {})
+    lerCluster()
+    const t = setInterval(lerCluster, 30000)
+    return () => clearInterval(t)
   }, [])
 
   const mod = MODULES.find(m => m.key === active)
@@ -136,7 +143,12 @@ export default function App() {
 
         {/* Right side */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span className="badge badge-green">Atlas M30</span>
+          <span className={`badge ${cluster?.aquecido === false ? 'badge-yellow' : 'badge-green'}`}
+            title={cluster?.autoscaling?.ativo
+              ? `Auto-scaling ${cluster.autoscaling.min}→${cluster.autoscaling.max}`
+              : 'Tier do cluster'}>
+            Atlas {cluster?.tier || '…'}{cluster?.aquecido === false ? ' ↑' : ''}
+          </span>
           <span className={`badge ${preflight?.ready ? 'badge-green' : 'badge-yellow'}`}
             title={preflight?.ready ? 'Pré-voo concluído' : 'Verifique o diagnóstico no menu lateral'}>
             {preflight?.ready ? '● Pronto' : '● Verificar'}
@@ -205,7 +217,7 @@ export default function App() {
             <div style={{ fontSize: 12.5, display: 'flex', flexDirection: 'column', gap: 5, color: 'var(--text-primary)' }}>
               <div>📦 <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.produtos)}</strong> produtos</div>
               <div>⭐ <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.avaliacoes)}</strong> avaliações</div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas M30</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas {cluster?.tier || '…'}</div>
             </div>
           </div>
 

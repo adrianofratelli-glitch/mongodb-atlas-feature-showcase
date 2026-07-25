@@ -460,6 +460,66 @@ async def generator_status():
     }
 
 
+_cluster_cache: dict[str, Any] = {"ts": 0.0, "dados": None}
+
+
+def _cluster_info_sync() -> dict[str, Any]:
+    """
+    Tier REAL do cluster, lido da Admin API (cache de 60 s).
+
+    O cluster desta PoV tem auto-scaling M20↔M30 com scale-down: parado, ele
+    volta sozinho para M20. Exibir um tier fixo do .env faria a tela anunciar
+    M30 rodando em M20 — e a demo pode começar no tier menor e escalar no meio.
+    """
+    agora = time.monotonic()
+    if _cluster_cache["dados"] and agora - _cluster_cache["ts"] < 60:
+        return _cluster_cache["dados"]
+
+    if not settings.atlas_configured:
+        return {"tier": CLUSTER_TIER, "fonte": "env", "autoscaling": None, "aquecido": None}
+
+    import requests
+    from requests.auth import HTTPDigestAuth
+
+    try:
+        resp = requests.get(
+            f"https://cloud.mongodb.com/api/atlas/v2/groups/{settings.atlas_project_id}"
+            f"/clusters/{settings.atlas_cluster}",
+            auth=HTTPDigestAuth(settings.atlas_public_key, settings.atlas_private_key),
+            headers={"Accept": "application/vnd.atlas.2024-08-05+json"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        corpo = resp.json()
+        rc = corpo["replicationSpecs"][0]["regionConfigs"][0]
+        tier = rc["electableSpecs"]["instanceSize"]
+        auto = (rc.get("autoScaling") or {}).get("compute") or {}
+        maximo = auto.get("maxInstanceSize")
+        dados = {
+            "tier": tier,
+            "fonte": "atlas",
+            "estado": corpo.get("stateName"),
+            "autoscaling": {
+                "ativo": bool(auto.get("enabled")),
+                "min": auto.get("minInstanceSize"),
+                "max": maximo,
+            } if auto else None,
+            # "aquecido" = já está no maior tier que o auto-scaling permite.
+            "aquecido": (tier == maximo) if (auto.get("enabled") and maximo) else True,
+        }
+    except Exception as exc:  # noqa: BLE001 - Admin API é opcional
+        dados = {"tier": CLUSTER_TIER, "fonte": f"env ({type(exc).__name__})",
+                 "autoscaling": None, "aquecido": None}
+
+    _cluster_cache.update(ts=agora, dados=dados)
+    return dados
+
+
+@router.get("/cluster")
+async def cluster():
+    return await asyncio.to_thread(_cluster_info_sync)
+
+
 def _medir_rtt(amostras: int = 5) -> dict[str, Any]:
     """
     RTT app ↔ cluster, medido com ping no admin.
@@ -513,6 +573,17 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
         }
     except PyMongoError as exc:
         checks["streaming_colecao"] = {"ok": False, "message": f"inacessível: {type(exc).__name__}"}
+
+    info = _cluster_info_sync()
+    auto = info.get("autoscaling") or {}
+    if auto.get("ativo") and info.get("aquecido") is False:
+        checks["cluster_tier"] = {
+            "ok": False,
+            "message": f"cluster em {info['tier']} (auto-scaling {auto.get('min')}→{auto.get('max')}); "
+                       "rode carga por alguns minutos para subir antes da demo",
+        }
+    else:
+        checks["cluster_tier"] = {"ok": True, "message": f"cluster em {info['tier']}"}
 
     ok_asp, detalhe_asp, tier = _asp_reachable()
     atraso = _asp_atraso_s() if ok_asp else None
@@ -631,7 +702,7 @@ async def cenario():
                         f"no menor tier (SP10): Change Streams e ASP acompanham"},
         ],
         "ambiente": {
-            "cluster": CLUSTER_TIER,
+            "cluster": (await asyncio.to_thread(_cluster_info_sync))["tier"],
             # tier do ASP não vem daqui: /streaming/asp/status lê o real da SPI.
             "particoes_consumo": CS_PARTICOES,
             "teto_medido_tps": TETO_MEDIDO_TPS,
