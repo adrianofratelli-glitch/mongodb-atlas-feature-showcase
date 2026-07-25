@@ -5,7 +5,7 @@ import Aggregations from './pages/Aggregations'
 import SchemaValidation from './pages/SchemaValidation'
 import ChangeStreams from './pages/ChangeStreams'
 import Transactions from './pages/Transactions'
-import RedisVsChangeStreams from './pages/RedisVsChangeStreams'
+import Streaming from './pages/Streaming'
 
 const MODULES = [
   { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Sem downtime, sem lock na coleção',              color: '#00ED64', component: Reindexacao },
@@ -14,7 +14,7 @@ const MODULES = [
   { key: 'schema',  num: '04', title: 'Schema Validation',    subtitle: 'JSON Schema enforcement no banco',               color: '#f97316', component: SchemaValidation },
   { key: 'streams', num: '05', title: 'Change Streams',       subtitle: 'Eventos em tempo real — insert, update, delete', color: '#14b8a6', component: ChangeStreams },
   { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#eab308', component: Transactions },
-  { key: 'rvc',     num: '07', title: 'Redis vs Change Streams', subtitle: 'Request-reply device-facing: dual-write × single source of truth', color: '#e11d48', component: RedisVsChangeStreams },
+  { key: 'streaming', num: '07', title: 'Streaming',            subtitle: 'Change Streams × Kafka Connector × Atlas Stream Processing', color: '#e11d48', component: Streaming },
 ]
 
 // MongoDB leaf logo SVG (official mark)

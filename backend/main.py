@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from database import db, readiness
-from routers import aggregations, change_streams, hot_cold, redis_vs_changestream, reindexacao, schema_validation, transactions
+from routers import aggregations, change_streams, hot_cold, reindexacao, schema_validation, streaming, transactions
 from security import ApiHardeningMiddleware, MutationGuardMiddleware
 from settings import settings
 
@@ -61,7 +61,7 @@ app.include_router(aggregations.router)
 app.include_router(schema_validation.router)
 app.include_router(change_streams.router)
 app.include_router(transactions.router)
-app.include_router(redis_vs_changestream.router)
+app.include_router(streaming.router)
 
 
 @app.get("/")
