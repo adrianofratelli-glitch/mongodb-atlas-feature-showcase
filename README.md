@@ -147,10 +147,11 @@ only and cached locally, so later runs work offline. The native path uses
 `localhost:9092`; the Docker path uses `localhost:19092` — set `KAFKA_BROKERS`
 in `backend/.env` accordingly.
 
-**2. Register the source connector** (reads `MONGO_URI` from `backend/.env`):
+**2. Register the source connectors** (reads `MONGO_URI` from `backend/.env`):
 
 ```bash
-./scripts/setup-kafka-connector.sh
+./scripts/setup-kafka-connector.sh      # 2 partitioned connectors (default)
+./scripts/setup-kafka-connector.sh 1    # single connector, saturates at ~6,300 msg/s
 ```
 
 It PUTs a `MongoSourceConnector` config on the Connect REST API
@@ -209,8 +210,12 @@ measured and what is assumed:
   On the provisioned environment (**M30 cluster + SP10 stream processing +
   10 consumer partitions**) the measured ceiling is **9,500 TPS**: Change
   Streams at 9,507 events/s (p50 458 ms) and the ASP processor aggregating
-  9,483 tx/s. The Kafka connector saturates earlier, around 7,000 msg/s,
-  because it runs **one task per collection**.
+  9,483 tx/s. Kafka keeps up too, but only once partitioned: a single source
+  connector runs **one task per collection** and saturates at ~6,300 msg/s, so
+  `setup-kafka-connector.sh` registers two connectors, each filtering a subset
+  of `particao` into the same topic. Two is the sweet spot — every extra
+  connector is another oplog reader competing with the ASP processor
+  (4 connectors: Kafka 9,565 msg/s but ASP down to 7,113 tx/s).
 
   SP10 has a cliff between 9,500 and 10,000: past saturation, throughput does
   not plateau — it *drops*, to ~7,500 tx/s (reproduced twice). SP10 is a

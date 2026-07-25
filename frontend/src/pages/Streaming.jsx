@@ -49,7 +49,11 @@ function useSse(path, onMessage, enabled = true) {
 }
 
 const push = (list, item) => [item, ...list].slice(0, MAX_FEED)
-const fmtMs = (v) => (v == null ? '—' : `${v} ms`)
+// Acima de 10 s, milissegundos com 5 dígitos obrigam a plateia a fazer conta.
+const fmtMs = (v) => {
+  if (v == null) return '—'
+  return v >= 10000 ? `${(v / 1000).toFixed(1).replace('.', ',')} s` : `${Math.round(v)} ms`
+}
 const num = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR'))
 const fmtBRL = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 
@@ -80,7 +84,7 @@ function Percentis({ m, color }) {
       {[['p50', m?.p50], ['p95', m?.p95], ['p99', m?.p99]].map(([k, v]) => (
         <div key={k} className="str-pct">
           <span className="str-pct-k">{k}</span>
-          <span className="str-pct-v" style={v != null ? { color } : undefined}>{v == null ? '—' : `${v}ms`}</span>
+          <span className="str-pct-v" style={v != null ? { color } : undefined}>{fmtMs(v)}</span>
         </div>
       ))}
       <div className="str-pct">
@@ -480,6 +484,10 @@ export default function Streaming() {
                   <span className="str-token-l">tópico</span>
                   <code>{kafkaStatus?.topico}</code>
                 </div>
+                <div className="str-token">
+                  <span className="str-token-l">connectors</span>
+                  <code>{kafkaStatus?.connector?.connectors ?? '—'} × 1 task · {kafkaStatus?.particoes_consumo ?? '—'} partições</code>
+                </div>
                 <div className="str-feed">
                   {kafkaMsgs.length === 0 && <div className="str-empty">Connector RUNNING. Aguardando mensagens no tópico…</div>}
                   {kafkaMsgs.map((m, i) => (
@@ -534,7 +542,15 @@ export default function Streaming() {
                   <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
                   <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="rejeitados" />
                 </div>
-                <Percentis m={aspMetrics} color="#a855f7" />
+                {aspStatus?.drenando_backlog ? (
+                  <div className="str-alert">
+                    ⏳ Processor <strong>drenando backlog</strong> — a última janela fechada tem
+                    {' '}{Math.round(aspStatus.atraso_s)}s de atraso. Os percentis abaixo medem a fila, não o regime.
+                    Aperte <strong>Reset</strong> para começar limpo.
+                  </div>
+                ) : (
+                  <Percentis m={aspMetrics} color="#a855f7" />
+                )}
                 <Sparkline values={janelas.slice(0, 24).map(j => j.qtd || 0).reverse()} />
                 <button className="btn btn-default btn-sm" style={{ width: '100%' }} onClick={injectInvalid}>
                   🧪 Injetar documento inválido
@@ -587,7 +603,11 @@ export default function Streaming() {
             <div className="str-neg-c">
               <div className="str-neg-k">Custo por milhão de transações</div>
               <div className="str-neg-v">{negocio.custo_por_milhao_usd != null ? `US$ ${fmtBRL(negocio.custo_por_milhao_usd)}` : '—'}</div>
-              <div className="str-neg-s">no ritmo atual, preço de lista do ambiente</div>
+              <div className="str-neg-s">
+                no ritmo atual · {negocio.custo_inclui_asp
+                  ? 'cluster + stream processing'
+                  : 'só cluster — informe CUSTO_ASP_USD_HORA para incluir o ASP'}
+              </div>
             </div>
             <div className="str-neg-c">
               <div className="str-neg-k">Janela de reação</div>
@@ -609,7 +629,11 @@ export default function Streaming() {
               <div className="str-neg-v" style={{ color: negocio.reconciliacoes_evitadas ? '#00ED64' : undefined }}>
                 {num(negocio.reconciliacoes_evitadas)}
               </div>
-              <div className="str-neg-s">eventos recuperados na queda — sem resume token, viram trabalho manual</div>
+              <div className="str-neg-s">
+                {negocio.reconciliacoes_evitadas
+                  ? 'eventos recuperados na queda — sem resume token, viram conferência manual'
+                  : `no ritmo atual, uma queda de 3 s deixaria ${num(negocio.reconciliacoes_potenciais_3s)} eventos para reconciliar à mão`}
+              </div>
             </div>
             <div className="str-neg-c">
               <div className="str-neg-k">Sistemas para operar</div>

@@ -88,7 +88,7 @@ db.avaliacoes.aggregate([
 ])`,
 
   group: `// $match em_estoque: true usa índice em_estoque_1
-// reduz working set antes do $group em 5M docs
+// reduz working set antes do $group sobre a coleção inteira
 db.produtos.aggregate([
   { $match: { em_estoque: true } },
   { $group: {
@@ -171,7 +171,7 @@ const DESCRIPTIONS = {
   window: {
     title: '$setWindowFields — Window Functions',
     what: 'Calcula rank dentro de partições, somas acumuladas e médias móveis — o equivalente ao OVER (PARTITION BY) do SQL — sem agrupar nem remover linhas do resultado.',
-    why: 'Working set de 100 docs criado com match + sort + limit via índice ANTES das janelas. As janelas rodam sobre um conjunto mínimo, não sobre os 5M documentos completos.',
+    why: 'Working set de 100 docs criado com match + sort + limit via índice ANTES das janelas. As janelas rodam sobre um conjunto mínimo, não sobre a coleção inteira.',
     index: 'cat_total_av_idx (categoria + total_avaliacoes) → limit 100 docs',
   },
   bucket: {

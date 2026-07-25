@@ -96,7 +96,7 @@ all so every partition recovers from its own token.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/streaming/kafka` | **SSE** of messages consumed from `atlas.pix.transacoes`, with partition, offset and the Atlas-insert → topic-arrival `latency_ms`. `aiokafka` is imported lazily: without the dependency or the broker, the stream emits `{"type": "status", "estado": "nao_configurado"}` and the UI renders the setup instructions. |
-| `GET` | `/streaming/kafka/status` | Connector state from the Kafka Connect REST API, **downgraded by task health**: a connector reporting `RUNNING` with every task `FAILED` is reported as `FAILED` (`DEGRADADO` when only some failed), because the task is what moves data. Plus message count and current offset. |
+| `GET` | `/streaming/kafka/status` | Aggregated state of every `atlas-pix-source*` connector, **downgraded by task health**: a connector reporting `RUNNING` with every task `FAILED` is reported as `FAILED` (`DEGRADADO` when only some failed), because the task is what moves data. Plus message count and current offset. |
 | `POST` | `/streaming/kafka/restart` | Restarts connector and tasks. A task killed by a network blip or a cluster restart never recovers on its own while the connector keeps claiming `RUNNING`. |
 
 **Column 3 — Atlas Stream Processing**

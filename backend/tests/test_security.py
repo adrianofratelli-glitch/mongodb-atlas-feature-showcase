@@ -55,15 +55,48 @@ def test_lookup_limit_is_bounded_before_database_access():
     assert response.status_code == 422
 
 
-def test_preflight_reports_required_collections(monkeypatch):
-    class FakeDatabase:
-        @staticmethod
-        def list_collection_names():
-            return ["produtos", "avaliacoes"]
+class FakeDatabase:
+    @staticmethod
+    def list_collection_names():
+        return ["produtos", "avaliacoes"]
 
+
+def test_preflight_reports_required_collections(monkeypatch):
     monkeypatch.setattr(main, "readiness", lambda: (True, "MongoDB conectado"))
     monkeypatch.setattr(main, "db", FakeDatabase())
+    # As checagens do módulo Streaming falam com Atlas/Kafka de verdade; aqui o
+    # foco é o reporte das coleções da POC.
+    monkeypatch.setattr(main.streaming, "preflight_checks", dict)
     response = client.get("/preflight")
     assert response.status_code == 200
     assert response.json()["ready"] is True
     assert response.json()["checks"]["collection_produtos"]["ok"] is True
+
+
+def test_preflight_reprova_quando_o_streaming_precisa_de_acao(monkeypatch):
+    """A coleção cheia antes da demo tem que reprovar o pré-voo, não passar batido."""
+    monkeypatch.setattr(main, "readiness", lambda: (True, "MongoDB conectado"))
+    monkeypatch.setattr(main, "db", FakeDatabase())
+    monkeypatch.setattr(
+        main.streaming, "preflight_checks",
+        lambda: {"streaming_colecao": {"ok": False, "message": "5000000 documentos — rode o Reset"}},
+    )
+    response = client.get("/preflight")
+    assert response.status_code == 503
+    assert response.json()["ready"] is False
+
+
+def test_preflight_nao_reprova_por_kafka_ou_asp_ausentes(monkeypatch):
+    """Kafka e ASP são opcionais: aparecem no diagnóstico, mas não travam o pré-voo."""
+    monkeypatch.setattr(main, "readiness", lambda: (True, "MongoDB conectado"))
+    monkeypatch.setattr(main, "db", FakeDatabase())
+    monkeypatch.setattr(
+        main.streaming, "preflight_checks",
+        lambda: {
+            "streaming_kafka": {"ok": False, "message": "Connect indisponível"},
+            "streaming_asp": {"ok": False, "message": "ASP_ENABLED=false"},
+        },
+    )
+    response = client.get("/preflight")
+    assert response.status_code == 200
+    assert response.json()["ready"] is True

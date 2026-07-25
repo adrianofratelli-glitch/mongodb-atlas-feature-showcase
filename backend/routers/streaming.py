@@ -58,7 +58,11 @@ CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
 # Preço de lista do ambiente, US$/hora. Premissa editável: entra na conta de
 # custo por milhão de transações, que é o número que um gestor leva para a
 # reunião de orçamento.
-CUSTO_AMBIENTE_USD_HORA = float(os.getenv("CUSTO_AMBIENTE_USD_HORA", "0.54"))
+CUSTO_CLUSTER_USD_HORA = float(os.getenv("CUSTO_CLUSTER_USD_HORA", "0.54"))
+# Custo/hora do tier do Stream Processing em uso. Sem um valor confirmado o
+# custo por milhão sairia otimista — a UI avisa quando isto está zerado.
+CUSTO_ASP_USD_HORA = float(os.getenv("CUSTO_ASP_USD_HORA", "0"))
+CUSTO_AMBIENTE_USD_HORA = CUSTO_CLUSTER_USD_HORA + CUSTO_ASP_USD_HORA
 # Sistemas a operar para o mesmo resultado, com e sem change stream nativo.
 SISTEMAS_COM_MONGO = 1
 SISTEMAS_SEM_MONGO = 3
@@ -481,6 +485,55 @@ async def rede():
     return await asyncio.to_thread(_medir_rtt)
 
 
+def preflight_checks() -> dict[str, dict[str, Any]]:
+    """
+    Checagens do módulo Streaming para o /preflight global.
+
+    Sem isto, o comando que o apresentador roda para dizer "estou pronto"
+    respondia ok sem olhar para nada do módulo 07 — processor parado, connector
+    com task morta e índice TTL divergente passavam batido.
+    """
+    checks: dict[str, dict[str, Any]] = {}
+
+    try:
+        indices = {i["name"]: i for i in sdb[COL_TX].list_indexes()}
+        ttl = next((i for i in indices.values() if dict(i.get("key", {})) == {"ts": 1}), None)
+        checks["streaming_indices"] = {
+            "ok": bool(ttl) and "endToEndId_unique" in indices,
+            "message": (
+                f"TTL {ttl.get('expireAfterSeconds')}s + índice único"
+                if ttl and "endToEndId_unique" in indices
+                else "faltando; sobem no primeiro start do gerador"
+            ),
+        }
+        docs = sdb[COL_TX].estimated_document_count()
+        checks["streaming_colecao"] = {
+            "ok": docs < DROP_ACIMA_DE,
+            "message": f"{docs} documentos" + ("" if docs < DROP_ACIMA_DE else " — rode o Reset antes da demo"),
+        }
+    except PyMongoError as exc:
+        checks["streaming_colecao"] = {"ok": False, "message": f"inacessível: {type(exc).__name__}"}
+
+    ok_asp, detalhe_asp, tier = _asp_reachable()
+    atraso = _asp_atraso_s() if ok_asp else None
+    if atraso is not None and atraso > ASP_ATRASO_ALERTA_S:
+        ok_asp, detalhe_asp = False, f"processor {tier} drenando backlog ({atraso:.0f}s) — rode o Reset"
+    if tier and tier not in detalhe_asp:
+        detalhe_asp = f"{detalhe_asp} ({tier})"
+    checks["streaming_asp"] = {"ok": ok_asp, "message": detalhe_asp}
+
+    try:
+        connector = _connector_status_sync()
+        checks["streaming_kafka"] = {
+            "ok": connector["estado"] == "RUNNING",
+            "message": f"{connector['estado']} — {connector['detalhe']}",
+        }
+    except Exception as exc:  # noqa: BLE001 - Kafka é opcional
+        checks["streaming_kafka"] = {"ok": False, "message": f"Connect indisponível ({type(exc).__name__})"}
+
+    return checks
+
+
 @router.get("/negocio")
 async def negocio():
     """
@@ -512,8 +565,16 @@ async def negocio():
         if (reais_por_segundo and latencia_ms) else None
     )
 
+    # Potencial: uma queda de 3 s no ritmo atual. Sem resume token, cada evento
+    # dessa janela vira conferência manual.
+    potencial_queda_3s = int(cs.get("eventos_s") or 0) * 3
+
     return {
         "custo_por_milhao_usd": custo_por_milhao,
+        "custo_inclui_asp": CUSTO_ASP_USD_HORA > 0,
+        "custo_cluster_usd_hora": CUSTO_CLUSTER_USD_HORA,
+        "custo_asp_usd_hora": CUSTO_ASP_USD_HORA,
+        "reconciliacoes_potenciais_3s": potencial_queda_3s,
         "latencia_reacao_ms": latencia_ms,
         "reais_por_segundo": reais_por_segundo,
         "valor_em_transito_brl": valor_em_transito,
@@ -523,7 +584,7 @@ async def negocio():
         "ticket_medio": ticket_medio,
         "transacoes_agregadas": agregadas,
         "premissas": {
-            "custo_ambiente_usd_hora": CUSTO_AMBIENTE_USD_HORA,
+            "custo_ambiente_usd_hora": round(CUSTO_AMBIENTE_USD_HORA, 4),
             "nota": "TPS, latência e contagem são MEDIDOS nesta sessão. O custo usa o preço "
                     "de lista por hora do ambiente. O ticket médio é real no sentido de que o "
                     "processor o calculou sobre as transações que passaram — mas os valores "
@@ -674,6 +735,7 @@ async def reset():
     deleted: dict[str, Any] = {}
     restantes = 0
     asp_reiniciado = False
+    kafka_reiniciado = False
 
     grande = await asyncio.to_thread(sdb[COL_TX].estimated_document_count)
     if grande > DROP_ACIMA_DE:
@@ -688,15 +750,28 @@ async def reset():
         removed, left = await asyncio.to_thread(_purge, col)
         deleted[col] = removed
         restantes += left
+    # Religa os connectors SEMPRE: um drop anterior invalida o change stream
+    # deles e as tasks não se recuperam sozinhas — sem isto a coluna 2 fica
+    # vermelha depois do Reset. É idempotente e barato.
+    try:
+        kafka_reiniciado = (await asyncio.to_thread(_connector_restart_sync)).get("reiniciado", False)
+    except Exception:  # noqa: BLE001 - Kafka é opcional na demo
+        kafka_reiniciado = False
+
     generator.reset_counters()
     cs_worker.reset_counters()
     kafka_consumer.reset_counters()
+    # O medidor do ASP também: sem isto a coluna 3 seguia exibindo percentis de
+    # rodadas anteriores (35 s, 100 s) depois de um Reset, enquanto as outras
+    # duas colunas já tinham zerado.
+    meter_asp.reset()
     for hub in (hub_cs, hub_kafka, hub_asp):
         hub.publish({"type": "reset"})
     # `restantes` só é > 0 se o orçamento de tempo acabou antes de esvaziar tudo;
     # a UI mostra o número em vez de fingir que a limpeza terminou.
     return {"reset": True, "removidos": deleted, "restantes": restantes,
-            "via_drop": grande > DROP_ACIMA_DE, "asp_reiniciado": asp_reiniciado}
+            "via_drop": grande > DROP_ACIMA_DE, "asp_reiniciado": asp_reiniciado,
+            "kafka_reiniciado": kafka_reiniciado}
 
 
 # ---------------------------------------------------------------------------
@@ -1084,41 +1159,80 @@ class KafkaConsumer:
 kafka_consumer = KafkaConsumer()
 
 
-def _connector_status_sync() -> dict[str, Any]:
-    import requests
-
-    url = f"{CONNECT_URL.rstrip('/')}/connectors/{CONNECTOR_NAME}/status"
-    resp = requests.get(url, timeout=2)
-    if resp.status_code == 404:
-        return {"estado": "nao_configurado", "detalhe": f"connector {CONNECTOR_NAME} não existe em {CONNECT_URL}"}
+def _connectores_do_showcase(sessao) -> list[str]:
+    """Nomes dos connectors desta PoV: o único, ou os particionados -0, -1, ..."""
+    resp = sessao.get(f"{CONNECT_URL.rstrip('/')}/connectors", timeout=3)
     resp.raise_for_status()
-    body = resp.json()
-    tasks = body.get("tasks", [])
-    estado_connector = body.get("connector", {}).get("state", "DESCONHECIDO")
+    return sorted(
+        n for n in resp.json()
+        if n == CONNECTOR_NAME or n.startswith(f"{CONNECTOR_NAME}-")
+    )
 
-    # O connector pode reportar RUNNING com TODAS as tasks mortas — e é a task
-    # que move dado. Sem isso a UI pinta de verde um pipeline parado, que é
-    # exatamente o tipo de mentira que esta PoV não pode contar.
+
+def classifica_connectors(
+    quantos: int, estados_connector: list[str], tasks: list[dict[str, Any]]
+) -> tuple[str, str]:
+    """
+    Veredito único a partir do estado dos connectors e da saúde das tasks.
+
+    É a TASK que move dado: um connector RUNNING com todas as tasks FAILED
+    precisa ser reportado como FAILED, senão a coluna fica verde com o pipeline
+    parado. Função pura, para poder ser testada sem Kafka.
+    """
     falhas = [t for t in tasks if t.get("state") == "FAILED"]
     rodando = [t for t in tasks if t.get("state") == "RUNNING"]
-    if falhas and not rodando:
-        estado = "FAILED"
-        detalhe = f"connector {estado_connector}, mas {len(falhas)} task(s) FAILED — use Reiniciar"
-    elif falhas:
-        estado = "DEGRADADO"
-        detalhe = f"{len(rodando)} task(s) OK, {len(falhas)} FAILED"
-    elif not tasks:
-        estado = "SEM_TASK"
-        detalhe = f"connector {estado_connector} sem task ativa"
-    else:
-        estado = estado_connector
-        detalhe = f"{len(tasks)} task(s); {CONNECT_URL}"
+    sufixo = f"{quantos} connector(s), {len(tasks)} task(s)"
 
-    return {
-        "estado": estado,
-        "detalhe": detalhe,
-        "tasks": [{"id": t.get("id"), "state": t.get("state"), "trace": (t.get("trace") or "")[:200]} for t in tasks],
-    }
+    if falhas and not rodando:
+        return "FAILED", f"{sufixo} — todas FAILED, use Reiniciar"
+    if falhas:
+        return "DEGRADADO", f"{sufixo} — {len(falhas)} FAILED, use Reiniciar"
+    if not tasks:
+        return "SEM_TASK", f"{sufixo} — nenhuma task ativa"
+    if any(e != "RUNNING" for e in estados_connector):
+        return "DEGRADADO", f"{sufixo} — connector em {', '.join(sorted(set(estados_connector)))}"
+    return "RUNNING", f"{sufixo}; {CONNECT_URL}"
+
+
+def _connector_status_sync() -> dict[str, Any]:
+    """
+    Estado agregado dos connectors da PoV.
+
+    Com o consumo particionado existe mais de um connector publicando no mesmo
+    tópico; a coluna precisa de UM veredito. E o estado é rebaixado pela saúde
+    das TASKS: um connector RUNNING com todas as tasks FAILED pintava a coluna
+    de verde com o pipeline parado.
+    """
+    import requests
+
+    with requests.Session() as sessao:
+        nomes = _connectores_do_showcase(sessao)
+        if not nomes:
+            return {
+                "estado": "nao_configurado",
+                "detalhe": f"nenhum connector '{CONNECTOR_NAME}*' em {CONNECT_URL}",
+                "tasks": [],
+                "connectors": 0,
+            }
+
+        tasks: list[dict[str, Any]] = []
+        estados_connector: list[str] = []
+        for nome in nomes:
+            resp = sessao.get(f"{CONNECT_URL.rstrip('/')}/connectors/{nome}/status", timeout=3)
+            if resp.status_code == 404:
+                continue
+            resp.raise_for_status()
+            body = resp.json()
+            estados_connector.append(body.get("connector", {}).get("state", "DESCONHECIDO"))
+            for t in body.get("tasks", []):
+                tasks.append({
+                    "id": f"{nome}#{t.get('id')}",
+                    "state": t.get("state"),
+                    "trace": (t.get("trace") or "")[:200],
+                })
+
+    estado, detalhe = classifica_connectors(len(nomes), estados_connector, tasks)
+    return {"estado": estado, "detalhe": detalhe, "tasks": tasks, "connectors": len(nomes)}
 
 
 def _connector_restart_sync() -> dict[str, Any]:
@@ -1126,11 +1240,19 @@ def _connector_restart_sync() -> dict[str, Any]:
     cluster) não se recupera sozinha — e o connector segue dizendo RUNNING."""
     import requests
 
-    base = f"{CONNECT_URL.rstrip('/')}/connectors/{CONNECTOR_NAME}"
-    resp = requests.post(f"{base}/restart?includeTasks=true&onlyFailed=false", timeout=10)
-    if resp.status_code >= 400:
-        return {"reiniciado": False, "detalhe": f"HTTP {resp.status_code}"}
-    return {"reiniciado": True, "detalhe": "connector e tasks reiniciados"}
+    with requests.Session() as sessao:
+        nomes = _connectores_do_showcase(sessao)
+        reiniciados = 0
+        for nome in nomes:
+            resp = sessao.post(
+                f"{CONNECT_URL.rstrip('/')}/connectors/{nome}/restart?includeTasks=true&onlyFailed=false",
+                timeout=10,
+            )
+            if resp.status_code < 400:
+                reiniciados += 1
+    if not reiniciados:
+        return {"reiniciado": False, "detalhe": "nenhum connector reiniciado"}
+    return {"reiniciado": True, "detalhe": f"{reiniciados} connector(s) e suas tasks reiniciados"}
 
 
 @router.get("/kafka/status")
@@ -1146,6 +1268,7 @@ async def kafka_status():
         }
     return {
         "connector": {"nome": CONNECTOR_NAME, **connector},
+        "particoes_consumo": CS_PARTICOES,
         "consumidor": {
             "estado": kafka_consumer.estado,
             "detalhe": kafka_consumer.detalhe,
@@ -1245,6 +1368,26 @@ def _asp_reachable() -> tuple[bool, str, str | None]:
         return False, f"SPI inacessível: {type(exc).__name__}", None
 
 
+ASP_ATRASO_ALERTA_S = 30.0
+
+
+def _asp_atraso_s() -> float | None:
+    """
+    Segundos entre a última janela FECHADA e agora.
+
+    Depois de uma rajada o processor fica drenando backlog, e os percentis da
+    coluna passam a medir a fila, não o regime — a tela chegava a mostrar
+    p50 de 23 s. Com este número a UI diz "drenando backlog" em vez de exibir
+    um percentil que não representa nada.
+    """
+    doc = sdb[COL_WINDOWS].find_one({}, {"window_end": 1}, sort=[("window_end", -1)])
+    if not doc or not isinstance(doc.get("window_end"), datetime):
+        return None
+    fim = doc["window_end"]
+    fim = fim if fim.tzinfo else fim.replace(tzinfo=timezone.utc)
+    return round((_now() - fim).total_seconds(), 1)
+
+
 def _asp_totais() -> dict[str, Any]:
     """Soma real do que o processor já agregou — qtd e volume financeiro das janelas."""
     pipeline = [{"$group": {"_id": None, "qtd": {"$sum": "$qtd"}, "volume": {"$sum": "$volume"}}}]
@@ -1263,10 +1406,14 @@ async def asp_status():
     janelas = await asyncio.to_thread(sdb[COL_WINDOWS].count_documents, {})
     dlq = await asyncio.to_thread(sdb[COL_DLQ].count_documents, {})
     totais = await asyncio.to_thread(_asp_totais)
+    atraso = await asyncio.to_thread(_asp_atraso_s) if ok else None
     return {
         "estado": "configurado" if ok else "nao_configurado",
         "detalhe": detalhe,
         "tier": tier,
+        "atraso_s": atraso,
+        "drenando_backlog": bool(atraso is not None and atraso > ASP_ATRASO_ALERTA_S),
+        "atraso_alerta_s": ASP_ATRASO_ALERTA_S,
         **totais,
         "asp_enabled": ASP_ENABLED,
         "colecao_janelas": f"{STREAM_DB}.{COL_WINDOWS}",
