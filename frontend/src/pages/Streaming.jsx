@@ -3,7 +3,8 @@ import { useApi } from '../hooks/useApi'
 import QueryBlock from '../components/QueryBlock'
 
 const MAX_FEED = 40
-const TPS_MAX = 5000
+const TPS_MAX = 12000
+const TPS_STEP = 100
 
 // Hook de SSE: EventSource sobre /api/... (proxy do Vite → backend :8002).
 // Só GET, então o mutation guard não exige o X-Demo-Token.
@@ -128,7 +129,7 @@ export default function Streaming() {
   }, [call])
 
   // ── Gerador ──────────────────────────────────────────────────────────────
-  const [tps, setTps] = useState(350)
+  const [tps, setTps] = useState(3472)
   const [gen, setGen] = useState(null)
 
   const tpsTocado = useRef(false)
@@ -315,7 +316,7 @@ export default function Streaming() {
 
         <div className="str-gen-row">
           <label htmlFor="tps" className="str-slider-label">TPS
-            <input id="tps" type="range" min="1" max={TPS_MAX} step="1" value={tps} className="str-slider"
+            <input id="tps" type="range" min="500" max={TPS_MAX} step={TPS_STEP} value={tps} className="str-slider"
               onChange={(e) => {
                 const v = Number(e.target.value)
                 tpsTocado.current = true
@@ -344,6 +345,19 @@ export default function Streaming() {
           🌐 <strong>RTT desta máquina até o cluster: {rede.rtt_ms} ms</strong> (medido agora, com <code>ping</code> no admin).
           As latências das três colunas <strong>incluem esse ida-e-volta</strong> — a app roda aqui e o cluster está em
           outra região. Co-localizando app e cluster, o que sobra é o custo real da entrega, não a distância.
+        </div>
+      )}
+
+      {/* Teto do ambiente — o número alto é do ambiente provisionado, não do produto */}
+      {cenario?.ambiente && (
+        <div className="str-teto">
+          <div className="str-teto-t">⚙️ Ambiente desta PoV — e como ir além</div>
+          <div className="str-teto-g">
+            <div><span className="str-teto-k">Cluster</span><span className="str-teto-v">{cenario.ambiente.cluster}</span></div>
+            <div><span className="str-teto-k">Stream Processing</span><span className="str-teto-v">{cenario.ambiente.asp_tier}</span></div>
+            <div><span className="str-teto-k">Partições de consumo</span><span className="str-teto-v">{cenario.ambiente.particoes_consumo}</span></div>
+          </div>
+          <div className="str-teto-n">{cenario.ambiente.nota}</div>
         </div>
       )}
 
@@ -393,6 +407,9 @@ export default function Streaming() {
             <div className="str-note">
               Roda <strong>dentro da aplicação</strong>, sem infraestrutura extra. Em compensação, o
               <strong> resume token é responsabilidade sua</strong>: persistir e retomar dele é o que garante que nada se perca.
+              Um cursor único satura por volta de <strong>5 mil eventos/s</strong>; acima disso o caminho é o mesmo de produção —
+              <strong> particionar o consumo</strong> (aqui, {cenario?.ambiente?.particoes_consumo ?? '—'} cursores, um por partição de conta pagadora),
+              e cada partição retoma pelo seu próprio token.
             </div>
           </div>
         </div>
@@ -449,6 +466,11 @@ export default function Streaming() {
               O source connector usa <strong>change stream por baixo</strong> — o que ele acrescenta é
               <strong> gestão de offset</strong> e entrega no barramento. E <code>startup.mode=copy_existing</code>
               faz o <strong>backfill do histórico</strong> antes de emendar no stream.
+            </div>
+            <div className="str-note">
+              O connector roda <strong>1 task por coleção</strong> (um cursor só), então acima de ~6 mil msg/s
+              ele fica para trás e a latência do tópico cresce — dá para ver no p50 acima. A saída é a mesma
+              da coluna 1: <strong>um connector por partição</strong>, cada um com seu filtro no pipeline.
             </div>
           </div>
         </div>

@@ -132,7 +132,7 @@ export default function App() {
 
         {/* Right side */}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span className="badge badge-green">Atlas M20</span>
+          <span className="badge badge-green">Atlas M30</span>
           <span className={`badge ${preflight?.ready ? 'badge-green' : 'badge-yellow'}`}
             title={preflight?.ready ? 'Pré-voo concluído' : 'Verifique o diagnóstico no menu lateral'}>
             {preflight?.ready ? '● Pronto' : '● Verificar'}
@@ -189,7 +189,7 @@ export default function App() {
             <div style={{ fontSize: 12.5, display: 'flex', flexDirection: 'column', gap: 5, color: 'var(--text-primary)' }}>
               <div>📦 <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.produtos)}</strong> produtos</div>
               <div>⭐ <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.avaliacoes)}</strong> avaliações</div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas M20</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas M30</div>
             </div>
           </div>
 

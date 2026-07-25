@@ -377,3 +377,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-pcts { flex-wrap: wrap; }
 .str-pct { min-width: 52px; }
 .str-pct-v { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
+.str-teto { padding: 12px 14px; border-radius: 9px; background: rgba(168,85,247,.05);
+  border: 1px solid rgba(168,85,247,.25); }
+.str-teto-t { font-weight: 700; font-size: 12.5px; color: #a855f7; margin-bottom: 8px; }
+.str-teto-g { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; }
+.str-teto-k { font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--text-secondary); display: block; }
+.str-teto-v { font-family: var(--font-mono); font-size: 15px; font-weight: 800; color: var(--text-primary); }
+.str-teto-n { font-size: 11.5px; line-height: 1.55; color: var(--text-secondary); }

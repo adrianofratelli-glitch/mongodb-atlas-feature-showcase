@@ -52,9 +52,17 @@ CONNECT_URL = os.getenv("CONNECT_URL", "http://localhost:8083").strip()
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "localhost:19092").strip()
 ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
+ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
+# Só para exibição: o que está provisionado nesta PoV.
+CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
+# Teto MEDIDO com as três colunas ativas: acima disso o Kafka e o ASP ficam para trás.
+TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "10000"))
+ASP_TIER = os.getenv("ASP_TIER", "SP30").strip() or "SP30"
 
 TTL_SECONDS = 2 * 60 * 60  # a coleção não pode crescer entre demos
 PURGE_TIMEOUT_MS = 180_000
+# Partições do consumo do change stream (um cursor + uma thread por partição).
+CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "6")))
 # Amostragem do feed SSE (contadores e percentis seguem cobrindo 100%).
 FEED_INTERVALO_S = 0.12
 METRICAS_INTERVALO_S = 0.5
@@ -146,10 +154,12 @@ class Meter:
         self._lock = threading.Lock()
 
     def record(self, latency_ms: float | None) -> None:
-        with self._lock:
-            self._marcas.append(time.monotonic())
-            if latency_ms is not None:
-                self._lat.append(latency_ms)
+        # Sem lock no caminho quente: cada meter tem um único produtor e
+        # deque.append é atômico. Aos milhares de eventos por segundo, pegar um
+        # lock por evento aparece no perfil. snapshot() continua sob lock.
+        self._marcas.append(time.monotonic())
+        if latency_ms is not None:
+            self._lat.append(latency_ms)
 
     def reset(self) -> None:
         with self._lock:
@@ -219,9 +229,14 @@ def _ensure_indexes() -> None:
 
 
 def _new_transacao() -> dict[str, Any]:
+    pagador = random.randint(1, 5000)
     return {
         "endToEndId": f"E{uuid.uuid4().hex[:31].upper()}",
-        "pagadorId": f"P{random.randint(1, 5000):06d}",
+        "pagadorId": f"P{pagador:06d}",
+        # Partição de consumo derivada do pagador — é assim que um banco
+        # particionaria o fluxo (por conta), e é o que permite um consumidor
+        # por partição em vez de um cursor único para tudo.
+        "particao": pagador % CS_PARTICOES,
         "recebedorId": f"R{random.randint(1, 800):06d}",
         "valor": Decimal128(f"{random.uniform(5.0, 9500.0):.2f}"),
         "tipo": random.choice(_TIPOS),
@@ -252,6 +267,7 @@ class Generator:
         self.inserted = 0
         self.started_at: datetime | None = None
         self._recent: list[tuple[float, int]] = []   # (monotonic, docs) p/ TPS medido
+        self._start_mono: float | None = None
         self._lock = threading.Lock()                # _recent/_inserted são tocados pelas threads de insert
 
     @property
@@ -263,17 +279,22 @@ class Generator:
             self.inserted += docs
             self._recent.append((time.monotonic(), docs))
 
+    JANELA_TPS_S = 5.0
+
     def measured_tps(self) -> float:
-        cutoff = time.monotonic() - 5.0
+        # Janela FIXA de 5 s: dividir pelo intervalo entre a primeira e a última
+        # amostra dava números absurdos (1,8 M TPS) quando sobravam duas marcas
+        # quase simultâneas no deque.
+        agora = time.monotonic()
+        cutoff = agora - self.JANELA_TPS_S
         with self._lock:
             self._recent = [(t, n) for t, n in self._recent if t >= cutoff]
-            recent = list(self._recent)
-        if len(recent) < 2:
+            docs = sum(n for _, n in self._recent)
+            inicio = self._start_mono
+        if not docs or inicio is None:
             return 0.0
-        span = recent[-1][0] - recent[0][0]
-        if span <= 0:
-            return 0.0
-        return round(sum(n for _, n in recent[1:]) / span, 1)
+        janela = min(self.JANELA_TPS_S, max(agora - inicio, 0.001))
+        return round(docs / janela, 1)
 
     async def start(self, tps: int) -> None:
         await asyncio.to_thread(_ensure_indexes)
@@ -281,7 +302,8 @@ class Generator:
         if self.running:
             return                                    # já rodando: só ajusta o TPS
         self.started_at = _now()
-        self._recent = [(time.monotonic(), 0)]
+        self._recent = []
+        self._start_mono = time.monotonic()
         self.task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -297,7 +319,8 @@ class Generator:
     def reset_counters(self) -> None:
         with self._lock:
             self.inserted = 0
-            self._recent = [(time.monotonic(), 0)]
+            self._recent = []
+            self._start_mono = time.monotonic()
 
     def _insert_batch(self, docs: list[dict[str, Any]]) -> None:
         """
@@ -333,7 +356,10 @@ class Generator:
             carry -= batch_size
             if batch_size > 0:
                 if len(inflight) >= self.MAX_INFLIGHT:
-                    carry += batch_size          # Atlas não acompanha: devolve ao próximo tick
+                    # Devolve ao próximo tick, mas com TETO: sem isso o carry
+                    # cresce sem limite enquanto o Atlas não acompanha e depois
+                    # o gerador dispara uma rajada bem acima do alvo pedido.
+                    carry = min(carry + batch_size, self.tps_alvo * self.TICK_S * 2)
                 else:
                     task = asyncio.create_task(self._batch([_new_transacao() for _ in range(batch_size)]))
                     inflight.add(task)
@@ -346,7 +372,7 @@ generator = Generator()
 
 
 class GeneratorStart(BaseModel):
-    tps: int = Field(default=350, ge=1, le=5000)
+    tps: int = Field(default=BRASIL_TPS_MEDIO, ge=1, le=20000)
 
 
 @router.post("/generator/start")
@@ -430,15 +456,67 @@ async def cenario():
             "inter_tps_pico": INTER_TPS_PICO,
             "brasil_tps_medio": BRASIL_TPS_MEDIO,
         },
+        # Só cargas altas: mostrar 300 TPS para uma squad que opera PIX não diz
+        # nada. O menor preset já é o PICO do Inter.
         "presets": [
-            {"label": "Média Inter", "tps": INTER_TPS_MEDIO,
-             "detalhe": f"{INTER_TX_DIA:,} transações/dia ÷ 86.400 s".replace(",", ".")},
             {"label": "Pico Inter", "tps": INTER_TPS_PICO,
-             "detalhe": f"{PICO_FATOR}× a média (premissa de pico intradiário)"},
+             "detalhe": f"{PICO_FATOR}× a média do Inter ({INTER_TPS_MEDIO} TPS) — premissa de pico intradiário"},
             {"label": "PIX Brasil inteiro", "tps": BRASIL_TPS_MEDIO,
              "detalhe": f"{PIX_BRASIL_TX_DIA:,} transações/dia ÷ 86.400 s".replace(",", ".")},
+            {"label": "2× PIX Brasil", "tps": BRASIL_TPS_MEDIO * 2,
+             "detalhe": "o dobro do PIX nacional inteiro, no mesmo cluster"},
+            {"label": "Teto medido", "tps": TETO_MEDIDO_TPS,
+             "detalhe": f"máximo sustentado neste ambiente ({CLUSTER_TIER} + {ASP_TIER}) com as três colunas juntas"},
         ],
+        "ambiente": {
+            "cluster": CLUSTER_TIER,
+            "asp_tier": ASP_TIER,
+            "particoes_consumo": CS_PARTICOES,
+            "teto_medido_tps": TETO_MEDIDO_TPS,
+            "nota": f"{TETO_MEDIDO_TPS:,}".replace(",", ".") +
+                    " TPS é o teto MEDIDO deste ambiente de PoV, não do produto: acima disso é só "
+                    "escalar o cluster, o tier do ASP e o número de partições de consumo. "
+                    "A 12.000 TPS as três colunas começam a ficar para trás.",
+        },
     }
+
+
+DROP_ACIMA_DE = 300_000
+
+
+def _asp_command(cmd: dict[str, Any]) -> bool:
+    """Executa um comando na SPI (stop/startStreamProcessor). Best-effort."""
+    if not (ASP_ENABLED and ASP_CONNECTION_STRING):
+        return False
+    from pymongo import MongoClient
+
+    try:
+        spi = MongoClient(ASP_CONNECTION_STRING, serverSelectionTimeoutMS=8000)
+        try:
+            spi.admin.command(cmd)
+            return True
+        finally:
+            spi.close()
+    except PyMongoError:
+        logger.exception("Comando do ASP falhou: %s", cmd)
+        return False
+
+
+def _drop_and_recreate() -> int:
+    """
+    Caminho rápido do Reset: dropa a coleção em vez de apagar documento a
+    documento.
+
+    A poucos milhares de TPS a coleção passa de milhões de documentos em
+    minutos, e aí um delete_many leva mais tempo que a própria demo. O drop é
+    instantâneo, mas invalida os change streams abertos em cima da coleção — os
+    workers reabrem sem token (tratado em _run) e o processor do ASP é
+    reiniciado logo abaixo.
+    """
+    total = sdb[COL_TX].estimated_document_count()
+    sdb[COL_TX].drop()
+    _ensure_indexes()
+    return total
 
 
 def _purge(col: str) -> tuple[int, int]:
@@ -488,7 +566,18 @@ async def reset():
     # EventSource — a coluna 1 ficaria muda depois do Reset até dar F5.
     deleted: dict[str, Any] = {}
     restantes = 0
-    for col in (COL_TX, COL_WINDOWS, COL_DLQ):
+    asp_reiniciado = False
+
+    grande = await asyncio.to_thread(sdb[COL_TX].estimated_document_count)
+    if grande > DROP_ACIMA_DE:
+        await asyncio.to_thread(_asp_command, {"stopStreamProcessor": ASP_PROCESSOR_NAME})
+        deleted[COL_TX] = await asyncio.to_thread(_drop_and_recreate)
+        asp_reiniciado = await asyncio.to_thread(_asp_command, {"startStreamProcessor": ASP_PROCESSOR_NAME})
+        alvos = (COL_WINDOWS, COL_DLQ)
+    else:
+        alvos = (COL_TX, COL_WINDOWS, COL_DLQ)
+
+    for col in alvos:
         removed, left = await asyncio.to_thread(_purge, col)
         deleted[col] = removed
         restantes += left
@@ -499,7 +588,8 @@ async def reset():
         hub.publish({"type": "reset"})
     # `restantes` só é > 0 se o orçamento de tempo acabou antes de esvaziar tudo;
     # a UI mostra o número em vez de fingir que a limpeza terminou.
-    return {"reset": True, "removidos": deleted, "restantes": restantes}
+    return {"reset": True, "removidos": deleted, "restantes": restantes,
+            "via_drop": grande > DROP_ACIMA_DE, "asp_reiniciado": asp_reiniciado}
 
 
 # ---------------------------------------------------------------------------
@@ -507,18 +597,40 @@ async def reset():
 # ---------------------------------------------------------------------------
 class ChangeStreamWorker:
     """
-    Cursor único de collection.watch() rodando numa thread; os eventos são
-    publicados no hub para todos os assinantes SSE.
+    UM cursor de collection.watch() por PARTIÇÃO, cada um na sua thread,
+    publicando no mesmo hub SSE.
 
-    O botão "Derrubar e retomar" pede o drop: o cursor é fechado, esperamos 3s
-    com o gerador ainda escrevendo e reabrimos com resume_after(resumeToken).
-    Os eventos cujo ts é anterior à reabertura são marcados como recuperados —
-    é a prova visual de que nada se perdeu.
+    Um cursor sozinho satura por volta de 5.000 eventos/s (medido contra este
+    cluster): acima disso ele fica para trás e a latência cresce sem parar —
+    18 s a 8.000 TPS, 50 s a 10.000. Escalar o cluster não resolve, porque o
+    gargalo é o consumidor, não a escrita: o mesmo M20 aceitou ~14.000
+    inserts/s. A saída é a mesma de produção — particionar o consumo e ter um
+    consumidor por partição. Cada worker filtra `particao` no próprio pipeline
+    do cursor, então o Atlas só entrega a fatia daquele consumidor.
+
+    Cada partição carrega o SEU resume token. O botão "Derrubar e retomar"
+    derruba todas e cada uma volta pelo seu próprio token — os eventos com ts
+    anterior à reabertura entram marcados como recuperados.
     """
 
-    PIPELINE = [{"$match": {"operationType": "insert"}}]
+    # $project no próprio cursor: o custo por evento é dominado pela decodificação
+    # do BSON, então o servidor manda só o que a tela e as métricas usam. O _id do
+    # evento (resume token) precisa continuar vindo.
+    PIPELINE = [
+        {"$match": {"operationType": "insert"}},
+        {"$project": {
+            "_id": 1,
+            "fullDocument.endToEndId": 1,
+            "fullDocument.uf": 1,
+            "fullDocument.tipo": 1,
+            "fullDocument.valor": 1,
+            "fullDocument.ts": 1,
+        }},
+    ]
 
-    def __init__(self) -> None:
+    def __init__(self, particao: int = 0, particoes: int = 1) -> None:
+        self.particao = particao
+        self.particoes = particoes
         self.active = False
         self.thread = None
         self.token: dict | None = None
@@ -529,6 +641,12 @@ class ChangeStreamWorker:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ultimo_feed = 0.0
         self._ultima_metrica = 0.0
+
+    def pipeline(self) -> list[dict[str, Any]]:
+        if self.particoes <= 1:
+            return self.PIPELINE
+        filtro = {"$match": {"operationType": "insert", "fullDocument.particao": self.particao}}
+        return [filtro, *self.PIPELINE[1:]]
 
     # A 3000+ eventos/s não dá para empurrar cada evento para o browser — a aba
     # morre. O feed vira uma AMOSTRA (rotulada como tal na UI); os contadores e
@@ -547,7 +665,7 @@ class ChangeStreamWorker:
             return
         self._loop = loop
         self.active = True
-        self.thread = threading.Thread(target=self._run, daemon=True, name="streaming-cs")
+        self.thread = threading.Thread(target=self._run, daemon=True, name=f"streaming-cs-{self.particao}")
         self.thread.start()
 
     def stop(self) -> None:
@@ -572,19 +690,21 @@ class ChangeStreamWorker:
                 # mesma thread acompanha milhares de eventos por segundo.
                 # max_await_time_ms limita quanto o laço demora a perceber o
                 # pedido de "derrubar e retomar" quando o fluxo está parado.
+                # Sem full_document="updateLookup": o pipeline só casa inserts, e
+                # em insert o documento já vem no próprio evento do oplog.
                 kwargs: dict[str, Any] = {
-                    "full_document": "updateLookup",
                     "max_await_time_ms": 500,
-                    "batch_size": 1_000,
+                    "batch_size": 2_000,
                 }
                 if self.token:
                     kwargs["resume_after"] = self.token
-                with sdb[COL_TX].watch(self.PIPELINE, **kwargs) as stream:
+                with sdb[COL_TX].watch(self.pipeline(), **kwargs) as stream:
                     self._publish({
                         "type": "aberto",
+                        "particao": self.particao,
                         "retomado": bool(self.token),
                         "token": self.token_str(),
-                        "eventos": self.events,
+                        "eventos": cs_worker.events,
                     })
                     for change in stream:
                         self.token = change["_id"]
@@ -592,6 +712,14 @@ class ChangeStreamWorker:
                         if not self.active or self._drop_requested:
                             break
             except PyMongoError as exc:
+                # Depois de um drop da coleção o resume token guardado deixa de
+                # ser válido: insistir nele deixaria a coluna morta para sempre.
+                # Descarta o token e reabre do zero.
+                if self.token is not None:
+                    logger.warning("Partição %d: token inválido (%s); reabrindo sem resume",
+                                   self.particao, type(exc).__name__)
+                    self.token = None
+                    continue
                 logger.exception("Change stream do módulo Streaming falhou")
                 self._publish({"type": "erro", "detalhe": f"{type(exc).__name__}: {exc}"})
                 time.sleep(2)
@@ -641,14 +769,61 @@ class ChangeStreamWorker:
             self._ultima_metrica = agora
             self._publish({
                 "type": "metricas",
-                "eventos": self.events,
-                "recuperados": self.recovered,
+                "eventos": cs_worker.events,
+                "recuperados": cs_worker.recovered,
+                "particoes": cs_worker.particoes,
                 "token": self.token_str(),
                 **meter_cs.snapshot(),
             })
 
 
-cs_worker = ChangeStreamWorker()
+class ChangeStreamCluster:
+    """
+    Conjunto de workers (um por partição) apresentado à API como um só
+    consumidor: contadores somados, drop/resume coordenado.
+    """
+
+    def __init__(self, particoes: int) -> None:
+        self.particoes = max(1, particoes)
+        self.workers = [ChangeStreamWorker(i, self.particoes) for i in range(self.particoes)]
+
+    @property
+    def active(self) -> bool:
+        return any(w.active for w in self.workers)
+
+    @property
+    def events(self) -> int:
+        return sum(w.events for w in self.workers)
+
+    @property
+    def recovered(self) -> int:
+        return sum(w.recovered for w in self.workers)
+
+    def token_str(self) -> str | None:
+        # O token exibido é o da partição 0; cada worker guarda o seu.
+        return self.workers[0].token_str()
+
+    def ensure_started(self, loop: asyncio.AbstractEventLoop) -> None:
+        for w in self.workers:
+            w.ensure_started(loop)
+
+    def stop(self) -> None:
+        for w in self.workers:
+            w.stop()
+
+    def reset_counters(self) -> None:
+        for w in self.workers:
+            w.reset_counters()
+        meter_cs.reset()
+
+    def request_drop(self) -> None:
+        if not self.active:
+            raise HTTPException(status_code=409, detail="Change stream não está aberto.")
+        for w in self.workers:
+            w.request_drop()
+
+
+cs_worker = ChangeStreamCluster(CS_PARTICOES)
 
 
 @router.get("/changestream")
@@ -659,6 +834,7 @@ async def changestream_sse(request: Request):
         "colecao": f"{STREAM_DB}.{COL_TX}",
         "eventos": cs_worker.events,
         "recuperados": cs_worker.recovered,
+        "particoes": cs_worker.particoes,
         "token": cs_worker.token_str(),
     }
     return _sse_response(request, hub_cs, hello)
@@ -676,6 +852,7 @@ async def changestream_status():
         "aberto": cs_worker.active,
         "eventos": cs_worker.events,
         "recuperados": cs_worker.recovered,
+        "particoes": cs_worker.particoes,
         "token": cs_worker.token_str(),
         **meter_cs.snapshot(),
     }

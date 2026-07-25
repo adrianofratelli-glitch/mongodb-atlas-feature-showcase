@@ -67,13 +67,21 @@ the database name).
 | `POST` | `/streaming/generator/start` | Body `{"tps": 1..5000}`. Starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. Ensures the unique index on `endToEndId` and the 2-hour TTL index on `ts`. |
 | `POST` | `/streaming/generator/stop` | Cancels the task. |
 | `GET` | `/streaming/generator/status` | `running`, `tps_alvo`, **`tps_medido`** (measured over a 5 s sliding window, never the requested value), `inseridos`, `docs_na_colecao`, plus the arithmetic projection `projecao_dia` and `pct_dia_inter` / `pct_dia_brasil`. |
-| `POST` | `/streaming/reset` | Stops the generator, empties the three collections (dedicated client with a long socket timeout, retried on election), zeroes all counters and broadcasts a `reset` event. Returns `restantes` if the purge could not finish. The change-stream worker is deliberately left running. |
+| `POST` | `/streaming/reset` | Stops the generator, clears the three collections, zeroes all counters and broadcasts a `reset` event. Above `DROP_ACIMA_DE` (300k docs) it drops and recreates `transacoes` instead of deleting document by document — minutes become seconds — stopping and restarting the ASP processor around the drop; the change-stream workers detect the now-invalid resume token and reopen fresh. Returns `via_drop`, `asp_reiniciado` and `restantes`. |
 
 **Column 1 — Change Streams**
 
+Consumption is **partitioned**: one `watch()` cursor and one thread per
+partition (`STREAMING_CS_PARTICOES`, default 6), each filtering
+`fullDocument.particao` — a value the generator derives from the payer, the way
+a bank would partition by account. A single cursor saturates around 5,000
+events/s; ten partitions track ~10,000 events/s on the same laptop. Each
+partition carries its own resume token, and the drop/resume button drops them
+all so every partition recovers from its own token.
+
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/streaming/changestream` | **SSE.** A single `collection.watch()` cursor (`[{$match: {operationType: "insert"}}]`, `full_document="updateLookup"`) broadcast to all subscribers. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries the end-to-end `latency_ms` (document `ts` vs receipt), the truncated resume token and the `recuperado` flag. |
+| `GET` | `/streaming/changestream` | **SSE.** One `collection.watch()` cursor per partition (`[{$match: {operationType: "insert"}}]`, `full_document="updateLookup"`) broadcast to all subscribers. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries the end-to-end `latency_ms` (document `ts` vs receipt), the truncated resume token and the `recuperado` flag. |
 | `POST` | `/streaming/changestream/drop-resume` | Closes the cursor, waits 3 s while the generator keeps writing, reopens with `resume_after(<resume token>)`. Events whose `ts` precedes the reopen are flagged `recuperado` — the proof that nothing was lost. |
 | `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, `token`, plus `eventos_s` and the p50/p95/p99 latency percentiles. |
 

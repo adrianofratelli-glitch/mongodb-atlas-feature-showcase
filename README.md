@@ -125,14 +125,27 @@ Columns 2 and 3 need the setup below; without it they render as
 **"não configurado"** with these instructions, and the rest of the module keeps
 working. No panel ever shows synthetic data.
 
-**1. Start the local Kafka stack** (Redpanda + Kafka Connect + Redpanda Console):
+**1. Start Kafka locally.** Two options — pick one.
+
+*Native (no Docker required, recommended on a laptop):*
+
+```bash
+brew install kafka          # once
+./scripts/kafka-local.sh up # broker (KRaft) + Kafka Connect + MongoDB plugin
+./scripts/kafka-local.sh status
+./scripts/kafka-local.sh down
+```
+
+*Docker:*
 
 ```bash
 docker compose -f docker-compose.streaming.yml up -d
 ```
 
-The `mongodb-kafka-connect` plugin is downloaded on the first start only and
-cached in a named volume, so later runs work offline.
+Either way the `mongodb-kafka-connect` plugin is downloaded on the first run
+only and cached locally, so later runs work offline. The native path uses
+`localhost:9092`; the Docker path uses `localhost:19092` — set `KAFKA_BROKERS`
+in `backend/.env` accordingly.
 
 **2. Register the source connector** (reads `MONGO_URI` from `backend/.env`):
 
@@ -169,7 +182,9 @@ drop the cached plugin). `POST /streaming/reset` (the **Reset** button) clears
 index on `ts` keeps the collection from growing between demos.
 
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
-`CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`.
+`CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,
+`ASP_PROCESSOR_NAME`, `STREAMING_CS_PARTICOES` (consumer partitions, default 6),
+`CLUSTER_TIER` / `ASP_TIER` / `TETO_MEDIDO_TPS` (display only).
 
 ### Reading the numbers
 
@@ -179,6 +194,17 @@ measured and what is assumed:
 - **Measured:** sustained TPS (5 s sliding window, never the requested value),
   events/s per column, p50/p95/p99 latency over 100% of the events, the volume
   the processor aggregated, and the app↔cluster RTT.
+
+  On the provisioned environment (**M30 cluster + SP30 stream processing +
+  10 consumer partitions**) the measured ceiling with all three columns running
+  is **10,000 TPS**: Change Streams sustain ~9,900 events/s at p50 ≈ 350 ms and
+  the ASP processor aggregates ~10,000 tx/s. At 12,000 TPS everything starts
+  falling behind. The Kafka source connector runs **one task per collection**,
+  so it tops out around 6,000 msg/s — past that, the fix is the same as for
+  column 1: one connector per partition.
+
+  That ceiling belongs to this PoV environment, not to the product: raising it
+  is a matter of cluster tier, ASP tier and partition count.
 - **Premises (labelled as such in the UI):** the daily PIX volume, Inter's 10%
   share and the 3× peak factor. They only provide a ruler — the presets
   (347 / 1.041 / 3.472 TPS) are derived from them.
