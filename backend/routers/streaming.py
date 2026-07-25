@@ -58,11 +58,26 @@ CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
 # Preço de lista do ambiente, US$/hora. Premissa editável: entra na conta de
 # custo por milhão de transações, que é o número que um gestor leva para a
 # reunião de orçamento.
-CUSTO_CLUSTER_USD_HORA = float(os.getenv("CUSTO_CLUSTER_USD_HORA", "0.54"))
-# Custo/hora do tier do Stream Processing em uso. Sem um valor confirmado o
-# custo por milhão sairia otimista — a UI avisa quando isto está zerado.
-CUSTO_ASP_USD_HORA = float(os.getenv("CUSTO_ASP_USD_HORA", "0"))
-CUSTO_AMBIENTE_USD_HORA = CUSTO_CLUSTER_USD_HORA + CUSTO_ASP_USD_HORA
+# Preço de lista por hora, AWS us-east-1 (mongodb.com/cloud/atlas/pricing).
+# O custo é calculado sobre os tiers REAIS em execução: o cluster tem
+# auto-scaling M20↔M30, então fixar um preço faria a conta mentir metade do
+# tempo. Os tiers do ASP têm faixa por região; usamos o piso da faixa.
+PRECOS_USD_HORA = {
+    "M10": 0.08, "M20": 0.20, "M30": 0.54, "M40": 0.95, "M50": 1.89,
+    "SP2": 0.06, "SP5": 0.11, "SP10": 0.19, "SP30": 0.39, "SP50": 1.56,
+}
+# Overrides opcionais (contrato negociado, outra região).
+CUSTO_CLUSTER_USD_HORA = float(os.getenv("CUSTO_CLUSTER_USD_HORA", "0") or 0)
+CUSTO_ASP_USD_HORA = float(os.getenv("CUSTO_ASP_USD_HORA", "0") or 0)
+
+
+def _preco_hora(tier: str | None, override: float) -> tuple[float, str]:
+    """(preço, origem) — override do .env vence a tabela de lista."""
+    if override > 0:
+        return override, "configurado"
+    if tier and tier in PRECOS_USD_HORA:
+        return PRECOS_USD_HORA[tier], "lista"
+    return 0.0, "desconhecido"
 # Sistemas a operar para o mesmo resultado, com e sem change stream nativo.
 SISTEMAS_COM_MONGO = 1
 SISTEMAS_SEM_MONGO = 3
@@ -619,15 +634,22 @@ async def negocio():
     latencia_ms = cs.get("p50")
     totais = await asyncio.to_thread(_asp_totais)
 
+    # Custo sobre os tiers REAIS em execução agora.
+    info_cluster = await asyncio.to_thread(_cluster_info_sync)
+    tier_cluster = info_cluster.get("tier")
+    asp_ok, _, tier_asp = await asyncio.to_thread(_asp_reachable)
+    preco_cluster, origem_cluster = _preco_hora(tier_cluster, CUSTO_CLUSTER_USD_HORA)
+    preco_asp, origem_asp = _preco_hora(tier_asp if asp_ok else None, CUSTO_ASP_USD_HORA)
+    custo_hora = preco_cluster + preco_asp
+
     agregadas = totais["transacoes_agregadas"]
     volume = totais["volume_agregado"]
     ticket_medio = round(volume / agregadas, 2) if agregadas else None
 
     # 1. Custo por milhão de transações
     custo_por_milhao = None
-    if tps > 0:
-        custo_por_segundo = CUSTO_AMBIENTE_USD_HORA / 3600
-        custo_por_milhao = round(custo_por_segundo / tps * 1_000_000, 2)
+    if tps > 0 and custo_hora > 0:
+        custo_por_milhao = round((custo_hora / 3600) / tps * 1_000_000, 3)
 
     # 3. Volume financeiro "em trânsito" na janela de latência
     reais_por_segundo = round(ticket_medio * tps, 2) if (ticket_medio and tps) else None
@@ -642,9 +664,16 @@ async def negocio():
 
     return {
         "custo_por_milhao_usd": custo_por_milhao,
-        "custo_inclui_asp": CUSTO_ASP_USD_HORA > 0,
-        "custo_cluster_usd_hora": CUSTO_CLUSTER_USD_HORA,
-        "custo_asp_usd_hora": CUSTO_ASP_USD_HORA,
+        "custo_inclui_asp": preco_asp > 0,
+        "custo": {
+            "cluster_tier": tier_cluster,
+            "cluster_usd_hora": preco_cluster,
+            "cluster_origem": origem_cluster,
+            "asp_tier": tier_asp if asp_ok else None,
+            "asp_usd_hora": preco_asp,
+            "asp_origem": origem_asp,
+            "total_usd_hora": round(custo_hora, 4),
+        },
         "reconciliacoes_potenciais_3s": potencial_queda_3s,
         "latencia_reacao_ms": latencia_ms,
         "reais_por_segundo": reais_por_segundo,
@@ -655,12 +684,13 @@ async def negocio():
         "ticket_medio": ticket_medio,
         "transacoes_agregadas": agregadas,
         "premissas": {
-            "custo_ambiente_usd_hora": round(CUSTO_AMBIENTE_USD_HORA, 4),
-            "nota": "TPS, latência e contagem são MEDIDOS nesta sessão. O custo usa o preço "
-                    "de lista por hora do ambiente. O ticket médio é real no sentido de que o "
-                    "processor o calculou sobre as transações que passaram — mas os valores "
-                    "vêm da distribuição sintética do gerador, então o fluxo em R$ mostra a "
-                    "ordem de grandeza, não o ticket real do Inter.",
+            "custo_ambiente_usd_hora": round(custo_hora, 4),
+            "nota": "TPS, latência e contagem são MEDIDOS nesta sessão. O custo soma os tiers "
+                    "REAIS em execução (cluster + stream processor) a preço de lista da AWS "
+                    "us-east-1 — não inclui transferência de dados nem o Kafka, que aqui é "
+                    "local. O ticket médio foi calculado pelo processor sobre as transações "
+                    "que passaram, mas os valores vêm da distribuição sintética do gerador: o "
+                    "fluxo em R$ mostra ordem de grandeza, não o ticket real do Inter.",
         },
     }
 

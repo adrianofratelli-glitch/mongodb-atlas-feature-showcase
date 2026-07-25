@@ -602,11 +602,16 @@ export default function Streaming() {
           <div className="str-neg">
             <div className="str-neg-c">
               <div className="str-neg-k">Custo por milhão de transações</div>
-              <div className="str-neg-v">{negocio.custo_por_milhao_usd != null ? `US$ ${fmtBRL(negocio.custo_por_milhao_usd)}` : '—'}</div>
+              <div className="str-neg-v">
+                {negocio.custo_por_milhao_usd != null
+                  ? `US$ ${negocio.custo_por_milhao_usd.toLocaleString('pt-BR', { minimumFractionDigits: 3 })}`
+                  : '—'}
+              </div>
               <div className="str-neg-s">
-                no ritmo atual · {negocio.custo_inclui_asp
-                  ? 'cluster + stream processing'
-                  : 'só cluster — informe CUSTO_ASP_USD_HORA para incluir o ASP'}
+                {negocio.custo?.cluster_tier} (US$ {negocio.custo.cluster_usd_hora}/h)
+                {negocio.custo_inclui_asp
+                  ? ` + ${negocio.custo.asp_tier} (US$ ${negocio.custo.asp_usd_hora}/h)`
+                  : ' · ASP parado, fora da conta'}
               </div>
             </div>
             <div className="str-neg-c">

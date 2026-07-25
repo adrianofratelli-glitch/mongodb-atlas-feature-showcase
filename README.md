@@ -196,7 +196,17 @@ long window pushes that cleanup to after the presentation, on an idle cluster.
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,
 `ASP_PROCESSOR_NAME`, `STREAMING_CS_PARTICOES` (consumer partitions, default 6),
-`CLUSTER_TIER` / `ASP_TIER` / `TETO_MEDIDO_TPS` (display only).
+`STREAMING_TTL_SEGUNDOS`, `TETO_MEDIDO_TPS` (display only), and
+`CUSTO_CLUSTER_USD_HORA` / `CUSTO_ASP_USD_HORA` to override list prices.
+
+### Cost figures
+
+The business panel prices the **tiers actually running**, read live: the
+cluster auto-scales between M20 and M30, so a fixed price would be wrong half
+the time. List prices for AWS us-east-1 (M20 $0.20/h, M30 $0.54/h, SP10
+$0.19/h, SP30 $0.39/h) live in `PRECOS_USD_HORA`; the two env vars above
+override them for negotiated contracts or other regions. Data transfer is not
+included, and Kafka is local here, so it costs nothing in this setup.
 
 ### Reading the numbers
 
