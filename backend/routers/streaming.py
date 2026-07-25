@@ -22,6 +22,7 @@ import asyncio
 import json
 import logging
 import os
+import math
 import random
 import threading
 import time
@@ -120,8 +121,58 @@ PICO_FATOR = 3                                                 # premissa: pico 
 INTER_TPS_PICO = INTER_TPS_MEDIO * PICO_FATOR                  # ~1041 TPS
 BRASIL_TPS_MEDIO = round(PIX_BRASIL_TX_DIA / SEGUNDOS_DIA)     # ~3472 TPS
 
+# UFs com peso aproximado de participação no volume — SP e RJ concentram, como
+# no fluxo real. PREMISSA declarada, não medição.
 _UFS = ["SP", "RJ", "MG", "RS", "PR", "BA", "PE", "SC", "GO", "CE"]
-_TIPOS = ["PIX", "TED", "BOLETO"]
+_UF_PESOS = [30, 14, 11, 8, 8, 7, 6, 6, 5, 5]
+
+# ---------------------------------------------------------------------------
+# Perfil de valores — PREMISSA declarada, exposta em /streaming/cenario.
+#
+# Um sorteio uniforme entre R$ 5 e R$ 9.500 dá ticket médio de ~R$ 4.750, o que
+# não se parece com PIX nenhum: o fluxo real é MUITO assimétrico — muita
+# transferência pequena do dia a dia e uma cauda longa de valores altos, que
+# concentra a maior parte do dinheiro em poucas transações.
+#
+# Cada tipo tem seu peso na CONTAGEM de transações e suas faixas de valor com
+# pesos próprios. Assim a mediana fica baixa, a média fica bem acima da
+# mediana, e o volume financeiro se concentra na cauda — as três propriedades
+# que uma squad de pagamentos espera ver.
+# ---------------------------------------------------------------------------
+PERFIL_TIPOS = [("PIX", 84), ("BOLETO", 13), ("TED", 3)]
+PERFIL_VALORES: dict[str, list[tuple[float, float, float]]] = {
+    # tipo: [(peso, min, max)] — calibrado para mediana ~R$ 87 e média ~R$ 566,
+    # com o 1% maior concentrando ~38% do volume financeiro.
+    "PIX": [
+        (46, 5.0, 60.0),           # rachar conta, troco, cafezinho
+        (33, 60.0, 250.0),         # compras do dia a dia
+        (17, 250.0, 1_200.0),      # contas, aluguel pequeno
+        (3.7, 1_200.0, 6_000.0),   # transferências relevantes
+        (0.3, 6_000.0, 30_000.0),  # cauda
+    ],
+    "BOLETO": [
+        (48, 30.0, 180.0),
+        (38, 180.0, 900.0),
+        (13, 900.0, 4_000.0),
+        (1, 4_000.0, 15_000.0),
+    ],
+    "TED": [
+        (50, 400.0, 3_000.0),
+        (40, 3_000.0, 15_000.0),
+        (9, 15_000.0, 60_000.0),
+        (1, 60_000.0, 200_000.0),
+    ],
+}
+_TIPOS = [t for t, _ in PERFIL_TIPOS]
+_TIPO_PESOS = [p for _, p in PERFIL_TIPOS]
+
+
+def _sorteia_valor(tipo: str) -> float:
+    faixas = PERFIL_VALORES[tipo]
+    peso, minimo, maximo = random.choices(faixas, weights=[f[0] for f in faixas])[0]
+    # Uniforme em escala LOG dentro da faixa: sem isso, cada faixa teria média
+    # no seu ponto médio e a distribuição ficaria com degraus artificiais.
+    return round(math.exp(random.uniform(math.log(minimo), math.log(maximo))), 2)
 
 
 def _now() -> datetime:
@@ -296,6 +347,7 @@ def _ensure_indexes() -> None:
 
 def _new_transacao() -> dict[str, Any]:
     pagador = random.randint(1, 5000)
+    tipo = random.choices(_TIPOS, weights=_TIPO_PESOS)[0]
     return {
         "endToEndId": f"E{uuid.uuid4().hex[:31].upper()}",
         "pagadorId": f"P{pagador:06d}",
@@ -304,9 +356,9 @@ def _new_transacao() -> dict[str, Any]:
         # por partição em vez de um cursor único para tudo.
         "particao": pagador % CS_PARTICOES,
         "recebedorId": f"R{random.randint(1, 800):06d}",
-        "valor": Decimal128(f"{random.uniform(5.0, 9500.0):.2f}"),
-        "tipo": random.choice(_TIPOS),
-        "uf": random.choice(_UFS),
+        "valor": Decimal128(f"{_sorteia_valor(tipo):.2f}"),
+        "tipo": tipo,
+        "uf": random.choices(_UFS, weights=_UF_PESOS)[0],
         "ts": _now(),
         "status": "liquidada",
     }
@@ -530,6 +582,60 @@ def _cluster_info_sync() -> dict[str, Any]:
     return dados
 
 
+def _perfil_medido(amostra: int = 20_000) -> dict[str, Any]:
+    """
+    Percentis de valor MEDIDOS sobre uma amostra da coleção.
+
+    Ticket médio sozinho engana num fluxo assimétrico: mediana e p99 é que
+    mostram o formato. Isto é medição, não premissa — roda $percentile de
+    verdade sobre o que o gerador escreveu.
+    """
+    pipeline = [
+        {"$sample": {"size": amostra}},
+        {"$group": {
+            "_id": None,
+            "n": {"$sum": 1},
+            "media": {"$avg": {"$toDouble": "$valor"}},
+            "total": {"$sum": {"$toDouble": "$valor"}},
+            "percentis": {"$percentile": {
+                "input": {"$toDouble": "$valor"},
+                "p": [0.5, 0.9, 0.99],
+                "method": "approximate",
+            }},
+        }},
+    ]
+    docs = list(sdb[COL_TX].aggregate(pipeline))
+    if not docs:
+        return {"amostra": 0}
+    d = docs[0]
+    p50, p90, p99 = (d.get("percentis") or [None, None, None])[:3]
+    return {
+        "amostra": d["n"],
+        "mediana": round(p50, 2) if p50 is not None else None,
+        "p90": round(p90, 2) if p90 is not None else None,
+        "p99": round(p99, 2) if p99 is not None else None,
+        "media": round(d["media"], 2) if d.get("media") else None,
+    }
+
+
+@router.get("/perfil-valores")
+async def perfil_valores():
+    medido = await asyncio.to_thread(_perfil_medido)
+    return {
+        "medido": medido,
+        "premissa": {
+            "tipos": [{"tipo": t, "peso_pct": p} for t, p in PERFIL_TIPOS],
+            "faixas": {
+                tipo: [{"peso": f[0], "min": f[1], "max": f[2]} for f in faixas]
+                for tipo, faixas in PERFIL_VALORES.items()
+            },
+            "nota": "A distribuição de valores é uma PREMISSA calibrada para se parecer com "
+                    "o PIX: muita transferência pequena e cauda longa. Os percentis ao lado "
+                    "são MEDIDOS sobre a coleção real.",
+        },
+    }
+
+
 @router.get("/cluster")
 async def cluster():
     return await asyncio.to_thread(_cluster_info_sync)
@@ -689,8 +795,10 @@ async def negocio():
                     "REAIS em execução (cluster + stream processor) a preço de lista da AWS "
                     "us-east-1 — não inclui transferência de dados nem o Kafka, que aqui é "
                     "local. O ticket médio foi calculado pelo processor sobre as transações "
-                    "que passaram, mas os valores vêm da distribuição sintética do gerador: o "
-                    "fluxo em R$ mostra ordem de grandeza, não o ticket real do Inter.",
+                    "que passaram, sobre uma distribuição sintética CALIBRADA para o formato "
+                    "do PIX (mediana ~R$ 87, média ~R$ 550, cauda longa). O fluxo em R$ mostra "
+                    "ordem de grandeza: trocando as faixas por dados reais do Inter, os mesmos "
+                    "cartões passam a valer para a conversa de negócio.",
         },
     }
 

@@ -238,6 +238,13 @@ export default function Streaming() {
 
   // ── Tradução para números de negócio ────────────────────────────────────
   const [negocio, setNegocio] = useState(null)
+  const [perfil, setPerfil] = useState(null)
+  useEffect(() => {
+    const tick = async () => { const d = await call('/streaming/perfil-valores'); if (d) setPerfil(d) }
+    tick()
+    const t = setInterval(tick, 15000)
+    return () => clearInterval(t)
+  }, [call])
   useEffect(() => {
     const tick = async () => { const d = await call('/streaming/negocio'); if (d) setNegocio(d) }
     tick()
@@ -646,6 +653,33 @@ export default function Streaming() {
               <div className="str-neg-s">o aviso já vem do banco: sem broker e sem processo de sync</div>
             </div>
           </div>
+          {perfil?.medido?.amostra > 0 && (
+            <div className="str-perfil">
+              <div className="str-perfil-t">
+                Perfil dos valores — <strong>medido</strong> com <code>$percentile</code> sobre {num(perfil.medido.amostra)} transações da coleção
+              </div>
+              <div className="str-perfil-g">
+                {[
+                  ['mediana', perfil.medido.mediana, 'metade das transações abaixo disso'],
+                  ['média', perfil.medido.media, 'puxada pela cauda, bem acima da mediana'],
+                  ['p90', perfil.medido.p90, '9 em cada 10 abaixo'],
+                  ['p99', perfil.medido.p99, 'a cauda que concentra o volume'],
+                ].map(([k, v, sub]) => (
+                  <div key={k} className="str-perfil-c">
+                    <div className="str-perfil-k">{k}</div>
+                    <div className="str-perfil-v">R$ {fmtBRL(v)}</div>
+                    <div className="str-perfil-s">{sub}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="str-perfil-n">
+                É por isso que ticket médio sozinho engana: a <strong>mediana é ~6× menor que a média</strong>.
+                A composição ({perfil.premissa.tipos.map(t => `${t.tipo} ${t.peso_pct}%`).join(' · ')}) e as
+                faixas de valor são <strong>premissas calibradas</strong> para se parecer com o PIX — os percentis acima são medidos.
+              </div>
+            </div>
+          )}
+
           <div style={{ marginTop: 12, fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
             📐 <strong>O que é medido e o que é premissa:</strong> {negocio.premissas.nota} Custo considerado: US$ {negocio.premissas.custo_ambiente_usd_hora}/h.
           </div>

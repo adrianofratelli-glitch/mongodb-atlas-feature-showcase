@@ -199,6 +199,20 @@ Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `STREAMING_TTL_SEGUNDOS`, `TETO_MEDIDO_TPS` (display only), and
 `CUSTO_CLUSTER_USD_HORA` / `CUSTO_ASP_USD_HORA` to override list prices.
 
+### Transaction value profile
+
+Values are not drawn uniformly — a flat draw produces a meaningless average
+ticket. `PERFIL_VALORES` declares weighted bands per transaction type,
+calibrated so the distribution has the shape a payments team expects: median
+around R$ 87, mean around R$ 550 (six times the median), and the top 1% of
+transactions carrying ~38% of the financial volume. Draws are uniform in log
+scale inside each band, so there are no artificial steps.
+
+`GET /streaming/perfil-valores` returns the declared bands next to percentiles
+**measured** with `$percentile` over a sample of the live collection, and the
+UI shows both — the shape is measured, the calibration is a premise. Replace
+the bands with the client's real figures and the business panel becomes theirs.
+
 ### Cost figures
 
 The business panel prices the **tiers actually running**, read live: the

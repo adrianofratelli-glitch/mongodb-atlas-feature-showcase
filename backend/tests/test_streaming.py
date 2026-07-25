@@ -157,6 +157,52 @@ def test_particao_do_documento_fica_no_intervalo():
 
 
 # ---------------------------------------------------------------------------
+# Perfil de valores — o formato importa mais que a média
+# ---------------------------------------------------------------------------
+def test_pesos_dos_tipos_somam_cem():
+    assert sum(p for _, p in streaming.PERFIL_TIPOS) == 100
+
+
+def test_todo_tipo_sorteado_tem_faixas_declaradas():
+    for tipo, _ in streaming.PERFIL_TIPOS:
+        assert tipo in streaming.PERFIL_VALORES
+        assert streaming.PERFIL_VALORES[tipo], f"{tipo} sem faixas"
+
+
+def test_faixas_de_valor_sao_crescentes_e_positivas():
+    for tipo, faixas in streaming.PERFIL_VALORES.items():
+        for peso, minimo, maximo in faixas:
+            assert peso > 0, tipo
+            assert 0 < minimo < maximo, f"{tipo}: faixa inválida {minimo}-{maximo}"
+
+
+def test_valor_sorteado_respeita_as_faixas_do_tipo():
+    for tipo, faixas in streaming.PERFIL_VALORES.items():
+        menor = min(f[1] for f in faixas)
+        maior = max(f[2] for f in faixas)
+        for _ in range(500):
+            valor = streaming._sorteia_valor(tipo)
+            assert menor <= valor <= maior, f"{tipo}: {valor} fora de {menor}-{maior}"
+
+
+def test_distribuicao_e_assimetrica_como_pix():
+    """
+    O ponto da calibração: mediana MUITO abaixo da média, com cauda longa.
+    Um sorteio uniforme (o que havia antes) reprovaria neste teste.
+    """
+    import statistics
+
+    valores = sorted(float(streaming._new_transacao()["valor"].to_decimal()) for _ in range(20_000))
+    mediana = statistics.median(valores)
+    media = statistics.mean(valores)
+    assert 40 <= mediana <= 150, f"mediana fora do esperado: {mediana}"
+    assert media > mediana * 3, f"distribuição pouco assimétrica: média {media}, mediana {mediana}"
+    # A cauda tem que concentrar volume financeiro relevante.
+    top1 = sum(valores[int(0.99 * len(valores)):])
+    assert top1 / sum(valores) > 0.2
+
+
+# ---------------------------------------------------------------------------
 # Datas vindas do Kafka
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("valor", [
