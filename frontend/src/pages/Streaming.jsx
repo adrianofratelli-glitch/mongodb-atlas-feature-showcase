@@ -289,7 +289,8 @@ export default function Streaming() {
           <div>
             <div style={{ fontWeight: 700, fontSize: 15 }}>Gerador de transações</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-              <code>{gen?.colecao || 'pix.transacoes'}</code> · micro-batches a cada 100 ms · TTL de 2 h em <code>ts</code>
+              <code>{gen?.colecao || 'pix.transacoes'}</code> · micro-batches a cada 100 ms ·
+              TTL de {gen?.ttl_segundos ? `${gen.ttl_segundos}s` : '—'} em <code>ts</code> (a coleção se limpa sozinha)
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>

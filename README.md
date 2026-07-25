@@ -177,9 +177,20 @@ collection with a change stream — the ASP result reaches the screen through th
 mechanics of column 1.
 
 Tear everything down with `./scripts/teardown-streaming.sh` (add `--volumes` to
-drop the cached plugin). `POST /streaming/reset` (the **Reset** button) clears
-`transacoes`, `metricas_janela` and `dlq` and zeroes every counter. A 2-hour TTL
-index on `ts` keeps the collection from growing between demos.
+drop the cached plugin).
+
+**Cleaning up between runs.** `POST /streaming/reset` (the **Reset** button) is
+the real cleanup: it clears `transacoes`, `metricas_janela` and `dlq` and zeroes
+every counter — above 300k documents it drops and recreates the collection, so
+half a million documents go in ~10 s instead of timing out.
+
+The 30-minute TTL index on `ts` (`STREAMING_TTL_SEGUNDOS`) is the safety net for
+when you forget to reset, not the main mechanism. The window is deliberately
+longer than any demo burst: in steady state the TTL deleter removes at the same
+rate you insert — 10k/s in is 10k/s deleted, whether the TTL is 2 minutes or 30 —
+so a short window only guarantees that deletion competes with the peak while the
+audience is watching, and floods the oplog the resume-token demo depends on. A
+long window pushes that cleanup to after the presentation, on an idle cluster.
 
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,

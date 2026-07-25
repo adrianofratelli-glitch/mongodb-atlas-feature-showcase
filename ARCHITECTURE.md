@@ -64,7 +64,7 @@ the database name).
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/streaming/generator/start` | Body `{"tps": 1..5000}`. Starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. Ensures the unique index on `endToEndId` and the 2-hour TTL index on `ts`. |
+| `POST` | `/streaming/generator/start` | Body `{"tps": 1..5000}`. Starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. Ensures the unique index on `endToEndId` and the TTL index on `ts` (30 min by default, adjusted with `collMod` on whatever TTL index already covers `{ts: 1}`). |
 | `POST` | `/streaming/generator/stop` | Cancels the task. |
 | `GET` | `/streaming/generator/status` | `running`, `tps_alvo`, **`tps_medido`** (measured over a 5 s sliding window, never the requested value), `inseridos`, `docs_na_colecao`, plus the arithmetic projection `projecao_dia` and `pct_dia_inter` / `pct_dia_brasil`. |
 | `POST` | `/streaming/reset` | Stops the generator, clears the three collections, zeroes all counters and broadcasts a `reset` event. Above `DROP_ACIMA_DE` (300k docs) it drops and recreates `transacoes` instead of deleting document by document — minutes become seconds — stopping and restarting the ASP processor around the drop; the change-stream workers detect the now-invalid resume token and reopen fresh. Returns `via_drop`, `asp_reiniciado` and `restantes`. |

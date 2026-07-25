@@ -43,6 +43,7 @@ config=$(cat <<JSON
   "collection": "$COLLECTION",
   "topic.prefix": "atlas",
   "publish.full.document.only": "true",
+  "pipeline": "[{\"\$match\": {\"operationType\": \"insert\"}}]",
   "startup.mode": "copy_existing",
   "change.stream.full.document": "updateLookup",
   "output.format.value": "json",

@@ -59,7 +59,17 @@ CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
 TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "10000"))
 ASP_TIER = os.getenv("ASP_TIER", "SP30").strip() or "SP30"
 
-TTL_SECONDS = 2 * 60 * 60  # a coleção não pode crescer entre demos
+# TTL = rede de segurança, não a limpeza principal (essa é o botão Reset, que
+# dropa a coleção na hora).
+#
+# A janela é deliberadamente MAIOR que a rajada mais longa de uma demo. Em
+# regime o deletor do TTL remove na mesma taxa em que se insere — 10 mil/s
+# inserindo é 10 mil/s deletando, com TTL de 2 min ou de 30. O que a janela
+# decide é QUANDO isso acontece: curta demais, a deleção concorre com o pico
+# enquanto a squad olha os números e ainda enche o oplog de que o resume token
+# depende; longa o bastante, a limpeza cai depois da apresentação, com o
+# cluster ocioso.
+TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "1800"))
 PURGE_TIMEOUT_MS = 180_000
 # Partições do consumo do change stream (um cursor + uma thread por partição).
 CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "6")))
@@ -223,9 +233,40 @@ def _sse_response(request: Request, hub: Hub, hello: dict[str, Any]) -> Streamin
 # ---------------------------------------------------------------------------
 # Gerador de escritas — alimenta as três colunas
 # ---------------------------------------------------------------------------
+TTL_INDEX_NAME = "ts_ttl"
+
+
 def _ensure_indexes() -> None:
+    """
+    Garante o índice único de endToEndId e o TTL em `ts` com a janela atual.
+
+    O TTL é ajustado por collMod no índice que JÁ existe (procurado pela chave,
+    não pelo nome): create_index recusa um segundo índice sobre {ts: 1} com
+    expireAfterSeconds diferente, e versões anteriores desta PoV criaram esse
+    índice com outro nome.
+    """
     sdb[COL_TX].create_index("endToEndId", unique=True, name="endToEndId_unique")
-    sdb[COL_TX].create_index("ts", expireAfterSeconds=TTL_SECONDS, name="ts_ttl_2h")
+
+    existente = None
+    for indice in sdb[COL_TX].list_indexes():
+        if dict(indice.get("key", {})) == {"ts": 1}:
+            existente = indice
+            break
+
+    if existente is None:
+        sdb[COL_TX].create_index("ts", expireAfterSeconds=TTL_SECONDS, name=TTL_INDEX_NAME)
+        return
+
+    if existente["name"] != TTL_INDEX_NAME:
+        # Nome legado (ts_ttl_2h de versões anteriores): recria com o nome atual
+        # para não deixar um índice chamado "2h" valendo outra coisa no Compass.
+        sdb[COL_TX].drop_index(existente["name"])
+        sdb[COL_TX].create_index("ts", expireAfterSeconds=TTL_SECONDS, name=TTL_INDEX_NAME)
+    elif existente.get("expireAfterSeconds") != TTL_SECONDS:
+        sdb.command({
+            "collMod": COL_TX,
+            "index": {"name": TTL_INDEX_NAME, "expireAfterSeconds": TTL_SECONDS},
+        })
 
 
 def _new_transacao() -> dict[str, Any]:
@@ -399,6 +440,7 @@ async def generator_status():
         "docs_na_colecao": total,
         "colecao": f"{STREAM_DB}.{COL_TX}",
         "ttl_segundos": TTL_SECONDS,
+        "ttl_ativo": True,
         "started_at": generator.started_at.isoformat() if generator.started_at else None,
         # Escala derivada do TPS MEDIDO — projeção aritmética, não uma medição
         # de 24 h. A UI rotula como projeção.
