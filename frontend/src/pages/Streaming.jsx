@@ -271,7 +271,9 @@ export default function Streaming() {
           <div className="str-col-head">
             <span>🔀 Kafka Connector</span>
             <span className={`badge ${kafkaOk ? 'badge-green' : 'badge-yellow'}`}>
-              {connectorState ? `● ${connectorState}` : '○ verificando'}
+              {!connectorState ? '○ verificando'
+                : connectorState === 'nao_configurado' ? '○ não configurado'
+                : `● ${connectorState}`}
             </span>
           </div>
           <div className="str-col-body">
