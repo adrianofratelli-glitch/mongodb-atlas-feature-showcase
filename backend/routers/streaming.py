@@ -139,30 +139,58 @@ _UF_PESOS = [30, 14, 11, 8, 8, 7, 6, 6, 5, 5]
 # mediana, e o volume financeiro se concentra na cauda — as três propriedades
 # que uma squad de pagamentos espera ver.
 # ---------------------------------------------------------------------------
-PERFIL_TIPOS = [("PIX", 84), ("BOLETO", 13), ("TED", 3)]
-PERFIL_VALORES: dict[str, list[tuple[float, float, float]]] = {
-    # tipo: [(peso, min, max)] — calibrado para mediana ~R$ 87 e média ~R$ 566,
-    # com o 1% maior concentrando ~38% do volume financeiro.
-    "PIX": [
-        (46, 5.0, 60.0),           # rachar conta, troco, cafezinho
-        (33, 60.0, 250.0),         # compras do dia a dia
-        (17, 250.0, 1_200.0),      # contas, aluguel pequeno
-        (3.7, 1_200.0, 6_000.0),   # transferências relevantes
-        (0.3, 6_000.0, 30_000.0),  # cauda
-    ],
-    "BOLETO": [
-        (48, 30.0, 180.0),
-        (38, 180.0, 900.0),
-        (13, 900.0, 4_000.0),
-        (1, 4_000.0, 15_000.0),
-    ],
-    "TED": [
-        (50, 400.0, 3_000.0),
-        (40, 3_000.0, 15_000.0),
-        (9, 15_000.0, 60_000.0),
-        (1, 60_000.0, 200_000.0),
-    ],
+# Duas calibrações, trocáveis por STREAMING_PERFIL_VALORES:
+#
+#   varejo (default) — mediana ~R$ 90, média ~R$ 570. Muita transferência
+#     pequena do dia a dia; é o formato clássico do PIX P2P.
+#   corpo_medio      — mediana ~R$ 490, com ~73% das transações entre R$ 100 e
+#     R$ 2.000. Para quando o mix do cliente é mais de pagamento a lojista.
+#
+# As duas mantêm a cauda longa DE PROPÓSITO: sem ela, média e mediana ficam
+# quase iguais (num sorteio uniforme de R$ 100 a 2.000, a razão cai para 1,4×
+# e o 1% maior carrega só 3% do volume), e some justamente a assimetria que
+# faz uma squad de pagamentos reconhecer o próprio fluxo.
+PERFIS_VALORES: dict[str, dict[str, Any]] = {
+    "varejo": {
+        "tipos": [("PIX", 84), ("BOLETO", 13), ("TED", 3)],
+        "faixas": {
+            "PIX": [
+                (46, 5.0, 60.0), (33, 60.0, 250.0), (17, 250.0, 1_200.0),
+                (3.7, 1_200.0, 6_000.0), (0.3, 6_000.0, 30_000.0),
+            ],
+            "BOLETO": [
+                (48, 30.0, 180.0), (38, 180.0, 900.0),
+                (13, 900.0, 4_000.0), (1, 4_000.0, 15_000.0),
+            ],
+            "TED": [
+                (50, 400.0, 3_000.0), (40, 3_000.0, 15_000.0),
+                (9, 15_000.0, 60_000.0), (1, 60_000.0, 200_000.0),
+            ],
+        },
+    },
+    "corpo_medio": {
+        "tipos": [("PIX", 84), ("BOLETO", 13), ("TED", 3)],
+        "faixas": {
+            "PIX": [
+                (15, 20.0, 100.0), (45, 100.0, 700.0), (30, 700.0, 2_000.0),
+                (9, 2_000.0, 8_000.0), (1, 8_000.0, 25_000.0),
+            ],
+            "BOLETO": [
+                (15, 50.0, 100.0), (45, 100.0, 900.0),
+                (35, 900.0, 3_000.0), (5, 3_000.0, 12_000.0),
+            ],
+            "TED": [
+                (45, 500.0, 3_000.0), (42, 3_000.0, 15_000.0),
+                (12, 15_000.0, 50_000.0), (1, 50_000.0, 150_000.0),
+            ],
+        },
+    },
 }
+PERFIL_ATIVO = os.getenv("STREAMING_PERFIL_VALORES", "varejo").strip() or "varejo"
+if PERFIL_ATIVO not in PERFIS_VALORES:
+    PERFIL_ATIVO = "varejo"
+PERFIL_TIPOS: list[tuple[str, int]] = PERFIS_VALORES[PERFIL_ATIVO]["tipos"]
+PERFIL_VALORES: dict[str, list[tuple[float, float, float]]] = PERFIS_VALORES[PERFIL_ATIVO]["faixas"]
 _TIPOS = [t for t, _ in PERFIL_TIPOS]
 _TIPO_PESOS = [p for _, p in PERFIL_TIPOS]
 
@@ -624,6 +652,8 @@ async def perfil_valores():
     return {
         "medido": medido,
         "premissa": {
+            "perfil": PERFIL_ATIVO,
+            "perfis_disponiveis": sorted(PERFIS_VALORES),
             "tipos": [{"tipo": t, "peso_pct": p} for t, p in PERFIL_TIPOS],
             "faixas": {
                 tipo: [{"peso": f[0], "min": f[1], "max": f[2]} for f in faixas]

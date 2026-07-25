@@ -202,11 +202,19 @@ Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 ### Transaction value profile
 
 Values are not drawn uniformly — a flat draw produces a meaningless average
-ticket. `PERFIL_VALORES` declares weighted bands per transaction type,
-calibrated so the distribution has the shape a payments team expects: median
-around R$ 87, mean around R$ 550 (six times the median), and the top 1% of
-transactions carrying ~38% of the financial volume. Draws are uniform in log
-scale inside each band, so there are no artificial steps.
+ticket. `PERFIS_VALORES` declares weighted bands per transaction type, drawn
+uniformly in log scale inside each band. Two calibrations ship, selected with
+`STREAMING_PERFIL_VALORES`:
+
+| Profile | Median | Mean | Mean/median | Top 1% of volume |
+|---|---|---|---|---|
+| `varejo` (default) | R$ 91 | R$ 559 | 6.2× | 36% |
+| `corpo_medio` | R$ 500 | R$ 1,252 | 2.5× | 18% |
+
+Both keep a long tail on purpose. A uniform draw between R$ 100 and R$ 2,000
+collapses the mean-to-median ratio to 1.4× and leaves the top 1% carrying only
+3% of the volume — which erases exactly the asymmetry a payments team
+recognises in its own flow.
 
 `GET /streaming/perfil-valores` returns the declared bands next to percentiles
 **measured** with `$percentile` over a sample of the live collection, and the

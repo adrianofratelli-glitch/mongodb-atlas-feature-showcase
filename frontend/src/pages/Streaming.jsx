@@ -675,7 +675,8 @@ export default function Streaming() {
               <div className="str-perfil-n">
                 É por isso que ticket médio sozinho engana: a <strong>mediana é ~6× menor que a média</strong>.
                 A composição ({perfil.premissa.tipos.map(t => `${t.tipo} ${t.peso_pct}%`).join(' · ')}) e as
-                faixas de valor são <strong>premissas calibradas</strong> para se parecer com o PIX — os percentis acima são medidos.
+                faixas de valor são <strong>premissas calibradas</strong> (perfil <code>{perfil.premissa.perfil}</code>) —
+                os percentis acima são medidos. Trocar por dados reais do cliente é mudar uma tabela.
               </div>
             </div>
           )}
