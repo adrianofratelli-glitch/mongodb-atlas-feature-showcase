@@ -57,7 +57,6 @@ ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or
 CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
 # Teto MEDIDO com as três colunas ativas: acima disso o Kafka e o ASP ficam para trás.
 TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "10000"))
-ASP_TIER = os.getenv("ASP_TIER", "SP30").strip() or "SP30"
 
 # TTL = rede de segurança, não a limpeza principal (essa é o botão Reset, que
 # dropa a coleção na hora).
@@ -508,11 +507,11 @@ async def cenario():
             {"label": "2× PIX Brasil", "tps": BRASIL_TPS_MEDIO * 2,
              "detalhe": "o dobro do PIX nacional inteiro, no mesmo cluster"},
             {"label": "Teto medido", "tps": TETO_MEDIDO_TPS,
-             "detalhe": f"máximo sustentado neste ambiente ({CLUSTER_TIER} + {ASP_TIER}) com as três colunas juntas"},
+             "detalhe": f"máximo sustentado neste ambiente (cluster {CLUSTER_TIER}) com as três colunas juntas"},
         ],
         "ambiente": {
             "cluster": CLUSTER_TIER,
-            "asp_tier": ASP_TIER,
+            # tier do ASP não vem daqui: /streaming/asp/status lê o real da SPI.
             "particoes_consumo": CS_PARTICOES,
             "teto_medido_tps": TETO_MEDIDO_TPS,
             "nota": f"{TETO_MEDIDO_TPS:,}".replace(",", ".") +
@@ -1109,11 +1108,12 @@ ASP_PIPELINE_SNIPPET = """[
 ]"""
 
 
-def _asp_reachable() -> tuple[bool, str]:
+def _asp_reachable() -> tuple[bool, str, str | None]:
+    """(configurado, detalhe, tier_real_do_processor)."""
     if not ASP_ENABLED:
-        return False, "ASP_ENABLED=false"
+        return False, "ASP_ENABLED=false", None
     if not ASP_CONNECTION_STRING:
-        return False, "ASP_CONNECTION_STRING ausente"
+        return False, "ASP_CONNECTION_STRING ausente", None
     from pymongo import MongoClient
 
     try:
@@ -1124,16 +1124,19 @@ def _asp_reachable() -> tuple[bool, str]:
             processors = resposta.get("streamProcessors", [])
             ativos = [p for p in processors if p.get("state") == "STARTED"]
             if not processors:
-                return False, "SPI acessível, mas nenhum processor criado (rode scripts/setup-asp.js)"
+                return False, "SPI acessível, mas nenhum processor criado (rode scripts/setup-asp.js)", None
             if not ativos:
                 estados = ", ".join(f"{p.get('name')}={p.get('state')}" for p in processors)
-                return False, f"processor parado: {estados}"
+                return False, f"processor parado: {estados}", None
             nomes = ", ".join(p.get("name", "?") for p in ativos)
-            return True, f"processor STARTED: {nomes}"
+            # Tier REAL em execução: o processor mantém o tier com que foi
+            # iniciado, que pode diferir do default do workspace.
+            tier = ativos[0].get("effectiveTier") or ativos[0].get("tier")
+            return True, f"processor STARTED: {nomes}", tier
         finally:
             spi.close()
     except Exception as exc:  # noqa: BLE001 - SPI ausente é estado esperado da demo
-        return False, f"SPI inacessível: {type(exc).__name__}"
+        return False, f"SPI inacessível: {type(exc).__name__}", None
 
 
 def _asp_totais() -> dict[str, Any]:
@@ -1150,13 +1153,14 @@ def _asp_totais() -> dict[str, Any]:
 
 @router.get("/asp/status")
 async def asp_status():
-    ok, detalhe = await asyncio.to_thread(_asp_reachable)
+    ok, detalhe, tier = await asyncio.to_thread(_asp_reachable)
     janelas = await asyncio.to_thread(sdb[COL_WINDOWS].count_documents, {})
     dlq = await asyncio.to_thread(sdb[COL_DLQ].count_documents, {})
     totais = await asyncio.to_thread(_asp_totais)
     return {
         "estado": "configurado" if ok else "nao_configurado",
         "detalhe": detalhe,
+        "tier": tier,
         **totais,
         "asp_enabled": ASP_ENABLED,
         "colecao_janelas": f"{STREAM_DB}.{COL_WINDOWS}",
@@ -1254,7 +1258,7 @@ async def asp_sse(request: Request):
 async def asp_inject_invalid():
     """Insere um documento que viola o schema esperado — o validador do processor
     deve mandá-lo para a DLQ em vez de derrubar o processor."""
-    ok, detalhe = await asyncio.to_thread(_asp_reachable)
+    ok, detalhe, _ = await asyncio.to_thread(_asp_reachable)
     if not ok:
         raise HTTPException(status_code=409, detail=f"Atlas Stream Processing não configurado ({detalhe}).")
     doc = {

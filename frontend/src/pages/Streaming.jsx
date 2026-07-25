@@ -290,7 +290,7 @@ export default function Streaming() {
             <div style={{ fontWeight: 700, fontSize: 15 }}>Gerador de transações</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
               <code>{gen?.colecao || 'pix.transacoes'}</code> · micro-batches a cada 100 ms ·
-              TTL de {gen?.ttl_segundos ? `${gen.ttl_segundos}s` : '—'} em <code>ts</code> (a coleção se limpa sozinha)
+              TTL de {gen?.ttl_segundos ? (gen.ttl_segundos >= 60 ? `${Math.round(gen.ttl_segundos / 60)} min` : `${gen.ttl_segundos}s`) : '—'} em <code>ts</code> (rede de segurança; o Reset limpa na hora)
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -355,7 +355,7 @@ export default function Streaming() {
           <div className="str-teto-t">⚙️ Ambiente desta PoV — e como ir além</div>
           <div className="str-teto-g">
             <div><span className="str-teto-k">Cluster</span><span className="str-teto-v">{cenario.ambiente.cluster}</span></div>
-            <div><span className="str-teto-k">Stream Processing</span><span className="str-teto-v">{cenario.ambiente.asp_tier}</span></div>
+            <div><span className="str-teto-k">Stream Processing</span><span className="str-teto-v">{aspStatus?.tier || '—'}</span></div>
             <div><span className="str-teto-k">Partições de consumo</span><span className="str-teto-v">{cenario.ambiente.particoes_consumo}</span></div>
           </div>
           <div className="str-teto-n">{cenario.ambiente.nota}</div>

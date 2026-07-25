@@ -82,6 +82,10 @@ export default function App() {
   })
   const [stats, setStats] = useState(null)
   const [preflight, setPreflight] = useState(null)
+  // Barra recolhida por padrão: expande no hover ou quando fixada no alfinete.
+  const [sidebarHover, setSidebarHover] = useState(false)
+  const [sidebarFixa, setSidebarFixa] = useState(false)
+  const sidebarAberta = sidebarHover || sidebarFixa
 
   useEffect(() => {
     window.history.replaceState(null, '', `#${active}`)
@@ -144,40 +148,52 @@ export default function App() {
       </header>
 
       <div className="app-shell-body" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* ── Sidebar ── */}
-        <aside className="app-sidebar" aria-label="Módulos da demonstração" style={{
-          width: 264, background: 'var(--bg-secondary)',
-          borderRight: '1px solid var(--border-subtle)',
-          padding: '18px 0', flexShrink: 0, overflowY: 'auto',
-        }}>
-          <div style={{ padding: '0 18px 12px' }}>
-            <span className="kicker">Módulos</span>
+        {/* ── Sidebar: recolhida por padrão, expande no hover ──
+            O módulo Streaming tem três colunas lado a lado e precisa da
+            largura; a navegação só aparece inteira quando o mouse chega nela. */}
+        <aside
+          className={`app-sidebar${sidebarAberta ? ' aberta' : ''}`}
+          aria-label="Módulos da demonstração"
+          onMouseEnter={() => setSidebarHover(true)}
+          onMouseLeave={() => setSidebarHover(false)}
+        >
+          <div className="sb-topo">
+            <span className="kicker sb-so-aberta">Módulos</span>
+            <button
+              className="sb-pin"
+              aria-pressed={sidebarFixa}
+              title={sidebarFixa ? 'Soltar a barra (volta a recolher)' : 'Fixar a barra aberta'}
+              onClick={() => setSidebarFixa(v => !v)}
+            >{sidebarFixa ? '📌' : '📍'}</button>
           </div>
 
           {MODULES.map(m => (
-            <button key={m.key} aria-current={active === m.key ? 'page' : undefined} onClick={() => setActive(m.key)} style={{
-              width: '100%', padding: '11px 18px',
-              background: active === m.key ? `${m.color}10` : 'transparent',
-              border: 'none', borderLeft: `3px solid ${active === m.key ? m.color : 'transparent'}`,
-              cursor: 'pointer', textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 3,
-              transition: 'background .15s',
-            }}>
+            <button key={m.key} aria-current={active === m.key ? 'page' : undefined}
+              title={`${m.num} · ${m.title}`}
+              onClick={() => setActive(m.key)}
+              className="sb-item"
+              style={{
+                background: active === m.key ? `${m.color}10` : 'transparent',
+                borderLeft: `3px solid ${active === m.key ? m.color : 'transparent'}`,
+              }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                 <span style={{
                   fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
                   letterSpacing: '.1em', color: active === m.key ? m.color : 'var(--text-disabled)',
                 }}>{m.num}</span>
-                <span style={{
+                <span className="sb-so-aberta" style={{
                   fontWeight: active === m.key ? 700 : 500, fontSize: 13.5,
                   color: active === m.key ? m.color : 'var(--text-primary)',
-                  letterSpacing: '-.01em',
+                  letterSpacing: '-.01em', whiteSpace: 'nowrap',
                 }}>
                   {m.title}
                 </span>
               </div>
-              <span style={{ fontSize: 11, color: 'var(--text-secondary)', paddingLeft: 26, lineHeight: 1.45 }}>{m.subtitle}</span>
+              <span className="sb-so-aberta" style={{ fontSize: 11, color: 'var(--text-secondary)', paddingLeft: 26, lineHeight: 1.45 }}>{m.subtitle}</span>
             </button>
           ))}
+
+          <div className="sb-so-aberta">
 
           {/* Dataset info */}
           <div style={{
@@ -201,6 +217,7 @@ export default function App() {
             {preflight?.checks && Object.entries(preflight.checks).filter(([, c]) => !c.ok).map(([key, check]) => (
               <div key={key} style={{ color: 'var(--text-secondary)', marginTop: 5 }}>{key}: {check.message}</div>
             ))}
+          </div>
           </div>
         </aside>
 
