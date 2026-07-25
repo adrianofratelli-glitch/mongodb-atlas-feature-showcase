@@ -65,6 +65,11 @@ const window = {
           qtd: { $count: {} },
           volume: { $sum: { $toDouble: '$fullDocument.valor' } },
           ticket: { $avg: { $toDouble: '$fullDocument.valor' } },
+          // _stream_meta NAO e acessivel depois do $tumblingWindow: um
+          // $concat com ele retorna null e todos os grupos colidem num
+          // unico _id. As bordas da janela saem dos proprios dados.
+          window_start: { $min: '$fullDocument.ts' },
+          window_end: { $max: '$fullDocument.ts' },
         },
       },
       {
@@ -84,12 +89,8 @@ const window = {
 const shape = {
   $set: {
     _id: {
-      $concat: [
-        { $toString: '$_stream_meta.window.start' }, '|', '$uf', '|', '$tipo',
-      ],
+      $concat: [{ $toString: '$window_start' }, '|', '$uf', '|', '$tipo'],
     },
-    window_start: '$_stream_meta.window.start',
-    window_end: '$_stream_meta.window.end',
   },
 };
 

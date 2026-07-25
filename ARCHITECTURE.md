@@ -53,14 +53,21 @@ One write generator feeds three consumers of the same change. Data lives in
 `pix.transacoes`, `pix.metricas_janela` and `pix.dlq` (`STREAMING_DB` overrides
 the database name).
 
+**Cenário e rede**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/streaming/cenario` | PIX scale premises (daily volume, Inter's share, peak factor) and the TPS presets derived from them, split into `premissas` and `derivados` so the UI can label them. Nothing here is a measurement. |
+| `GET` | `/streaming/rede` | Median RTT app ↔ cluster, measured with `ping`. Without it the columns' latency reads as change-stream cost when a large part is distance. |
+
 **Generator**
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/streaming/generator/start` | Body `{"tps": 1..200}`. Starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. Ensures the unique index on `endToEndId` and the 2-hour TTL index on `ts`. |
+| `POST` | `/streaming/generator/start` | Body `{"tps": 1..5000}`. Starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. Ensures the unique index on `endToEndId` and the 2-hour TTL index on `ts`. |
 | `POST` | `/streaming/generator/stop` | Cancels the task. |
-| `GET` | `/streaming/generator/status` | `running`, `tps_alvo`, **`tps_medido`** (measured over a 5 s sliding window, never the requested value), `inseridos`, `docs_na_colecao`. |
-| `POST` | `/streaming/reset` | Stops the generator, empties the three collections, zeroes all counters and broadcasts a `reset` event to every SSE stream. |
+| `GET` | `/streaming/generator/status` | `running`, `tps_alvo`, **`tps_medido`** (measured over a 5 s sliding window, never the requested value), `inseridos`, `docs_na_colecao`, plus the arithmetic projection `projecao_dia` and `pct_dia_inter` / `pct_dia_brasil`. |
+| `POST` | `/streaming/reset` | Stops the generator, empties the three collections (dedicated client with a long socket timeout, retried on election), zeroes all counters and broadcasts a `reset` event. Returns `restantes` if the purge could not finish. The change-stream worker is deliberately left running. |
 
 **Column 1 — Change Streams**
 
@@ -68,7 +75,7 @@ the database name).
 |---|---|---|
 | `GET` | `/streaming/changestream` | **SSE.** A single `collection.watch()` cursor (`[{$match: {operationType: "insert"}}]`, `full_document="updateLookup"`) broadcast to all subscribers. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries the end-to-end `latency_ms` (document `ts` vs receipt), the truncated resume token and the `recuperado` flag. |
 | `POST` | `/streaming/changestream/drop-resume` | Closes the cursor, waits 3 s while the generator keeps writing, reopens with `resume_after(<resume token>)`. Events whose `ts` precedes the reopen are flagged `recuperado` — the proof that nothing was lost. |
-| `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, `token`. |
+| `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, `token`, plus `eventos_s` and the p50/p95/p99 latency percentiles. |
 
 **Column 2 — MongoDB Kafka Connector**
 
@@ -82,10 +89,16 @@ the database name).
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/streaming/asp` | **SSE** of closed windows and DLQ documents. The backend does not query the SPI: it watches `pix.metricas_janela` and `pix.dlq` with change streams, so the ASP result reaches the screen through the mechanics of column 1. |
-| `GET` | `/streaming/asp/status` | `configurado` / `nao_configurado` (from `ASP_ENABLED` plus a ping to `ASP_CONNECTION_STRING`), window and DLQ counts, and the processor pipeline as a code block for the slide. |
+| `GET` | `/streaming/asp/status` | `configurado` / `nao_configurado` — the real processor state read with `listStreamProcessors` on the SPI, not just connectivity — plus window/DLQ counts, the totals the processor has aggregated (`transacoes_agregadas`, `volume_agregado`) and the pipeline as a code block for the slide. |
 | `POST` | `/streaming/asp/inject-invalid` | Inserts a document violating the expected schema; the processor's `$validate` stage routes it to the DLQ instead of failing. Returns 409 when ASP is not configured. |
 | `GET` | `/streaming/asp/dlq` | Last DLQ documents. |
 | `GET` | `/streaming/asp/janelas` | Last closed windows straight from the collection the processor writes. |
+
+**Sampling.** At Inter-peak load the columns produce thousands of events per
+second — more than a browser tab can render. The SSE feed is therefore a
+*sample* (one frame every 120 ms), labelled as such in the UI, while counters
+and percentiles are computed in the worker over **100% of the events**. A
+recovered event is never sampled out: it is the proof the drop/resume works.
 
 ### SSE conventions
 

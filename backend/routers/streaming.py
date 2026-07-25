@@ -26,6 +26,7 @@ import random
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -36,6 +37,7 @@ from pydantic import BaseModel, Field
 from pymongo.errors import PyMongoError
 
 from database import client
+from settings import settings
 
 router = APIRouter(prefix="/streaming", tags=["Streaming"])
 logger = logging.getLogger("showcase.streaming")
@@ -52,8 +54,28 @@ ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true",
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 
 TTL_SECONDS = 2 * 60 * 60  # a coleção não pode crescer entre demos
+PURGE_TIMEOUT_MS = 180_000
+# Amostragem do feed SSE (contadores e percentis seguem cobrindo 100%).
+FEED_INTERVALO_S = 0.12
+METRICAS_INTERVALO_S = 0.5
 
 sdb = client[STREAM_DB]
+
+# ---------------------------------------------------------------------------
+# Cenário PIX — PREMISSAS declaradas, não medições.
+#
+# Tudo aqui é rotulado como premissa na UI e serve só para dar escala aos
+# números MEDIDOS (o TPS que a demo realmente sustenta é medido contra o
+# Atlas). Nenhum destes valores é apresentado como resultado da demo.
+# ---------------------------------------------------------------------------
+PIX_BRASIL_TX_DIA = 300_000_000          # ordem de grandeza divulgada pelo BCB
+INTER_SHARE = 0.10                       # premissa do cenário: 10% do mercado
+SEGUNDOS_DIA = 86_400
+INTER_TX_DIA = int(PIX_BRASIL_TX_DIA * INTER_SHARE)
+INTER_TPS_MEDIO = round(INTER_TX_DIA / SEGUNDOS_DIA)          # ~347 TPS
+PICO_FATOR = 3                                                 # premissa: pico ≈ 3× a média
+INTER_TPS_PICO = INTER_TPS_MEDIO * PICO_FATOR                  # ~1041 TPS
+BRASIL_TPS_MEDIO = round(PIX_BRASIL_TX_DIA / SEGUNDOS_DIA)     # ~3472 TPS
 
 _UFS = ["SP", "RJ", "MG", "RS", "PR", "BA", "PE", "SC", "GO", "CE"]
 _TIPOS = ["PIX", "TED", "BOLETO"]
@@ -103,6 +125,63 @@ class Hub:
 hub_cs = Hub()
 hub_kafka = Hub()
 hub_asp = Hub()
+
+
+class Meter:
+    """
+    Vazão e percentis de latência a partir das medições reais de cada coluna.
+
+    Percentis importam mais que a média para uma squad de plataforma: o p99 é o
+    que aparece no SLA. Guardamos as últimas AMOSTRAS latências e os instantes
+    dos últimos eventos (janela de 10 s) — memória constante, sem depender de
+    biblioteca externa.
+    """
+
+    AMOSTRAS = 2_000
+    JANELA_S = 10.0
+
+    def __init__(self) -> None:
+        self._lat: deque[float] = deque(maxlen=self.AMOSTRAS)
+        self._marcas: deque[float] = deque(maxlen=100_000)
+        self._lock = threading.Lock()
+
+    def record(self, latency_ms: float | None) -> None:
+        with self._lock:
+            self._marcas.append(time.monotonic())
+            if latency_ms is not None:
+                self._lat.append(latency_ms)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._lat.clear()
+            self._marcas.clear()
+
+    def snapshot(self) -> dict[str, Any]:
+        agora = time.monotonic()
+        with self._lock:
+            while self._marcas and self._marcas[0] < agora - self.JANELA_S:
+                self._marcas.popleft()
+            eventos_s = round(len(self._marcas) / self.JANELA_S, 1)
+            lat = sorted(self._lat)
+        if not lat:
+            return {"eventos_s": eventos_s, "p50": None, "p95": None, "p99": None, "amostras": 0}
+
+        def pct(p: float) -> float:
+            idx = min(len(lat) - 1, int(round((len(lat) - 1) * p)))
+            return round(lat[idx], 1)
+
+        return {
+            "eventos_s": eventos_s,
+            "p50": pct(0.50),
+            "p95": pct(0.95),
+            "p99": pct(0.99),
+            "amostras": len(lat),
+        }
+
+
+meter_cs = Meter()
+meter_kafka = Meter()
+meter_asp = Meter()
 
 
 async def _sse_stream(request: Request, hub: Hub, hello: dict[str, Any]):
@@ -221,8 +300,20 @@ class Generator:
             self._recent = [(time.monotonic(), 0)]
 
     def _insert_batch(self, docs: list[dict[str, Any]]) -> None:
-        """Roda na thread: insere e contabiliza no mesmo passo, para que um
-        cancelamento do gerador nunca perca a contagem de um batch já gravado."""
+        """
+        Roda na thread: carimba `ts`, insere e contabiliza no mesmo passo.
+
+        O carimbo fica aqui, e não na geração do documento, porque `ts` é a
+        origem da latência ponta a ponta exibida nas três colunas. Carimbar na
+        geração incluiria o tempo de fila do próprio gerador na conta e a
+        latência medida deixaria de ser a do caminho de entrega.
+
+        Contabilizar aqui também garante que um cancelamento do gerador nunca
+        perca a contagem de um batch já gravado.
+        """
+        agora = _now()
+        for doc in docs:
+            doc["ts"] = agora
         sdb[COL_TX].insert_many(docs, ordered=False)
         self._record(len(docs))
 
@@ -255,7 +346,7 @@ generator = Generator()
 
 
 class GeneratorStart(BaseModel):
-    tps: int = Field(default=50, ge=1, le=200)
+    tps: int = Field(default=350, ge=1, le=5000)
 
 
 @router.post("/generator/start")
@@ -273,32 +364,142 @@ async def generator_stop():
 @router.get("/generator/status")
 async def generator_status():
     total = await asyncio.to_thread(sdb[COL_TX].estimated_document_count)
+    medido = generator.measured_tps()
     return {
         "running": generator.running,
         "tps_alvo": generator.tps_alvo,
-        "tps_medido": generator.measured_tps(),
+        "tps_medido": medido,
         "inseridos": generator.inserted,
         "docs_na_colecao": total,
         "colecao": f"{STREAM_DB}.{COL_TX}",
         "ttl_segundos": TTL_SECONDS,
         "started_at": generator.started_at.isoformat() if generator.started_at else None,
+        # Escala derivada do TPS MEDIDO — projeção aritmética, não uma medição
+        # de 24 h. A UI rotula como projeção.
+        "projecao_dia": int(medido * SEGUNDOS_DIA),
+        "pct_dia_inter": round(medido * SEGUNDOS_DIA / INTER_TX_DIA * 100, 1) if INTER_TX_DIA else None,
+        "pct_dia_brasil": round(medido * SEGUNDOS_DIA / PIX_BRASIL_TX_DIA * 100, 1) if PIX_BRASIL_TX_DIA else None,
     }
+
+
+def _medir_rtt(amostras: int = 5) -> dict[str, Any]:
+    """
+    RTT app ↔ cluster, medido com ping no admin.
+
+    Sem isto a latência das colunas é lida como custo do change stream, quando
+    boa parte é distância: apresentar do Brasil contra um cluster em us-east-1
+    coloca ~1 RTT em cada salto. O número deixa a conta explícita.
+    """
+    medidas = []
+    for _ in range(amostras):
+        inicio = time.perf_counter()
+        try:
+            client.admin.command("ping")
+        except PyMongoError:
+            return {"rtt_ms": None, "erro": "cluster inacessível"}
+        medidas.append((time.perf_counter() - inicio) * 1000)
+    medidas.sort()
+    return {"rtt_ms": round(medidas[len(medidas) // 2], 1), "amostras": len(medidas)}
+
+
+@router.get("/rede")
+async def rede():
+    return await asyncio.to_thread(_medir_rtt)
+
+
+@router.get("/cenario")
+async def cenario():
+    """
+    Premissas do cenário PIX usadas como RÉGUA para os números medidos.
+
+    Devolve explicitamente o que é premissa e o que é derivado dela, para a UI
+    poder rotular. Nada aqui é resultado de medição — o que a demo mede é o TPS
+    sustentado contra o Atlas, exposto em /streaming/generator/status.
+    """
+    return {
+        "premissas": {
+            "pix_brasil_tx_dia": PIX_BRASIL_TX_DIA,
+            "inter_share": INTER_SHARE,
+            "pico_fator": PICO_FATOR,
+            "fonte": "volume diário do PIX na ordem de grandeza divulgada pelo BCB; "
+                     "participação do Inter e fator de pico são premissas deste cenário",
+        },
+        "derivados": {
+            "inter_tx_dia": INTER_TX_DIA,
+            "inter_tps_medio": INTER_TPS_MEDIO,
+            "inter_tps_pico": INTER_TPS_PICO,
+            "brasil_tps_medio": BRASIL_TPS_MEDIO,
+        },
+        "presets": [
+            {"label": "Média Inter", "tps": INTER_TPS_MEDIO,
+             "detalhe": f"{INTER_TX_DIA:,} transações/dia ÷ 86.400 s".replace(",", ".")},
+            {"label": "Pico Inter", "tps": INTER_TPS_PICO,
+             "detalhe": f"{PICO_FATOR}× a média (premissa de pico intradiário)"},
+            {"label": "PIX Brasil inteiro", "tps": BRASIL_TPS_MEDIO,
+             "detalhe": f"{PIX_BRASIL_TX_DIA:,} transações/dia ÷ 86.400 s".replace(",", ".")},
+        ],
+    }
+
+
+def _purge(col: str) -> tuple[int, int]:
+    """
+    Esvazia a coleção usando um cliente dedicado com socket timeout longo.
+
+    Alguns minutos a 5000 TPS deixam centenas de milhares de documentos, e um
+    delete_many nesse volume estoura o socketTimeoutMS padrão (16 s) — o Reset
+    morria com 500 no meio da demo. Dropar a coleção seria instantâneo, mas
+    invalidaria o change stream do processor do ASP e o do próprio backend.
+    """
+    from pymongo import MongoClient
+
+    purge_client = MongoClient(
+        settings.mongo_uri or "mongodb://127.0.0.1:27017",
+        appname="mongodb-atlas-feature-showcase-purge",
+        serverSelectionTimeoutMS=settings.mongo_timeout_ms,
+        socketTimeoutMS=PURGE_TIMEOUT_MS,
+    )
+    target = purge_client[STREAM_DB][col]
+    removed = 0
+    try:
+        # Um delete grande sob carga pode pegar uma eleição no meio
+        # (NotPrimaryError). Nesse caso parte já foi removida: reencaminhar o
+        # delete no novo primário termina o serviço em vez de devolver a demo
+        # com meio milhão de documentos.
+        for tentativa in range(3):
+            try:
+                removed += target.delete_many({}).deleted_count
+                break
+            except PyMongoError:
+                logger.warning("Purga de %s falhou (tentativa %d), repetindo", col, tentativa + 1)
+                time.sleep(2)
+        return removed, target.estimated_document_count()
+    except PyMongoError:
+        logger.exception("Falha ao esvaziar %s", col)
+        return removed, sdb[col].estimated_document_count()
+    finally:
+        purge_client.close()
 
 
 @router.post("/reset")
 async def reset():
     await generator.stop()
-    cs_worker.stop()
-    deleted = {}
+    # O worker do change stream NÃO é parado aqui: ele só volta a subir quando um
+    # novo assinante SSE chega, e a aba já aberta na demo não reabre o
+    # EventSource — a coluna 1 ficaria muda depois do Reset até dar F5.
+    deleted: dict[str, Any] = {}
+    restantes = 0
     for col in (COL_TX, COL_WINDOWS, COL_DLQ):
-        res = await asyncio.to_thread(sdb[col].delete_many, {})
-        deleted[col] = res.deleted_count
+        removed, left = await asyncio.to_thread(_purge, col)
+        deleted[col] = removed
+        restantes += left
     generator.reset_counters()
     cs_worker.reset_counters()
     kafka_consumer.reset_counters()
     for hub in (hub_cs, hub_kafka, hub_asp):
         hub.publish({"type": "reset"})
-    return {"reset": True, "removidos": deleted}
+    # `restantes` só é > 0 se o orçamento de tempo acabou antes de esvaziar tudo;
+    # a UI mostra o número em vez de fingir que a limpeza terminou.
+    return {"reset": True, "removidos": deleted, "restantes": restantes}
 
 
 # ---------------------------------------------------------------------------
@@ -326,12 +527,20 @@ class ChangeStreamWorker:
         self.reopen_at: datetime | None = None
         self._drop_requested = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._ultimo_feed = 0.0
+        self._ultima_metrica = 0.0
 
+    # A 3000+ eventos/s não dá para empurrar cada evento para o browser — a aba
+    # morre. O feed vira uma AMOSTRA (rotulada como tal na UI); os contadores e
+    # os percentis continuam cobrindo 100% dos eventos, medidos no worker.
     def reset_counters(self) -> None:
+        # O resume token é preservado de propósito: o cursor continua aberto
+        # durante o Reset, e zerar o token aqui faria a próxima reabertura
+        # perder a continuidade que o botão "Derrubar e retomar" demonstra.
         self.events = 0
         self.recovered = 0
-        self.token = None
         self.reopen_at = None
+        meter_cs.reset()
 
     def ensure_started(self, loop: asyncio.AbstractEventLoop) -> None:
         if self.active:
@@ -356,7 +565,18 @@ class ChangeStreamWorker:
     def _run(self) -> None:
         while self.active:
             try:
-                kwargs: dict[str, Any] = {"full_document": "updateLookup", "max_await_time_ms": 300}
+                # Iteração bloqueante + batch grande: com try_next() em laço
+                # apertado cada poll vazio custa um round-trip ao Atlas e o
+                # consumidor empaca em ~170 eventos/s — abaixo do pico do
+                # cenário. Iterando o cursor, o servidor entrega lotes e a
+                # mesma thread acompanha milhares de eventos por segundo.
+                # max_await_time_ms limita quanto o laço demora a perceber o
+                # pedido de "derrubar e retomar" quando o fluxo está parado.
+                kwargs: dict[str, Any] = {
+                    "full_document": "updateLookup",
+                    "max_await_time_ms": 500,
+                    "batch_size": 1_000,
+                }
                 if self.token:
                     kwargs["resume_after"] = self.token
                 with sdb[COL_TX].watch(self.PIPELINE, **kwargs) as stream:
@@ -366,12 +586,11 @@ class ChangeStreamWorker:
                         "token": self.token_str(),
                         "eventos": self.events,
                     })
-                    while self.active and not self._drop_requested:
-                        change = stream.try_next()
-                        if change is None:
-                            continue
+                    for change in stream:
                         self.token = change["_id"]
                         self._emit(change)
+                        if not self.active or self._drop_requested:
+                            break
             except PyMongoError as exc:
                 logger.exception("Change stream do módulo Streaming falhou")
                 self._publish({"type": "erro", "detalhe": f"{type(exc).__name__}: {exc}"})
@@ -403,18 +622,30 @@ class ChangeStreamWorker:
         self.events += 1
         if recuperado:
             self.recovered += 1
-        self._publish({
-            "type": "evento",
-            "endToEndId": doc.get("endToEndId"),
-            "uf": doc.get("uf"),
-            "tipo": doc.get("tipo"),
-            "valor": str(doc.get("valor")),
-            "latency_ms": latency_ms,
-            "recuperado": recuperado,
-            "token": self.token_str(),
-            "eventos": self.events,
-            "recuperados": self.recovered,
-        })
+        meter_cs.record(latency_ms)          # 100% dos eventos entram nos percentis
+
+        agora = time.monotonic()
+        # Um evento recuperado nunca é suprimido: é a prova do "derrubar e retomar".
+        if recuperado or agora - self._ultimo_feed >= FEED_INTERVALO_S:
+            self._ultimo_feed = agora
+            self._publish({
+                "type": "evento",
+                "endToEndId": doc.get("endToEndId"),
+                "uf": doc.get("uf"),
+                "tipo": doc.get("tipo"),
+                "valor": str(doc.get("valor")),
+                "latency_ms": latency_ms,
+                "recuperado": recuperado,
+            })
+        if agora - self._ultima_metrica >= METRICAS_INTERVALO_S:
+            self._ultima_metrica = agora
+            self._publish({
+                "type": "metricas",
+                "eventos": self.events,
+                "recuperados": self.recovered,
+                "token": self.token_str(),
+                **meter_cs.snapshot(),
+            })
 
 
 cs_worker = ChangeStreamWorker()
@@ -446,6 +677,7 @@ async def changestream_status():
         "eventos": cs_worker.events,
         "recuperados": cs_worker.recovered,
         "token": cs_worker.token_str(),
+        **meter_cs.snapshot(),
     }
 
 
@@ -480,6 +712,8 @@ class KafkaConsumer:
         self.last_offset: int | None = None
         self.estado = "nao_configurado"
         self.detalhe = "consumidor ainda não iniciado"
+        self._ultimo_feed = 0.0
+        self._ultima_metrica = 0.0
 
     @property
     def running(self) -> bool:
@@ -488,6 +722,7 @@ class KafkaConsumer:
     def reset_counters(self) -> None:
         self.messages = 0
         self.last_offset = None
+        meter_kafka.reset()
 
     def ensure_started(self) -> None:
         if not self.running:
@@ -530,16 +765,28 @@ class KafkaConsumer:
                 latency_ms = round((_now() - ts).total_seconds() * 1000, 1) if ts else None
                 self.messages += 1
                 self.last_offset = msg.offset
-                hub_kafka.publish({
-                    "type": "mensagem",
-                    "endToEndId": doc.get("endToEndId"),
-                    "uf": doc.get("uf"),
-                    "tipo": doc.get("tipo"),
-                    "partition": msg.partition,
-                    "offset": msg.offset,
-                    "latency_ms": latency_ms,
-                    "mensagens": self.messages,
-                })
+                meter_kafka.record(latency_ms)      # percentis sobre 100% das mensagens
+
+                agora = time.monotonic()
+                if agora - self._ultimo_feed >= FEED_INTERVALO_S:
+                    self._ultimo_feed = agora
+                    hub_kafka.publish({
+                        "type": "mensagem",
+                        "endToEndId": doc.get("endToEndId"),
+                        "uf": doc.get("uf"),
+                        "tipo": doc.get("tipo"),
+                        "partition": msg.partition,
+                        "offset": msg.offset,
+                        "latency_ms": latency_ms,
+                    })
+                if agora - self._ultima_metrica >= METRICAS_INTERVALO_S:
+                    self._ultima_metrica = agora
+                    hub_kafka.publish({
+                        "type": "metricas",
+                        "mensagens": self.messages,
+                        "offset_atual": self.last_offset,
+                        **meter_kafka.snapshot(),
+                    })
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -612,17 +859,34 @@ async def kafka_sse(request: Request):
 # COLUNA 3 — Atlas Stream Processing
 # ---------------------------------------------------------------------------
 ASP_PIPELINE_SNIPPET = """[
-  { $source: { connectionName: "atlasCluster", db: "pix", coll: "transacoes" } },
+  { $source: { connectionName: "atlasCluster", db: "pix", coll: "transacoes",
+               config: { fullDocument: "required" } } },
   { $match: { operationType: "insert" } },
-  { $validate: { validator: { ... }, validationAction: "dlq" } },
+
+  // documento malformado vai para a DLQ; o processor nao cai
+  { $validate: { validator: { $and: [
+        { "fullDocument.valor": { $type: ["decimal","double","int","long"] } },
+        { "fullDocument.tipo":  { $in: ["PIX","TED","BOLETO"] } } ] },
+      validationAction: "dlq" } },
+
   { $tumblingWindow: {
       interval: { size: 10, unit: "second" },
-      pipeline: [ { $group: {
-        _id: { uf: "$fullDocument.uf", tipo: "$fullDocument.tipo" },
-        qtd: { $count: {} },
-        volume: { $sum: { $toDouble: "$fullDocument.valor" } },
-        ticket: { $avg: { $toDouble: "$fullDocument.valor" } } } } ] } },
-  { $merge: { into: { connectionName: "atlasCluster", db: "pix", coll: "metricas_janela" } } }
+      pipeline: [
+        { $group: {
+            _id: { uf: "$fullDocument.uf", tipo: "$fullDocument.tipo" },
+            qtd:    { $count: {} },
+            volume: { $sum: { $toDouble: "$fullDocument.valor" } },
+            ticket: { $avg: { $toDouble: "$fullDocument.valor" } },
+            window_start: { $min: "$fullDocument.ts" },
+            window_end:   { $max: "$fullDocument.ts" } } },
+        { $set: { uf: "$_id.uf", tipo: "$_id.tipo",
+                  volume: { $round: ["$volume", 2] },
+                  ticket: { $round: ["$ticket", 2] } } } ] } },
+
+  // _id deterministico por (janela, uf, tipo) => $merge idempotente
+  { $set: { _id: { $concat: [ { $toString: "$window_start" }, "|", "$uf", "|", "$tipo" ] } } },
+  { $merge: { into: { connectionName: "atlasCluster", db: "pix", coll: "metricas_janela" },
+              whenMatched: "replace", whenNotMatched: "insert" } }
 ]"""
 
 
@@ -634,12 +898,35 @@ def _asp_reachable() -> tuple[bool, str]:
     from pymongo import MongoClient
 
     try:
-        spi = MongoClient(ASP_CONNECTION_STRING, serverSelectionTimeoutMS=3000, connect=False)
-        spi.admin.command("ping")
-        spi.close()
-        return True, "Stream Processing Instance acessível"
+        spi = MongoClient(ASP_CONNECTION_STRING, serverSelectionTimeoutMS=5000, connect=False)
+        try:
+            # Estado REAL do processor, direto da SPI — não basta a conexão abrir.
+            resposta = spi.admin.command({"listStreamProcessors": 1})
+            processors = resposta.get("streamProcessors", [])
+            ativos = [p for p in processors if p.get("state") == "STARTED"]
+            if not processors:
+                return False, "SPI acessível, mas nenhum processor criado (rode scripts/setup-asp.js)"
+            if not ativos:
+                estados = ", ".join(f"{p.get('name')}={p.get('state')}" for p in processors)
+                return False, f"processor parado: {estados}"
+            nomes = ", ".join(p.get("name", "?") for p in ativos)
+            return True, f"processor STARTED: {nomes}"
+        finally:
+            spi.close()
     except Exception as exc:  # noqa: BLE001 - SPI ausente é estado esperado da demo
         return False, f"SPI inacessível: {type(exc).__name__}"
+
+
+def _asp_totais() -> dict[str, Any]:
+    """Soma real do que o processor já agregou — qtd e volume financeiro das janelas."""
+    pipeline = [{"$group": {"_id": None, "qtd": {"$sum": "$qtd"}, "volume": {"$sum": "$volume"}}}]
+    docs = list(sdb[COL_WINDOWS].aggregate(pipeline))
+    if not docs:
+        return {"transacoes_agregadas": 0, "volume_agregado": 0.0}
+    return {
+        "transacoes_agregadas": int(docs[0].get("qtd") or 0),
+        "volume_agregado": round(float(docs[0].get("volume") or 0.0), 2),
+    }
 
 
 @router.get("/asp/status")
@@ -647,9 +934,11 @@ async def asp_status():
     ok, detalhe = await asyncio.to_thread(_asp_reachable)
     janelas = await asyncio.to_thread(sdb[COL_WINDOWS].count_documents, {})
     dlq = await asyncio.to_thread(sdb[COL_DLQ].count_documents, {})
+    totais = await asyncio.to_thread(_asp_totais)
     return {
         "estado": "configurado" if ok else "nao_configurado",
         "detalhe": detalhe,
+        **totais,
         "asp_enabled": ASP_ENABLED,
         "colecao_janelas": f"{STREAM_DB}.{COL_WINDOWS}",
         "colecao_dlq": f"{STREAM_DB}.{COL_DLQ}",
@@ -692,6 +981,15 @@ class AspWatcher:
                         payload = {"type": kind, "recebido_em": _now().isoformat()}
                         if kind == "janela":
                             key = doc.get("_id") if isinstance(doc.get("_id"), dict) else {}
+                            # Latência da janela: da última transação que entrou nela
+                            # até o resultado agregado chegar aqui (fecho + $merge +
+                            # change stream). É o custo real do caminho gerenciado.
+                            fim = doc.get("window_end")
+                            latency_ms = None
+                            if isinstance(fim, datetime):
+                                fim = fim if fim.tzinfo else fim.replace(tzinfo=timezone.utc)
+                                latency_ms = round((_now() - fim).total_seconds() * 1000, 1)
+                            meter_asp.record(latency_ms)
                             payload.update({
                                 "uf": doc.get("uf") or key.get("uf"),
                                 "tipo": doc.get("tipo") or key.get("tipo"),
@@ -700,6 +998,8 @@ class AspWatcher:
                                 "ticket": doc.get("ticket"),
                                 "window_start": doc.get("window_start"),
                                 "window_end": doc.get("window_end"),
+                                "latency_ms": latency_ms,
+                                **meter_asp.snapshot(),
                             })
                         else:
                             payload.update({

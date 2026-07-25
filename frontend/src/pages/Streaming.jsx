@@ -2,10 +2,19 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import QueryBlock from '../components/QueryBlock'
 
-const MAX_FEED = 60
+const MAX_FEED = 40
+const TPS_MAX = 5000
 
 // Hook de SSE: EventSource sobre /api/... (proxy do Vite → backend :8002).
 // Só GET, então o mutation guard não exige o X-Demo-Token.
+//
+// A reconexão é MANUAL de propósito: o EventSource só refaz a conexão sozinho
+// quando o socket cai limpo. Se o backend responder qualquer coisa que não seja
+// 200 text/event-stream — um 502 do proxy enquanto a API reinicia, por exemplo —
+// ele desiste de vez, e as três colunas ficam mudas até alguém dar F5 no meio da
+// apresentação. Aqui a gente fecha e reabre até conseguir.
+const SSE_RETRY_MS = 2000
+
 function useSse(path, onMessage, enabled = true) {
   const [connected, setConnected] = useState(false)
   const handler = useRef(onMessage)
@@ -13,13 +22,26 @@ function useSse(path, onMessage, enabled = true) {
 
   useEffect(() => {
     if (!enabled) return undefined
-    const es = new EventSource(`/api${path}`)
-    es.onopen = () => setConnected(true)
-    es.onerror = () => setConnected(false)
-    es.onmessage = (e) => {
-      try { handler.current(JSON.parse(e.data)) } catch { /* keepalive ou frame parcial */ }
+    let es = null
+    let timer = null
+    let vivo = true
+
+    const abrir = () => {
+      if (!vivo) return
+      es = new EventSource(`/api${path}`)
+      es.onopen = () => setConnected(true)
+      es.onmessage = (e) => {
+        try { handler.current(JSON.parse(e.data)) } catch { /* keepalive ou frame parcial */ }
+      }
+      es.onerror = () => {
+        setConnected(false)
+        es.close()
+        if (vivo) timer = setTimeout(abrir, SSE_RETRY_MS)
+      }
     }
-    return () => { es.close(); setConnected(false) }
+    abrir()
+
+    return () => { vivo = false; clearTimeout(timer); if (es) es.close(); setConnected(false) }
   }, [path, enabled])
 
   return connected
@@ -27,7 +49,17 @@ function useSse(path, onMessage, enabled = true) {
 
 const push = (list, item) => [item, ...list].slice(0, MAX_FEED)
 const fmtMs = (v) => (v == null ? '—' : `${v} ms`)
+const num = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR'))
 const fmtBRL = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
+
+// 1.234.567.890 → "1,2 bi" / "30 mi" — números de escala PIX não cabem por extenso.
+function fmtEscala(v) {
+  if (v == null) return '—'
+  if (v >= 1e9) return `${(v / 1e9).toFixed(1).replace('.', ',')} bi`
+  if (v >= 1e6) return `${(v / 1e6).toFixed(v >= 1e7 ? 0 : 1).replace('.', ',')} mi`
+  if (v >= 1e3) return `${Math.round(v / 1e3)} mil`
+  return String(v)
+}
 
 function Stat({ label, value, sub, color }) {
   return (
@@ -35,6 +67,25 @@ function Stat({ label, value, sub, color }) {
       <div className="str-stat-l">{label}</div>
       <div className="str-stat-v" style={color ? { color } : undefined}>{value}</div>
       {sub && <div className="str-stat-s">{sub}</div>}
+    </div>
+  )
+}
+
+// p50/p95/p99 medidos sobre 100% dos eventos — o que uma squad de plataforma
+// olha antes da média.
+function Percentis({ m, color }) {
+  return (
+    <div className="str-pcts">
+      {[['p50', m?.p50], ['p95', m?.p95], ['p99', m?.p99]].map(([k, v]) => (
+        <div key={k} className="str-pct">
+          <span className="str-pct-k">{k}</span>
+          <span className="str-pct-v" style={v != null ? { color } : undefined}>{v == null ? '—' : `${v}ms`}</span>
+        </div>
+      ))}
+      <div className="str-pct">
+        <span className="str-pct-k">ev/s</span>
+        <span className="str-pct-v" style={m?.eventos_s ? { color } : undefined}>{m?.eventos_s ?? '—'}</span>
+      </div>
     </div>
   )
 }
@@ -68,13 +119,26 @@ function Sparkline({ values }) {
 export default function Streaming() {
   const { call } = useApi()
 
+  // ── Cenário PIX (premissas declaradas pelo backend) ──────────────────────
+  const [cenario, setCenario] = useState(null)
+  const [rede, setRede] = useState(null)
+  useEffect(() => {
+    call('/streaming/cenario').then((d) => d && setCenario(d))
+    call('/streaming/rede').then((d) => d && setRede(d))
+  }, [call])
+
   // ── Gerador ──────────────────────────────────────────────────────────────
-  const [tps, setTps] = useState(50)
+  const [tps, setTps] = useState(350)
   const [gen, setGen] = useState(null)
 
+  const tpsTocado = useRef(false)
   const refreshGen = useCallback(async () => {
     const data = await call('/streaming/generator/status')
-    if (data) setGen(data)
+    if (!data) return
+    setGen(data)
+    // Enquanto o operador não mexeu no slider, ele reflete o que o backend está
+    // de fato rodando (inclusive se outra aba/curl mudou o TPS).
+    if (!tpsTocado.current && data.running && data.tps_alvo) setTps(data.tps_alvo)
   }, [call])
 
   useEffect(() => {
@@ -83,25 +147,30 @@ export default function Streaming() {
     return () => clearInterval(t)
   }, [refreshGen])
 
-  const startGen = async () => {
+  const aplicarTps = useCallback(async (valor) => {
+    tpsTocado.current = true
+    setTps(valor)
     await call('/streaming/generator/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tps }),
+      body: JSON.stringify({ tps: valor }),
     })
     refreshGen()
-  }
+  }, [call, refreshGen])
 
   const stopGen = async () => { await call('/streaming/generator/stop', { method: 'POST' }); refreshGen() }
 
   // ── Coluna 1 — Change Streams ────────────────────────────────────────────
   const [csEvents, setCsEvents] = useState([])
   const [csState, setCsState] = useState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
+  const [csMetrics, setCsMetrics] = useState(null)
 
   const csConnected = useSse('/streaming/changestream', (msg) => {
     if (msg.type === 'evento') {
       setCsEvents((prev) => push(prev, msg))
-      setCsState((s) => ({ ...s, eventos: msg.eventos, recuperados: msg.recuperados, token: msg.token, fase: 'ativo' }))
+    } else if (msg.type === 'metricas') {
+      setCsMetrics(msg)
+      setCsState((s) => ({ ...s, eventos: msg.eventos, recuperados: msg.recuperados, token: msg.token }))
     } else if (msg.type === 'derrubado') {
       setCsState((s) => ({ ...s, fase: 'derrubado', token: msg.token }))
     } else if (msg.type === 'aberto') {
@@ -109,7 +178,8 @@ export default function Streaming() {
     } else if (msg.type === 'hello') {
       setCsState((s) => ({ ...s, eventos: msg.eventos ?? 0, recuperados: msg.recuperados ?? 0, token: msg.token }))
     } else if (msg.type === 'reset') {
-      setCsEvents([]); setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
+      setCsEvents([]); setCsMetrics(null)
+      setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
     }
   })
 
@@ -117,11 +187,13 @@ export default function Streaming() {
 
   // ── Coluna 2 — Kafka Connector ───────────────────────────────────────────
   const [kafkaMsgs, setKafkaMsgs] = useState([])
+  const [kafkaMetrics, setKafkaMetrics] = useState(null)
   const [kafkaStatus, setKafkaStatus] = useState(null)
 
   useSse('/streaming/kafka', (msg) => {
     if (msg.type === 'mensagem') setKafkaMsgs((prev) => push(prev, msg))
-    else if (msg.type === 'reset') setKafkaMsgs([])
+    else if (msg.type === 'metricas') setKafkaMetrics(msg)
+    else if (msg.type === 'reset') { setKafkaMsgs([]); setKafkaMetrics(null) }
   })
 
   useEffect(() => {
@@ -137,12 +209,13 @@ export default function Streaming() {
   // ── Coluna 3 — Atlas Stream Processing ───────────────────────────────────
   const [janelas, setJanelas] = useState([])
   const [dlq, setDlq] = useState([])
+  const [aspMetrics, setAspMetrics] = useState(null)
   const [aspStatus, setAspStatus] = useState(null)
 
   useSse('/streaming/asp', (msg) => {
-    if (msg.type === 'janela') setJanelas((prev) => push(prev, msg))
+    if (msg.type === 'janela') { setJanelas((prev) => push(prev, msg)); setAspMetrics(msg) }
     else if (msg.type === 'dlq') setDlq((prev) => push(prev, msg))
-    else if (msg.type === 'reset') { setJanelas([]); setDlq([]) }
+    else if (msg.type === 'reset') { setJanelas([]); setDlq([]); setAspMetrics(null) }
   })
 
   useEffect(() => {
@@ -158,28 +231,54 @@ export default function Streaming() {
   // ── Reset global ─────────────────────────────────────────────────────────
   const resetAll = async () => {
     await call('/streaming/reset', { method: 'POST' })
-    setCsEvents([]); setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
-    setKafkaMsgs([]); setJanelas([]); setDlq([])
+    setCsEvents([]); setCsMetrics(null)
+    setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
+    setKafkaMsgs([]); setKafkaMetrics(null); setJanelas([]); setDlq([]); setAspMetrics(null)
     refreshGen()
   }
 
   const tpsDesvio = gen?.tps_alvo ? Math.round(Math.abs(gen.tps_medido - gen.tps_alvo) / gen.tps_alvo * 100) : null
+  const presets = cenario?.presets || []
+  const der = cenario?.derivados
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-      {/* Enredo */}
+      {/* Enredo + escala do cenário */}
       <div className="card" style={{ padding: '18px 20px' }}>
-        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>Três formas de reagir a uma mudança — o mesmo fluxo de escritas</div>
+        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>Três formas de reagir a uma mudança — no volume do PIX</div>
         <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.65 }}>
-          Um único gerador escreve em <code>pix.transacoes</code>. As três colunas abaixo consomem <strong>a mesma
-          mudança</strong> por caminhos diferentes: dentro da aplicação (Change Streams), no barramento
+          Um único gerador escreve em <code>pix.transacoes</code> contra este cluster Atlas. As três colunas consomem
+          <strong> a mesma mudança</strong> por caminhos diferentes: dentro da aplicação (Change Streams), no barramento
           (MongoDB Kafka Connector) e num serviço gerenciado com janela e estado (Atlas Stream Processing).
-          A pergunta não é qual é “melhor” — é <em>qual pergunta cada um responde</em>.
+          A pergunta não é qual é “melhor” — é <em>qual pergunta cada um responde</em>, e se cada um aguenta o seu volume.
         </div>
+
+        {der && (
+          <div className="str-escala">
+            {[
+              { k: 'PIX Brasil', v: fmtEscala(cenario.premissas.pix_brasil_tx_dia), s: 'transações/dia' },
+              { k: 'Inter (10%)', v: fmtEscala(der.inter_tx_dia), s: 'transações/dia' },
+              { k: 'Média Inter', v: `${num(der.inter_tps_medio)}`, s: 'TPS sustentado' },
+              { k: 'Pico Inter', v: `${num(der.inter_tps_pico)}`, s: 'TPS (3× a média)' },
+            ].map((c) => (
+              <div key={c.k} className="str-escala-c">
+                <div className="str-escala-k">{c.k}</div>
+                <div className="str-escala-v">{c.v}</div>
+                <div className="str-escala-s">{c.s}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          📐 <strong>Premissas, não medições:</strong> o volume diário do PIX está na ordem de grandeza divulgada pelo BCB;
+          a participação de 10% do Inter e o fator de pico de 3× são <em>premissas deste cenário</em> — servem de régua.
+          O que a demo <strong>mede</strong> é o TPS que este cluster realmente sustenta, no painel abaixo.
+        </div>
+        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
           🔎 <strong>Nada aqui é sintético:</strong> todo número vem de uma operação real contra o Atlas ou o Kafka.
-          Componente não configurado aparece como <em>“não configurado”</em>, com o passo a passo de setup — nunca com dado inventado.
+          Componente não configurado aparece como <em>“não configurado”</em>, com o passo a passo — nunca com dado inventado.
         </div>
       </div>
 
@@ -195,32 +294,58 @@ export default function Streaming() {
           <div style={{ display: 'flex', gap: 8 }}>
             {gen?.running
               ? <button className="btn btn-danger btn-sm" onClick={stopGen}>■ Parar</button>
-              : <button className="btn btn-primary btn-sm" onClick={startGen}>▶ Iniciar a {tps} TPS</button>}
+              : <button className="btn btn-primary btn-sm" onClick={() => aplicarTps(tps)}>▶ Iniciar a {num(tps)} TPS</button>}
             <button className="btn btn-default btn-sm" onClick={resetAll}>🗑 Reset</button>
           </div>
         </div>
 
+        {/* Presets do cenário PIX */}
+        {presets.length > 0 && (
+          <div className="str-presets">
+            <span className="str-presets-l">Carga</span>
+            {presets.map((p) => (
+              <button key={p.label} title={p.detalhe}
+                className={`tag${tps === p.tps ? ' active' : ''}`}
+                onClick={() => aplicarTps(p.tps)}>
+                {p.label} · <strong>{num(p.tps)} TPS</strong>
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="str-gen-row">
           <label htmlFor="tps" className="str-slider-label">TPS
-            <input id="tps" type="range" min="1" max="200" value={tps} className="str-slider"
+            <input id="tps" type="range" min="1" max={TPS_MAX} step="1" value={tps} className="str-slider"
               onChange={(e) => {
                 const v = Number(e.target.value)
+                tpsTocado.current = true
                 setTps(v)
-                if (gen?.running) call('/streaming/generator/start', {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tps: v }),
-                })
+                if (gen?.running) aplicarTps(v)
               }} />
-            <span className="str-slider-v">{tps}</span>
+            <span className="str-slider-v">{num(tps)}</span>
           </label>
           <div className="str-stats">
-            <Stat label="TPS medido" value={gen?.tps_medido ?? 0}
-              sub={tpsDesvio != null && gen?.running ? `${tpsDesvio}% do alvo (${gen.tps_alvo})` : 'gerador parado'}
+            <Stat label="TPS medido" value={num(gen?.tps_medido ?? 0)}
+              sub={tpsDesvio != null && gen?.running ? `${tpsDesvio}% do alvo (${num(gen.tps_alvo)})` : 'gerador parado'}
               color={gen?.running ? '#00ED64' : undefined} />
-            <Stat label="Inseridos" value={(gen?.inseridos ?? 0).toLocaleString('pt-BR')} sub="nesta sessão" />
-            <Stat label="Na coleção" value={(gen?.docs_na_colecao ?? 0).toLocaleString('pt-BR')} sub="estimativa do Atlas" />
+            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub="nesta sessão" />
+            <Stat label="Projeção/dia" value={fmtEscala(gen?.projecao_dia)}
+              sub="TPS medido × 86.400 s" color={gen?.running ? '#00ED64' : undefined} />
+            <Stat label="Do dia do Inter" value={gen?.pct_dia_inter != null ? `${gen.pct_dia_inter}%` : '—'}
+              sub="ritmo atual vs 30 mi/dia" />
           </div>
         </div>
       </div>
+
+      {/* Linha de base de rede — sem isto, a latência das colunas é lida como
+          custo do change stream quando é, em boa parte, distância. */}
+      {rede?.rtt_ms != null && (
+        <div className="str-rede">
+          🌐 <strong>RTT desta máquina até o cluster: {rede.rtt_ms} ms</strong> (medido agora, com <code>ping</code> no admin).
+          As latências das três colunas <strong>incluem esse ida-e-volta</strong> — a app roda aqui e o cluster está em
+          outra região. Co-localizando app e cluster, o que sobra é o custo real da entrega, não a distância.
+        </div>
+      )}
 
       {/* As três colunas */}
       <div className="str-grid">
@@ -235,9 +360,10 @@ export default function Streaming() {
           </div>
           <div className="str-col-body">
             <div className="str-stats">
-              <Stat label="Eventos" value={csState.eventos} color="#00ED64" />
-              <Stat label="Recuperados" value={csState.recuperados} color={csState.recuperados ? '#00ED64' : undefined} sub="via resume token" />
+              <Stat label="Eventos" value={num(csState.eventos)} color="#00ED64" />
+              <Stat label="Recuperados" value={num(csState.recuperados)} color={csState.recuperados ? '#00ED64' : undefined} sub="via resume token" />
             </div>
+            <Percentis m={csMetrics} color="#00ED64" />
             <div className="str-token">
               <span className="str-token-l">resume token</span>
               <code>{csState.token || '—'}</code>
@@ -258,6 +384,11 @@ export default function Streaming() {
                   <span className="str-row-ms">{fmtMs(e.latency_ms)}</span>
                 </div>
               ))}
+            </div>
+            <div className="str-note">
+              O feed acima é uma <strong>amostra</strong> do fluxo (a aba não renderiza milhares de linhas por segundo) —
+              contadores e percentis cobrem <strong>100% dos eventos</strong>, medidos no backend.
+              Todo evento recuperado aparece, nenhum é suprimido.
             </div>
             <div className="str-note">
               Roda <strong>dentro da aplicação</strong>, sem infraestrutura extra. Em compensação, o
@@ -294,9 +425,10 @@ export default function Streaming() {
             ) : (
               <>
                 <div className="str-stats">
-                  <Stat label="Mensagens" value={kafkaStatus?.consumidor?.mensagens ?? 0} color="#06b6d4" />
-                  <Stat label="Offset atual" value={kafkaStatus?.consumidor?.offset_atual ?? '—'} sub="partição consumida" />
+                  <Stat label="Mensagens" value={num(kafkaMetrics?.mensagens ?? kafkaStatus?.consumidor?.mensagens ?? 0)} color="#06b6d4" />
+                  <Stat label="Offset atual" value={num(kafkaMetrics?.offset_atual ?? kafkaStatus?.consumidor?.offset_atual)} sub="partição consumida" />
                 </div>
+                <Percentis m={kafkaMetrics} color="#06b6d4" />
                 <div className="str-token">
                   <span className="str-token-l">tópico</span>
                   <code>{kafkaStatus?.topico}</code>
@@ -306,7 +438,7 @@ export default function Streaming() {
                   {kafkaMsgs.map((m, i) => (
                     <div key={`${m.offset}-${i}`} className="str-row">
                       <span className="str-pill">{m.tipo}</span>
-                      <span className="str-row-main">{m.uf} · offset {m.offset}</span>
+                      <span className="str-row-main">{m.uf} · offset {num(m.offset)}</span>
                       <span className="str-row-ms">{fmtMs(m.latency_ms)}</span>
                     </div>
                   ))}
@@ -345,9 +477,12 @@ export default function Streaming() {
             ) : (
               <>
                 <div className="str-stats">
-                  <Stat label="Janelas" value={aspStatus?.janelas ?? janelas.length} color="#a855f7" sub="tumbling de 10 s" />
-                  <Stat label="DLQ" value={aspStatus?.dlq ?? dlq.length} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="documentos rejeitados" />
+                  <Stat label="Agregadas" value={fmtEscala(aspStatus?.transacoes_agregadas)} color="#a855f7"
+                    sub={`${num(aspStatus?.janelas)} janelas de 10 s`} />
+                  <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
+                  <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="rejeitados" />
                 </div>
+                <Percentis m={aspMetrics} color="#a855f7" />
                 <Sparkline values={janelas.slice(0, 24).map(j => j.qtd || 0).reverse()} />
                 <button className="btn btn-default btn-sm" style={{ width: '100%' }} onClick={injectInvalid}>
                   🧪 Injetar documento inválido
@@ -358,9 +493,10 @@ export default function Streaming() {
                     <tbody>
                       {janelas.slice(0, 8).map((j, i) => (
                         <tr key={i}>
-                          <td>{j.uf}</td><td>{j.tipo}</td><td>{j.qtd}</td>
-                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtBRL(j.volume)}</td>
-                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtBRL(j.ticket)}</td>
+                          <td>{j.uf}</td><td>{j.tipo}</td><td>{num(j.qtd)}</td>
+                          {/* forma compacta: a coluna é estreita e o valor cheio era cortado */}
+                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.volume)}</td>
+                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {num(Math.round(j.ticket ?? 0))}</td>
                         </tr>
                       ))}
                       {janelas.length === 0 && <tr><td colSpan={5} className="str-empty">Aguardando a primeira janela fechar (10 s)…</td></tr>}
@@ -375,6 +511,10 @@ export default function Streaming() {
                 )}
               </>
             )}
+            <div className="str-note">
+              A latência aqui é do <strong>fecho da janela</strong> (última transação agregada → resultado na tela),
+              não de um evento individual: são coisas diferentes de propósito.
+            </div>
             <div className="str-note">
               O processor faz <code>$merge</code> em <code>pix.metricas_janela</code> e o backend
               <strong> assiste essa coleção com um change stream</strong>: o resultado do ASP chega nesta tela

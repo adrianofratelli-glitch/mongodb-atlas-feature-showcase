@@ -147,8 +147,9 @@ It PUTs a `MongoSourceConnector` config on the Connect REST API
 Inspect it live at http://localhost:8085.
 
 **3. Create the Stream Processing Instance** (Atlas UI → Stream Processing):
-create an SPI in the cluster's region, add an *Atlas Database* connection to
-this cluster named `atlasCluster`, then:
+create an SPI **in the same region as the cluster** — the processor reads the
+cluster's change stream, so co-locating removes a cross-region hop from every
+window — add an *Atlas Database* connection named `atlasCluster`, then:
 
 ```bash
 # in backend/.env: ASP_ENABLED=true and ASP_CONNECTION_STRING=<SPI connection string>
@@ -169,6 +170,25 @@ index on `ts` keeps the collection from growing between demos.
 
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`.
+
+### Reading the numbers
+
+The module is built for a PIX-scale audience, so it is explicit about what is
+measured and what is assumed:
+
+- **Measured:** sustained TPS (5 s sliding window, never the requested value),
+  events/s per column, p50/p95/p99 latency over 100% of the events, the volume
+  the processor aggregated, and the app↔cluster RTT.
+- **Premises (labelled as such in the UI):** the daily PIX volume, Inter's 10%
+  share and the 3× peak factor. They only provide a ruler — the presets
+  (347 / 1.041 / 3.472 TPS) are derived from them.
+- **Sampled:** the per-event feeds, which show one frame every 120 ms because a
+  browser tab cannot render thousands of rows per second. Counters and
+  percentiles still cover every event.
+
+The latency shown includes the app↔cluster round trip, printed above the
+columns. Presenting from Brazil against a US cluster puts ~200 ms of pure
+distance in every number.
 
 ## Security model
 
