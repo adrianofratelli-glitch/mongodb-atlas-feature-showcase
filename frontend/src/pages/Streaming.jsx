@@ -206,6 +206,12 @@ export default function Streaming() {
 
   const connectorState = kafkaStatus?.connector?.estado
   const kafkaOk = connectorState === 'RUNNING'
+  const kafkaQuebrado = ['FAILED', 'DEGRADADO', 'SEM_TASK'].includes(connectorState)
+  const reiniciarKafka = async () => {
+    await call('/streaming/kafka/restart', { method: 'POST' })
+    const d = await call('/streaming/kafka/status')
+    if (d) setKafkaStatus(d)
+  }
 
   // ── Coluna 3 — Atlas Stream Processing ───────────────────────────────────
   const [janelas, setJanelas] = useState([])
@@ -223,6 +229,15 @@ export default function Streaming() {
     const tick = async () => { const d = await call('/streaming/asp/status'); if (d) setAspStatus(d) }
     tick()
     const t = setInterval(tick, 5000)
+    return () => clearInterval(t)
+  }, [call])
+
+  // ── Tradução para números de negócio ────────────────────────────────────
+  const [negocio, setNegocio] = useState(null)
+  useEffect(() => {
+    const tick = async () => { const d = await call('/streaming/negocio'); if (d) setNegocio(d) }
+    tick()
+    const t = setInterval(tick, 3000)
     return () => clearInterval(t)
   }, [call])
 
@@ -359,6 +374,9 @@ export default function Streaming() {
             <div><span className="str-teto-k">Partições de consumo</span><span className="str-teto-v">{cenario.ambiente.particoes_consumo}</span></div>
           </div>
           <div className="str-teto-n">{cenario.ambiente.nota}</div>
+          {cenario.ambiente.asterisco && (
+            <div className="str-teto-a">{cenario.ambiente.asterisco}</div>
+          )}
         </div>
       )}
 
@@ -426,7 +444,18 @@ export default function Streaming() {
             </span>
           </div>
           <div className="str-col-body">
-            {kafkaStatus && !kafkaOk ? (
+            {kafkaQuebrado ? (
+              <div className="str-offline">
+                <div className="str-offline-t">🔴 Connector com task parada</div>
+                <div className="str-offline-d">{kafkaStatus.connector?.detalhe}</div>
+                {kafkaStatus.connector?.tasks?.filter(t => t.trace).map(t => (
+                  <div key={t.id} className="str-trace">task {t.id}: {t.trace}</div>
+                ))}
+                <button className="btn btn-default btn-sm" style={{ width: '100%', marginTop: 10 }} onClick={reiniciarKafka}>
+                  ↻ Reiniciar connector
+                </button>
+              </div>
+            ) : kafkaStatus && !kafkaOk ? (
               <NotConfigured
                 title="Kafka não configurado"
                 detalhe={kafkaStatus.connector?.detalhe || kafkaStatus.consumidor?.detalhe}
@@ -546,6 +575,53 @@ export default function Streaming() {
           </div>
         </div>
       </div>
+
+      {/* O que isso significa em dinheiro — o painel para quem não é de plataforma */}
+      {negocio && (
+        <div className="card" style={{ padding: '18px 20px' }}>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>O que isso significa para o negócio</div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
+            Derivado dos números medidos acima, ao vivo — não são estimativas de catálogo.
+          </div>
+          <div className="str-neg">
+            <div className="str-neg-c">
+              <div className="str-neg-k">Custo por milhão de transações</div>
+              <div className="str-neg-v">{negocio.custo_por_milhao_usd != null ? `US$ ${fmtBRL(negocio.custo_por_milhao_usd)}` : '—'}</div>
+              <div className="str-neg-s">no ritmo atual, preço de lista do ambiente</div>
+            </div>
+            <div className="str-neg-c">
+              <div className="str-neg-k">Janela de reação</div>
+              <div className="str-neg-v">{negocio.latencia_reacao_ms != null ? `${negocio.latencia_reacao_ms} ms` : '—'}</div>
+              <div className="str-neg-s">do PIX cair até o antifraude poder agir (p50)</div>
+            </div>
+            <div className="str-neg-c">
+              <div className="str-neg-k">Fluxo financeiro</div>
+              <div className="str-neg-v">R$ {fmtEscala(negocio.reais_por_segundo)}<span className="str-neg-u">/s</span></div>
+              <div className="str-neg-s">ticket médio real × TPS medido</div>
+            </div>
+            <div className="str-neg-c">
+              <div className="str-neg-k">Em trânsito na janela</div>
+              <div className="str-neg-v">R$ {fmtEscala(negocio.valor_em_transito_brl)}</div>
+              <div className="str-neg-s">valor que atravessa o pipeline a cada janela de reação</div>
+            </div>
+            <div className="str-neg-c">
+              <div className="str-neg-k">Reconciliações evitadas</div>
+              <div className="str-neg-v" style={{ color: negocio.reconciliacoes_evitadas ? '#00ED64' : undefined }}>
+                {num(negocio.reconciliacoes_evitadas)}
+              </div>
+              <div className="str-neg-s">eventos recuperados na queda — sem resume token, viram trabalho manual</div>
+            </div>
+            <div className="str-neg-c">
+              <div className="str-neg-k">Sistemas para operar</div>
+              <div className="str-neg-v">{negocio.sistemas_com_mongo}<span className="str-neg-u"> vs {negocio.sistemas_sem_mongo}</span></div>
+              <div className="str-neg-s">o aviso já vem do banco: sem broker e sem processo de sync</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 12, fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
+            📐 <strong>O que é medido e o que é premissa:</strong> {negocio.premissas.nota} Custo considerado: US$ {negocio.premissas.custo_ambiente_usd_hora}/h.
+          </div>
+        </div>
+      )}
 
       {/* Tabela comparativa — sempre visível */}
       <div className="card" style={{ padding: '18px 20px' }}>

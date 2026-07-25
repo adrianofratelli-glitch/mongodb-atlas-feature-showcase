@@ -55,8 +55,15 @@ ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
 # Só para exibição: o que está provisionado nesta PoV.
 CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
+# Preço de lista do ambiente, US$/hora. Premissa editável: entra na conta de
+# custo por milhão de transações, que é o número que um gestor leva para a
+# reunião de orçamento.
+CUSTO_AMBIENTE_USD_HORA = float(os.getenv("CUSTO_AMBIENTE_USD_HORA", "0.54"))
+# Sistemas a operar para o mesmo resultado, com e sem change stream nativo.
+SISTEMAS_COM_MONGO = 1
+SISTEMAS_SEM_MONGO = 3
 # Teto MEDIDO com as três colunas ativas: acima disso o Kafka e o ASP ficam para trás.
-TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "10000"))
+TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "9500"))
 
 # TTL = rede de segurança, não a limpeza principal (essa é o botão Reset, que
 # dropa a coleção na hora).
@@ -474,6 +481,58 @@ async def rede():
     return await asyncio.to_thread(_medir_rtt)
 
 
+@router.get("/negocio")
+async def negocio():
+    """
+    Traduz as métricas técnicas medidas em números de negócio.
+
+    Tudo aqui é DERIVADO de medição real (TPS medido, latência p50, ticket médio
+    que o processor somou, eventos recuperados). O que é premissa — preço de
+    lista por hora — vem rotulado, para a UI poder separar as duas coisas.
+    """
+    tps = generator.measured_tps()
+    cs = meter_cs.snapshot()
+    latencia_ms = cs.get("p50")
+    totais = await asyncio.to_thread(_asp_totais)
+
+    agregadas = totais["transacoes_agregadas"]
+    volume = totais["volume_agregado"]
+    ticket_medio = round(volume / agregadas, 2) if agregadas else None
+
+    # 1. Custo por milhão de transações
+    custo_por_milhao = None
+    if tps > 0:
+        custo_por_segundo = CUSTO_AMBIENTE_USD_HORA / 3600
+        custo_por_milhao = round(custo_por_segundo / tps * 1_000_000, 2)
+
+    # 3. Volume financeiro "em trânsito" na janela de latência
+    reais_por_segundo = round(ticket_medio * tps, 2) if (ticket_medio and tps) else None
+    valor_em_transito = (
+        round(reais_por_segundo * (latencia_ms / 1000), 2)
+        if (reais_por_segundo and latencia_ms) else None
+    )
+
+    return {
+        "custo_por_milhao_usd": custo_por_milhao,
+        "latencia_reacao_ms": latencia_ms,
+        "reais_por_segundo": reais_por_segundo,
+        "valor_em_transito_brl": valor_em_transito,
+        "reconciliacoes_evitadas": cs_worker.recovered,
+        "sistemas_com_mongo": SISTEMAS_COM_MONGO,
+        "sistemas_sem_mongo": SISTEMAS_SEM_MONGO,
+        "ticket_medio": ticket_medio,
+        "transacoes_agregadas": agregadas,
+        "premissas": {
+            "custo_ambiente_usd_hora": CUSTO_AMBIENTE_USD_HORA,
+            "nota": "TPS, latência e contagem são MEDIDOS nesta sessão. O custo usa o preço "
+                    "de lista por hora do ambiente. O ticket médio é real no sentido de que o "
+                    "processor o calculou sobre as transações que passaram — mas os valores "
+                    "vêm da distribuição sintética do gerador, então o fluxo em R$ mostra a "
+                    "ordem de grandeza, não o ticket real do Inter.",
+        },
+    }
+
+
 @router.get("/cenario")
 async def cenario():
     """
@@ -507,7 +566,8 @@ async def cenario():
             {"label": "2× PIX Brasil", "tps": BRASIL_TPS_MEDIO * 2,
              "detalhe": "o dobro do PIX nacional inteiro, no mesmo cluster"},
             {"label": "Teto medido", "tps": TETO_MEDIDO_TPS,
-             "detalhe": f"máximo sustentado neste ambiente (cluster {CLUSTER_TIER}) com as três colunas juntas"},
+             "detalhe": f"máximo sustentado no cluster {CLUSTER_TIER} com o Stream Processing "
+                        f"no menor tier (SP10): Change Streams e ASP acompanham"},
         ],
         "ambiente": {
             "cluster": CLUSTER_TIER,
@@ -515,9 +575,15 @@ async def cenario():
             "particoes_consumo": CS_PARTICOES,
             "teto_medido_tps": TETO_MEDIDO_TPS,
             "nota": f"{TETO_MEDIDO_TPS:,}".replace(",", ".") +
-                    " TPS é o teto MEDIDO deste ambiente de PoV, não do produto: acima disso é só "
-                    "escalar o cluster, o tier do ASP e o número de partições de consumo. "
-                    "A 12.000 TPS as três colunas começam a ficar para trás.",
+                    " TPS é o teto MEDIDO com o Stream Processing no menor tier (SP10), "
+                    "escolhido de propósito para manter a PoV barata: Change Streams entregam "
+                    "9.507 ev/s e o processor agrega 9.483 tx/s. Acima disso o SP10 satura e "
+                    "cai para ~7.500 tx/s. O Kafka satura antes (~7.000 msg/s) por rodar "
+                    "1 task por coleção.",
+            "asterisco": "* Teto do AMBIENTE, não do produto. Só trocando o tier do Stream "
+                         "Processing para SP30 — sem tocar em cluster, código ou partições — "
+                         "o mesmo pipeline agregou 9.968 tx/s a 10.000 TPS de entrada, onde o "
+                         "SP10 já tinha quebrado. Escalar é uma linha de configuração.",
         },
     }
 
@@ -1028,11 +1094,43 @@ def _connector_status_sync() -> dict[str, Any]:
     resp.raise_for_status()
     body = resp.json()
     tasks = body.get("tasks", [])
+    estado_connector = body.get("connector", {}).get("state", "DESCONHECIDO")
+
+    # O connector pode reportar RUNNING com TODAS as tasks mortas — e é a task
+    # que move dado. Sem isso a UI pinta de verde um pipeline parado, que é
+    # exatamente o tipo de mentira que esta PoV não pode contar.
+    falhas = [t for t in tasks if t.get("state") == "FAILED"]
+    rodando = [t for t in tasks if t.get("state") == "RUNNING"]
+    if falhas and not rodando:
+        estado = "FAILED"
+        detalhe = f"connector {estado_connector}, mas {len(falhas)} task(s) FAILED — use Reiniciar"
+    elif falhas:
+        estado = "DEGRADADO"
+        detalhe = f"{len(rodando)} task(s) OK, {len(falhas)} FAILED"
+    elif not tasks:
+        estado = "SEM_TASK"
+        detalhe = f"connector {estado_connector} sem task ativa"
+    else:
+        estado = estado_connector
+        detalhe = f"{len(tasks)} task(s); {CONNECT_URL}"
+
     return {
-        "estado": body.get("connector", {}).get("state", "DESCONHECIDO"),
-        "detalhe": f"{len(tasks)} task(s); {CONNECT_URL}",
+        "estado": estado,
+        "detalhe": detalhe,
         "tasks": [{"id": t.get("id"), "state": t.get("state"), "trace": (t.get("trace") or "")[:200]} for t in tasks],
     }
+
+
+def _connector_restart_sync() -> dict[str, Any]:
+    """Reinicia connector e tasks. Uma task morta (queda de rede, restart do
+    cluster) não se recupera sozinha — e o connector segue dizendo RUNNING."""
+    import requests
+
+    base = f"{CONNECT_URL.rstrip('/')}/connectors/{CONNECTOR_NAME}"
+    resp = requests.post(f"{base}/restart?includeTasks=true&onlyFailed=false", timeout=10)
+    if resp.status_code >= 400:
+        return {"reiniciado": False, "detalhe": f"HTTP {resp.status_code}"}
+    return {"reiniciado": True, "detalhe": "connector e tasks reiniciados"}
 
 
 @router.get("/kafka/status")
@@ -1058,6 +1156,14 @@ async def kafka_status():
         "brokers": KAFKA_BROKERS,
         "connect_url": CONNECT_URL,
     }
+
+
+@router.post("/kafka/restart")
+async def kafka_restart():
+    try:
+        return await asyncio.to_thread(_connector_restart_sync)
+    except Exception as exc:  # noqa: BLE001 - Connect fora do ar é estado esperado
+        raise HTTPException(status_code=409, detail=f"Kafka Connect indisponível ({type(exc).__name__}).") from exc
 
 
 @router.get("/kafka")

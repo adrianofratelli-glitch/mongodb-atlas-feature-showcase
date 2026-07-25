@@ -53,6 +53,12 @@ One write generator feeds three consumers of the same change. Data lives in
 `pix.transacoes`, `pix.metricas_janela` and `pix.dlq` (`STREAMING_DB` overrides
 the database name).
 
+**Negócio**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/streaming/negocio` | Business translation of the measured metrics: cost per million transactions, reaction window, R$/s in flight, reconciliations avoided, systems to operate. Everything is derived from live measurements; the only premise (list price per hour) is returned separately and labelled. |
+
 **Cenário e rede**
 
 | Method | Path | Description |
@@ -90,7 +96,8 @@ all so every partition recovers from its own token.
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/streaming/kafka` | **SSE** of messages consumed from `atlas.pix.transacoes`, with partition, offset and the Atlas-insert → topic-arrival `latency_ms`. `aiokafka` is imported lazily: without the dependency or the broker, the stream emits `{"type": "status", "estado": "nao_configurado"}` and the UI renders the setup instructions. |
-| `GET` | `/streaming/kafka/status` | Connector state read from the Kafka Connect REST API (`RUNNING` / `FAILED` / `nao_configurado`) plus the consumer's message count and current offset. |
+| `GET` | `/streaming/kafka/status` | Connector state from the Kafka Connect REST API, **downgraded by task health**: a connector reporting `RUNNING` with every task `FAILED` is reported as `FAILED` (`DEGRADADO` when only some failed), because the task is what moves data. Plus message count and current offset. |
+| `POST` | `/streaming/kafka/restart` | Restarts connector and tasks. A task killed by a network blip or a cluster restart never recovers on its own while the connector keeps claiming `RUNNING`. |
 
 **Column 3 — Atlas Stream Processing**
 

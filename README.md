@@ -206,16 +206,22 @@ measured and what is assumed:
   events/s per column, p50/p95/p99 latency over 100% of the events, the volume
   the processor aggregated, and the app↔cluster RTT.
 
-  On the provisioned environment (**M30 cluster + SP30 stream processing +
-  10 consumer partitions**) the measured ceiling with all three columns running
-  is **10,000 TPS**: Change Streams sustain ~9,900 events/s at p50 ≈ 350 ms and
-  the ASP processor aggregates ~10,000 tx/s. At 12,000 TPS everything starts
-  falling behind. The Kafka source connector runs **one task per collection**,
-  so it tops out around 6,000 msg/s — past that, the fix is the same as for
-  column 1: one connector per partition.
+  On the provisioned environment (**M30 cluster + SP10 stream processing +
+  10 consumer partitions**) the measured ceiling is **9,500 TPS**: Change
+  Streams at 9,507 events/s (p50 458 ms) and the ASP processor aggregating
+  9,483 tx/s. The Kafka connector saturates earlier, around 7,000 msg/s,
+  because it runs **one task per collection**.
 
-  That ceiling belongs to this PoV environment, not to the product: raising it
-  is a matter of cluster tier, ASP tier and partition count.
+  SP10 has a cliff between 9,500 and 10,000: past saturation, throughput does
+  not plateau — it *drops*, to ~7,500 tx/s (reproduced twice). SP10 is a
+  deliberate choice, the cheapest tier that carries this demo. **Swapping only
+  the stream processor to SP30, with no other change, the same pipeline
+  aggregated 9,968 tx/s at the 10,000 TPS input where SP10 had already
+  collapsed.** The ceiling belongs to this environment, not to the product.
+
+  A caveat worth knowing: the processor takes its tier **at start time**, from
+  the workspace default unless one is passed explicitly. Since Reset restarts
+  the processor, the workspace default is what the demo will actually run on.
 - **Premises (labelled as such in the UI):** the daily PIX volume, Inter's 10%
   share and the 3× peak factor. They only provide a ruler — the presets
   (347 / 1.041 / 3.472 TPS) are derived from them.
