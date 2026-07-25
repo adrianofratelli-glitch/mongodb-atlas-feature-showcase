@@ -17,7 +17,7 @@ against a live cluster. Built with FastAPI and React 18.
 | Schema Validation | JSON Schema enforcement at the database layer (enum, regex, ranges, required fields) |
 | Change Streams | Real-time event feed (insert, update, delete) with `fullDocumentBeforeChange` and resume tokens |
 | ACID Transactions | Multi-document, multi-collection transactions (`with_transaction` callback API) with step-by-step visualization and a rollback demo |
-| Redis vs Change Streams | Dual-write vs single source of truth — live side-by-side proof of consistency under crashes and consumer recovery via resume token |
+| Streaming | The three ways to react to change in Atlas, side by side, fed by one live write stream: Change Streams, MongoDB Kafka Connector and Atlas Stream Processing |
 
 Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`, and so on).
 
@@ -31,9 +31,9 @@ Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`
 |---|---|
 | ![Schema Validation](docs/screenshots/04-schema.png) | ![Change Streams](docs/screenshots/05-changestreams.png) |
 
-| ACID Transactions | Redis vs Change Streams |
+| ACID Transactions | Streaming |
 |---|---|
-| ![Transactions](docs/screenshots/06-transactions.png) | ![Redis vs Change Streams](docs/screenshots/07-redis-vs-changestreams.png) |
+| ![Transactions](docs/screenshots/06-transactions.png) | ![Streaming](docs/screenshots/07-streaming.png) |
 
 ## Stack
 
@@ -116,6 +116,60 @@ Or start both processes with readiness checks:
 ./start.sh --foreground
 ```
 
+## Streaming — setup
+
+The Streaming module (`/#streaming`) shows the three ways to react to a change in
+Atlas side by side, all fed by the same live write generator against
+`pix.transacoes`. Column 1 (Change Streams) works with nothing but `MONGO_URI`.
+Columns 2 and 3 need the setup below; without it they render as
+**"não configurado"** with these instructions, and the rest of the module keeps
+working. No panel ever shows synthetic data.
+
+**1. Start the local Kafka stack** (Redpanda + Kafka Connect + Redpanda Console):
+
+```bash
+docker compose -f docker-compose.streaming.yml up -d
+```
+
+The `mongodb-kafka-connect` plugin is downloaded on the first start only and
+cached in a named volume, so later runs work offline.
+
+**2. Register the source connector** (reads `MONGO_URI` from `backend/.env`):
+
+```bash
+./scripts/setup-kafka-connector.sh
+```
+
+It PUTs a `MongoSourceConnector` config on the Connect REST API
+(`http://localhost:8083`) with `database=pix`, `collection=transacoes`,
+`publish.full.document.only=true`, `startup.mode=copy_existing` and
+`topic.prefix=atlas`, producing the topic `atlas.pix.transacoes`.
+Inspect it live at http://localhost:8085.
+
+**3. Create the Stream Processing Instance** (Atlas UI → Stream Processing):
+create an SPI in the cluster's region, add an *Atlas Database* connection to
+this cluster named `atlasCluster`, then:
+
+```bash
+# in backend/.env: ASP_ENABLED=true and ASP_CONNECTION_STRING=<SPI connection string>
+mongosh "$ASP_CONNECTION_STRING" --file scripts/setup-asp.js
+```
+
+The processor reads the change stream of `pix.transacoes`, sends malformed
+documents to a DLQ, aggregates 10-second tumbling windows by `uf` and `tipo`
+(count, summed volume, average ticket) and `$merge`s each closed window into
+`pix.metricas_janela`. The backend surfaces those windows by watching that
+collection with a change stream — the ASP result reaches the screen through the
+mechanics of column 1.
+
+Tear everything down with `./scripts/teardown-streaming.sh` (add `--volumes` to
+drop the cached plugin). `POST /streaming/reset` (the **Reset** button) clears
+`transacoes`, `metricas_janela` and `dlq` and zeroes every counter. A 2-hour TTL
+index on `ts` keeps the collection from growing between demos.
+
+Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
+`CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`.
+
 ## Security model
 
 The application contains intentionally destructive demonstrations (index and
@@ -164,7 +218,7 @@ Use `--full` to reproduce the large-scale dataset.
 │       ├── schema_validation.py # JSON Schema collMod demo
 │       ├── change_streams.py    # Change stream watcher
 │       ├── transactions.py      # ACID multi-document transactions
-│       └── redis_vs_changestream.py
+│       └── streaming.py         # Generator + Change Streams / Kafka / ASP (SSE)
 └── frontend/
     ├── src/
     │   ├── App.jsx              # Shell, sidebar, navigation
