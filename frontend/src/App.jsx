@@ -8,7 +8,7 @@ import Transactions from './pages/Transactions'
 import Streaming from './pages/Streaming'
 
 const MODULES = [
-  { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Sem downtime, sem lock na coleção',              color: '#00ED64', component: Reindexacao },
+  { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Hybrid build sem bloqueio prolongado',            color: '#00ED64', component: Reindexacao },
   { key: 'hotcold', num: '02', title: 'Hot / Cold Tiering',   subtitle: 'Online Archive — dados históricos automáticos',  color: '#06b6d4', component: HotCold },
   { key: 'agg',     num: '03', title: 'Aggregation Pipeline', subtitle: '$lookup, $facet, $setWindowFields e mais',       color: '#a855f7', component: Aggregations },
   { key: 'schema',  num: '04', title: 'Schema Validation',    subtitle: 'JSON Schema enforcement no banco',               color: '#f97316', component: SchemaValidation },
@@ -174,6 +174,7 @@ export default function App() {
             <button
               className="sb-pin"
               aria-pressed={sidebarFixa}
+              aria-label={sidebarFixa ? 'Soltar barra lateral' : 'Fixar barra lateral aberta'}
               title={sidebarFixa ? 'Soltar a barra (volta a recolher)' : 'Fixar a barra aberta'}
               onClick={() => setSidebarFixa(v => !v)}
             >{sidebarFixa ? '📌' : '📍'}</button>

@@ -589,7 +589,7 @@ def _cluster_info_sync() -> dict[str, Any]:
             f"https://cloud.mongodb.com/api/atlas/v2/groups/{settings.atlas_project_id}"
             f"/clusters/{settings.atlas_cluster}",
             auth=HTTPDigestAuth(settings.atlas_public_key, settings.atlas_private_key),
-            headers={"Accept": "application/vnd.atlas.2024-08-05+json"},
+            headers={"Accept": "application/vnd.atlas.2025-03-12+json"},
             timeout=8,
         )
         resp.raise_for_status()

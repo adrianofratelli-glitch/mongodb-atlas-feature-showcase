@@ -78,7 +78,7 @@ export default function HotCold() {
             {distribution.distribution.map(row => (
               <div key={row.year} className="result-row" style={{ justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                  <span className={`badge ${row.tier.includes('Hot') ? 'badge-red' : 'badge-blue'}`}>{row.tier}</span>
+                  <span className={`badge ${row.tier.includes('Hot') ? 'badge-red' : row.tier.includes('Misto') ? 'badge-yellow' : 'badge-blue'}`}>{row.tier}</span>
                   <strong>{row.year}</strong>
                   <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{row.count.toLocaleString()} docs</span>
                 </div>

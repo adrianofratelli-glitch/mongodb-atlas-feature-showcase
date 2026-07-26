@@ -25,6 +25,29 @@ def test_liveness_does_not_require_database():
     assert response.headers.get("x-request-id")
 
 
+def test_request_id_valido_e_preservado():
+    response = client.get("/health/live", headers={"X-Request-ID": "demo-123_ok"})
+    assert response.headers["x-request-id"] == "demo-123_ok"
+
+
+def test_request_id_invalido_e_substituido():
+    supplied = "x" * 100
+    response = client.get("/health/live", headers={"X-Request-ID": supplied})
+    assert response.headers["x-request-id"] != supplied
+    assert len(response.headers["x-request-id"]) == 12
+
+
+def test_corpo_grande_e_rejeitado_com_headers_de_seguranca():
+    previous = settings.max_request_bytes
+    object.__setattr__(settings, "max_request_bytes", 4)
+    try:
+        response = client.post("/change-streams/stop", content="12345")
+    finally:
+        object.__setattr__(settings, "max_request_bytes", previous)
+    assert response.status_code == 413
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
 def test_mutation_rejects_untrusted_browser_origin():
     response = client.post(
         "/change-streams/stop",
@@ -47,6 +70,11 @@ def test_configured_token_is_required_for_mutations():
 
 def test_index_field_allowlist_rejects_operator_injection():
     response = client.post("/reindexacao/create?fields=%24where")
+    assert response.status_code == 422
+
+
+def test_build_status_rejeita_nome_de_indice_invalido():
+    response = client.get("/reindexacao/build-status?name=%24where")
     assert response.status_code == 422
 
 

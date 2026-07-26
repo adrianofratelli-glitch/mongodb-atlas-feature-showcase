@@ -55,6 +55,7 @@ export default function SchemaValidation() {
   const [stepResults, setStepResults] = useState({})
   const [activeScenario, setActiveScenario] = useState(null)
   const [docs, setDocs]             = useState(null)
+  const [runningStep, setRunningStep] = useState(null)
 
   const fetchStatus = async () => {
     const d = await call('/schema/status')
@@ -70,17 +71,23 @@ export default function SchemaValidation() {
   }
 
   const runStep = async (n, fn) => {
-    const result = await fn()
-    if (result) {
-      setStepResults(r => ({ ...r, [n]: result }))
-      setStep(n)
-      await fetchStatus()
-      await fetchDocs()
+    setRunningStep(n)
+    try {
+      const result = await fn()
+      if (result) {
+        setStepResults(r => ({ ...r, [n]: result }))
+        setStep(n)
+        await fetchStatus()
+        await fetchDocs()
+      }
+    } finally {
+      setRunningStep(null)
     }
   }
 
   const reset = async () => {
-    await call('/schema/reset', { method: 'DELETE' })
+    const result = await call('/schema/reset', { method: 'DELETE' })
+    if (!result) return
     setStep(0); setStepResults({}); setDocs(null); setActiveScenario(null)
     await fetchStatus()
   }
@@ -124,7 +131,7 @@ export default function SchemaValidation() {
             <span className="badge badge-blue">{status.document_count} documentos</span>
           </div>
         )}
-        <button className="btn btn-sm btn-danger" onClick={reset}>↺ Resetar demo</button>
+        <button className="btn btn-sm btn-danger" onClick={reset} disabled={loading}>↺ Resetar demo</button>
       </div>
 
       {/* Steps 1-3 */}
@@ -141,7 +148,7 @@ export default function SchemaValidation() {
                     <strong style={{ fontSize: 14 }}>{s.title}</strong>
                     {step < s.n && (
                       <button className="btn btn-sm btn-primary" onClick={() => runStep(s.n, s.fn)} disabled={loading || step < s.n - 1}>
-                        {loading ? <><span className="spinner" /></> : s.action}
+                        {runningStep === s.n ? <><span className="spinner" /> Executando…</> : s.action}
                       </button>
                     )}
                   </div>

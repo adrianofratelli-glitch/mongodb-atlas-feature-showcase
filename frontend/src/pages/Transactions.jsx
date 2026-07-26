@@ -49,10 +49,15 @@ function StepRow({ step, last }) {
 
 function IDCard({ label, id, collection }) {
   const [copied, setCopied] = useState(false)
-  const copy = () => {
-    navigator.clipboard?.writeText(id)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+  const copy = async () => {
+    if (!navigator.clipboard) return
+    try {
+      await navigator.clipboard.writeText(id)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard pode ser bloqueado fora de HTTPS; o ID continua selecionável.
+    }
   }
   return (
     <div style={{ padding: '14px 16px', background: 'rgba(0,237,100,.08)', border: '1px solid rgba(0,237,100,.3)', borderRadius: 8 }}>
@@ -96,9 +101,11 @@ export default function Transactions() {
 
   const reset = async () => {
     setResetting(true)
-    await call('/transactions/reset', { method: 'POST' })
-    setResult(null)
-    setStatus(null)
+    const result = await call('/transactions/reset', { method: 'POST' })
+    if (result) {
+      setResult(null)
+      setStatus(null)
+    }
     setResetting(false)
   }
 

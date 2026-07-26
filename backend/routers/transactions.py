@@ -10,6 +10,10 @@ logger = logging.getLogger("showcase.transactions")
 DEMO_COLLECTIONS = ["pedidos_demo", "pagamentos_demo", "estoque_demo"]
 
 
+class SimulatedPaymentError(RuntimeError):
+    """Falha deliberada do passo de pagamento, distinta de erros reais."""
+
+
 @router.get("/status")
 def status():
     """Retorna quantos documentos existem nas coleções de demo."""
@@ -91,7 +95,7 @@ def executar_transacao(simular_falha: bool = False):
 
         # ── Step 4: Registrar pagamento ───────────────────────────────
         if simular_falha:
-            raise Exception("Timeout no gateway de pagamento (simulado)")
+            raise SimulatedPaymentError("Timeout no gateway de pagamento (simulado)")
 
         pagamento_id = str(uuid.uuid4())
         pagamento = {
@@ -130,7 +134,7 @@ def executar_transacao(simular_falha: bool = False):
 
         except Exception as e:
             # with_transaction já abortou a transação antes de propagar
-            expected_failure = simular_falha and "gateway de pagamento" in str(e)
+            expected_failure = isinstance(e, SimulatedPaymentError)
             public_error = str(e) if expected_failure else "A transação não pôde ser concluída. Consulte o log do backend."
             if not expected_failure:
                 logger.exception("Falha na demonstração de transação")

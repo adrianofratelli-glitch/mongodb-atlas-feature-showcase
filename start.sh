@@ -41,7 +41,7 @@ venv/bin/uvicorn main:app --host 127.0.0.1 --port 8002 --reload > "$BACKEND_LOG"
 BACKEND_PID=$!
 echo "  PID: $BACKEND_PID"
 
-if ! wait_for_url "http://127.0.0.1:8002/preflight" 30; then
+if ! wait_for_url "http://127.0.0.1:8002/health/live" 30; then
   echo "❌ Backend não ficou pronto. Últimas linhas do log:" >&2
   tail -n 25 "$BACKEND_LOG" >&2
   cleanup
@@ -68,6 +68,12 @@ echo "   API:      http://localhost:8002"
 echo ""
 echo "Para parar: kill $BACKEND_PID $FRONTEND_PID"
 echo "Preflight:  http://localhost:8002/preflight"
+PREFLIGHT_STATUS="$(curl --silent --output /dev/null --write-out '%{http_code}' --max-time 5 \
+  "http://127.0.0.1:8002/preflight" || true)"
+if [[ "$PREFLIGHT_STATUS" != "200" ]]; then
+  echo "⚠️  Backend está vivo, mas o preflight retornou HTTP ${PREFLIGHT_STATUS:-indisponível}."
+  echo "   Abra o diagnóstico antes da apresentação."
+fi
 
 if [[ "${1:-}" == "--foreground" ]]; then
   trap cleanup INT TERM EXIT

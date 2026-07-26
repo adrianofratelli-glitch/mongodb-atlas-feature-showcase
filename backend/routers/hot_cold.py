@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Path, Query
 from database import db
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import json
 import requests
 import logging
 from requests.auth import HTTPDigestAuth
@@ -33,7 +34,13 @@ def _atlas_friendly_error(resp=None, exc=None) -> str:
         body = {}
     code = body.get("errorCode", "")
     if code == "IP_ADDRESS_NOT_ON_ACCESS_LIST":
-        ip = (body.get("parameters") or ["seu IP"])[0]
+        parameters = body.get("parameters")
+        if isinstance(parameters, list) and parameters:
+            ip = parameters[0]
+        elif isinstance(parameters, dict) and parameters:
+            ip = next(iter(parameters.values()))
+        else:
+            ip = "seu IP"
         return (
             f"A API key do Atlas não autoriza o IP {ip}. "
             "Adicione-o em Access Manager → API Keys → Access List "
@@ -60,7 +67,7 @@ def _atlas_request(method: str, url: str, **kwargs) -> dict:
         )
     except requests.RequestException as e:
         raise AtlasUnavailable(_atlas_friendly_error(exc=e))
-    if resp.status_code not in (200, 201, 204):
+    if not 200 <= resp.status_code < 300:
         raise AtlasUnavailable(_atlas_friendly_error(resp=resp))
     return resp.json() if resp.text else {}
 
@@ -86,7 +93,7 @@ def data_distribution():
     total_docs   = db[COLLECTION].estimated_document_count()
     sampled      = sum(r["count"] for r in result) or 1
     factor       = total_docs / sampled  # extrapola amostra → total
-    current_year = datetime.now(timezone.utc).year
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
     rows = []
     for r in result:
@@ -95,7 +102,11 @@ def data_distribution():
             "year": year,
             "count": round(r["count"] * factor),
             "avg_preco": round(r["avg_preco"] or 0, 2),
-            "tier": "🔥 Hot (ativo)" if year and year >= current_year - 1 else "❄️  Cold (arquivo)",
+            "tier": (
+                "🔥 Hot (ativo)" if year and year > cutoff.year
+                else "🌓 Misto (ano do corte)" if year == cutoff.year
+                else "❄️  Cold (arquivo)"
+            ),
         })
     return {
         "distribution": rows,
@@ -112,8 +123,7 @@ def data_distribution():
 
 @router.get("/archive-simulation")
 def archive_simulation():
-    current_year = datetime.now(timezone.utc).year
-    cutoff = datetime(current_year - 1, 1, 1, tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
     # Amostra para split hot/cold instantâneo, extrapolado para o total.
     pipeline = [
@@ -141,8 +151,7 @@ def archive_simulation():
 
 @router.get("/query-transparent")
 def query_transparent(categoria: str = Query("Eletrônicos", min_length=2, max_length=40)):
-    current_year = datetime.now(timezone.utc).year
-    cutoff = datetime(current_year - 1, 1, 1, tzinfo=timezone.utc)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
 
     def fmt(docs):
         for d in docs:
@@ -154,7 +163,10 @@ def query_transparent(categoria: str = Query("Eletrônicos", min_length=2, max_l
     cold = list(db[COLLECTION].find({"categoria": categoria, "created_at": {"$lt":  cutoff}}, {"nome": 1, "preco": 1, "created_at": 1, "_id": 0}).limit(3))
 
     return {
-        "query_used": f"db.produtos.find({{ categoria: '{categoria}' }}) // via endpoint federado (cluster + archive)",
+        "query_used": (
+            f"db.produtos.find({{ categoria: {json.dumps(categoria, ensure_ascii=False)} }}) "
+            "// via endpoint federado (cluster + archive)"
+        ),
         "explanation": (
             "Com o Online Archive ativo, o Atlas expõe um endpoint federado dedicado: "
             "nele, UMA query sem filtro de data retorna documentos de AMBAS as camadas "
@@ -180,7 +192,7 @@ def list_online_archives():
     return {
         "archives": [
             {
-                "id": a.get("_id"),
+                "id": a.get("id") or a.get("_id"),
                 "status": a.get("state"),
                 "collection": a.get("collName"),
                 "date_field": a.get("criteria", {}).get("dateField"),
@@ -195,7 +207,7 @@ def list_online_archives():
 def create_online_archive(expire_after_days: int = Query(365, ge=30, le=3650)):
     """
     Cria uma regra de Online Archive via Atlas API.
-    Documentos com created_at > expire_after_days dias serão movidos automaticamente.
+    Documentos com mais de expire_after_days dias serão movidos automaticamente.
     """
     url = f"{ATLAS_BASE}/groups/{ATLAS_PROJECT_ID}/clusters/{ATLAS_CLUSTER}/onlineArchives"
     payload = {
@@ -220,9 +232,9 @@ def create_online_archive(expire_after_days: int = Query(365, ge=30, le=3650)):
     except AtlasUnavailable as e:
         return {"atlas_error": str(e)}
     return {
-        "archive_id": result.get("_id"),
+        "archive_id": result.get("id") or result.get("_id"),
         "status": result.get("state"),
-        "message": f"Regra criada: documentos com created_at > {expire_after_days} dias serão arquivados automaticamente.",
+        "message": f"Regra criada: documentos com mais de {expire_after_days} dias serão arquivados automaticamente.",
         "collection": COLLECTION,
         "date_field": "created_at",
         "expire_after_days": expire_after_days,

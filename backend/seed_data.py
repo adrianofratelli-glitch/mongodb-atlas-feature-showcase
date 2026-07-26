@@ -70,7 +70,10 @@ def gerar_avaliacao(produtos_ref):
 
 
 def seed(n_produtos, n_avaliacoes):
-    client = MongoClient(os.getenv("MONGO_URI"))
+    mongo_uri = (os.getenv("MONGO_URI") or "").strip()
+    if not mongo_uri:
+        raise RuntimeError("MONGO_URI não configurada. Copie backend/.env.example para backend/.env.")
+    client = MongoClient(mongo_uri, appname="mongodb-atlas-feature-showcase-seed")
     db = client[os.getenv("MONGO_DB", "POC")]
 
     print(f"Inserindo {n_produtos:,} produtos…")

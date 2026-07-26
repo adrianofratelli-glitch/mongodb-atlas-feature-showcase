@@ -51,6 +51,9 @@ export default function ChangeStreams() {
   }, [])
 
   const startDemo = async () => {
+    clearInterval(pollRef.current)
+    timerRef.current.forEach(clearTimeout)
+    timerRef.current = []
     setPhase('running')
     setEvents([])
     const res = await call('/change-streams/start', { method: 'POST' })
@@ -79,14 +82,15 @@ export default function ChangeStreams() {
     timerRef.current.push(tStop)
   }
 
-  const reset = () => {
+  const reset = async () => {
     clearInterval(pollRef.current)
     timerRef.current.forEach(clearTimeout)
     timerRef.current = []
-    setPhase('idle')
+    setPhase('stopping')
     setEvents([])
     setCollection(null)
-    call('/change-streams/stop', { method: 'POST' })
+    const stopped = await call('/change-streams/stop', { method: 'POST' })
+    setPhase(stopped ? 'idle' : 'running')
   }
 
   const clearCollection = async () => {
@@ -176,7 +180,7 @@ export default function ChangeStreams() {
               ))}
               {phase === 'running' && (
                 <div style={{ padding: '8px 14px', borderRadius: 6, background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', fontSize: 11, color: 'var(--text-secondary)', alignSelf: 'center' }}>
-                  {DEMO_SEQUENCE.length - events.length} operações restantes…
+                  {Math.max(0, DEMO_SEQUENCE.length - events.length)} operações restantes…
                 </div>
               )}
             </div>

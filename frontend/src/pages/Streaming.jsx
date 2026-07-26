@@ -273,13 +273,14 @@ export default function Streaming() {
     await call(`/streaming/asp/inject-invalid?quantidade=${quantidade}`, { method: 'POST' })
   }
   const reprocessarDlq = async () => {
-    const r = await call('/streaming/asp/dlq/reprocessar?limite=1000', { method: 'POST' })
+    const r = await call('/streaming/asp/dlq/reprocessar?limite=1000', { method: 'POST', timeoutMs: 120_000 })
     if (r) { const d = await call('/streaming/asp/dlq/resumo'); if (d) setDlqResumo(d) }
   }
 
   // ── Reset global ─────────────────────────────────────────────────────────
   const resetAll = async () => {
-    await call('/streaming/reset', { method: 'POST' })
+    const result = await call('/streaming/reset', { method: 'POST', timeoutMs: 210_000 })
+    if (!result) return
     setCsEvents([]); setCsMetrics(null)
     setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
     setKafkaMsgs([]); setKafkaMetrics(null); setJanelas([]); setDlq([]); setAspMetrics(null)

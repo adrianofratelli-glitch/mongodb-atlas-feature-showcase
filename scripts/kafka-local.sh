@@ -32,9 +32,16 @@ subir() {
   local jar="$PLUGIN_DIR/mongo-kafka-connect-$MONGO_CONNECTOR_VERSION-all.jar"
   if [[ ! -f "$jar" ]]; then
     echo "▶ Baixando mongodb-kafka-connect $MONGO_CONNECTOR_VERSION (só na primeira vez)..."
-    curl -fsSL -o "$jar" \
+    local parcial="$jar.part"
+    rm -f "$parcial"
+    curl -fsSL --retry 3 -o "$parcial" \
       "https://repo1.maven.org/maven2/org/mongodb/kafka/mongo-kafka-connect/$MONGO_CONNECTOR_VERSION/mongo-kafka-connect-$MONGO_CONNECTOR_VERSION-all.jar" \
-      || fail "Falha ao baixar o plugin."
+      || { rm -f "$parcial"; fail "Falha ao baixar o plugin."; }
+    if command -v jar >/dev/null && ! jar tf "$parcial" >/dev/null 2>&1; then
+      rm -f "$parcial"
+      fail "O arquivo baixado não é um JAR válido."
+    fi
+    mv "$parcial" "$jar"
   fi
 
   if ! porta_ativa 9092; then
@@ -101,7 +108,13 @@ estado() {
 
 derrubar() {
   if [[ -f "$RUN_DIR/connect.pid" ]]; then
-    kill "$(cat "$RUN_DIR/connect.pid")" 2>/dev/null || true
+    local pid
+    pid="$(cat "$RUN_DIR/connect.pid")"
+    if ps -p "$pid" -o command= 2>/dev/null | grep -q "connect-distributed"; then
+      kill "$pid" 2>/dev/null || true
+    else
+      echo "▶ PID antigo do Connect ignorado ($pid)."
+    fi
     rm -f "$RUN_DIR/connect.pid"
     echo "▶ Kafka Connect encerrado."
   fi

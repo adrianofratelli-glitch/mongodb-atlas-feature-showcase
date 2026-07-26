@@ -80,8 +80,11 @@ subir() {
 
 derrubar() {
   azul "▶ Parando frontend e backend..."
-  lsof -ti:5174 | xargs -r kill 2>/dev/null || true
-  lsof -ti:8002 | xargs -r kill 2>/dev/null || true
+  local pids
+  pids="$(lsof -ti:5174 2>/dev/null || true)"
+  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
+  pids="$(lsof -ti:8002 2>/dev/null || true)"
+  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
   "$BASE/scripts/ambiente.sh" down
   verde "✅ Tudo desligado."
 }

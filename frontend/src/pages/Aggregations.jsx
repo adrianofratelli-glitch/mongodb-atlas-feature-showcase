@@ -354,7 +354,8 @@ export default function Aggregations() {
       {/* Tabs */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
         {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)} className="tag" style={{
+          <button key={t.key} onClick={() => setTab(t.key)} className="tag"
+            aria-pressed={tab === t.key} style={{
             borderColor: tab === t.key ? t.color : undefined,
             color:       tab === t.key ? t.color : undefined,
             fontWeight:  tab === t.key ? 700 : 400,

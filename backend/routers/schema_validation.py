@@ -1,12 +1,10 @@
 from fastapi import APIRouter, HTTPException, Query
 from database import db
 import json
-import os
 from pymongo.errors import WriteError, OperationFailure
 
 router = APIRouter(prefix="/schema", tags=["Schema Validation"])
 
-DB_NAME = os.getenv("MONGO_DB", "POC")
 COL = "schema_demo"
 
 SCHEMA = {
@@ -139,8 +137,8 @@ def step4_insert_invalid(
 # ── Inserção válida (com schema) ─────────────────────────────────────────────
 @router.post("/insert-valid")
 def insert_valid():
-    if not _col_exists():
-        db.create_collection(COL)
+    if not _col_exists() or not _has_validator():
+        raise HTTPException(status_code=409, detail="Ative o schema primeiro (step3).")
     doc = {"nome": "Smartphone Pro X", "preco": 2499.90, "categoria": "Eletrônicos", "em_estoque": True, "sku": "EL-1234"}
     result = db[COL].insert_one(doc)
     return {"status": "aceito", "inserted_id": str(result.inserted_id), "document": doc}

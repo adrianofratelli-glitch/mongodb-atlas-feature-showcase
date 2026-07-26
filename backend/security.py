@@ -62,19 +62,32 @@ class MutationGuardMiddleware(BaseHTTPMiddleware):
 
 
 class ApiHardeningMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                too_large = int(content_length) > settings.max_request_bytes
-            except ValueError:
-                too_large = True
-            if too_large:
-                return JSONResponse(status_code=413, content={"detail": "Corpo da requisição muito grande."})
-
-        response = await call_next(request)
+    @staticmethod
+    def _harden(response):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    async def dispatch(self, request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                parsed_length = int(content_length)
+                too_large = parsed_length < 0 or parsed_length > settings.max_request_bytes
+            except ValueError:
+                too_large = True
+            if too_large:
+                return self._harden(
+                    JSONResponse(status_code=413, content={"detail": "Corpo da requisição muito grande."})
+                )
+        elif request.headers.get("transfer-encoding"):
+            # Sem Content-Length não há como garantir o limite antes de ler um
+            # corpo chunked. A PoV só usa JSON pequeno e nunca precisa disso.
+            return self._harden(
+                JSONResponse(status_code=413, content={"detail": "Corpo chunked não é aceito nesta demonstração."})
+            )
+
+        response = await call_next(request)
+        return self._harden(response)

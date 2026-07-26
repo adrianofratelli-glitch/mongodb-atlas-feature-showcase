@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 
 from fastapi import FastAPI, Request
@@ -16,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("showcase.api")
 
 app = FastAPI(title="MongoDB Atlas Feature Showcase", version="1.1.0")
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 app.add_middleware(ApiHardeningMiddleware)
 app.add_middleware(MutationGuardMiddleware)
@@ -30,7 +32,8 @@ app.add_middleware(
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
-    request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    supplied_request_id = request.headers.get("x-request-id", "")
+    request_id = supplied_request_id if REQUEST_ID_RE.fullmatch(supplied_request_id) else uuid.uuid4().hex[:12]
     request.state.request_id = request_id
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id

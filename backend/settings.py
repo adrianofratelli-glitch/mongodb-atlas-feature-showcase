@@ -10,11 +10,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def _int_env(name: str, default: int) -> int:
+def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     try:
-        return int(os.getenv(name, str(default)))
+        value = int(os.getenv(name, str(default)))
     except ValueError:
         return default
+    return max(minimum, min(value, maximum))
 
 
 def _csv_env(name: str, default: str) -> tuple[str, ...]:
@@ -25,7 +26,7 @@ def _csv_env(name: str, default: str) -> tuple[str, ...]:
 class Settings:
     mongo_uri: str = os.getenv("MONGO_URI", "").strip()
     mongo_db: str = os.getenv("MONGO_DB", "POC").strip() or "POC"
-    mongo_timeout_ms: int = _int_env("MONGO_TIMEOUT_MS", 8_000)
+    mongo_timeout_ms: int = _int_env("MONGO_TIMEOUT_MS", 8_000, 100, 300_000)
     atlas_public_key: str = os.getenv("ATLAS_PUBLIC_KEY", "").strip()
     atlas_private_key: str = os.getenv("ATLAS_PRIVATE_KEY", "").strip()
     atlas_project_id: str = os.getenv("ATLAS_PROJECT_ID", "").strip()
@@ -35,7 +36,7 @@ class Settings:
         "ALLOWED_ORIGINS",
         "http://localhost:5174,http://127.0.0.1:5174",
     )
-    max_request_bytes: int = _int_env("MAX_REQUEST_BYTES", 1_048_576)
+    max_request_bytes: int = _int_env("MAX_REQUEST_BYTES", 1_048_576, 1, 104_857_600)
 
     @property
     def atlas_configured(self) -> bool:

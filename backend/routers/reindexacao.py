@@ -19,30 +19,52 @@ COLLECTION = "produtos"
 # Estado dos builds em andamento (em memória). name -> {...}
 _builds: dict[str, dict] = {}
 _builds_lock = threading.RLock()
+MAX_TRACKED_BUILDS = 128
 ALLOWED_INDEX_FIELDS = {
     "categoria", "preco", "em_estoque", "total_avaliacoes",
     "avaliacao_media", "marca", "created_at", "produto_id",
 }
 
 
-def _index_name(fields: list[str]) -> str:
-    """Reproduz o nome padrão que o MongoDB gera para o índice."""
+def _index_name(fields: list[str], *, sparse: bool = False, partial: bool = False) -> str:
+    """Nome estável que também diferencia opções sobre o mesmo key pattern."""
     parts = []
     for f in fields:
         name = f.lstrip("-")
         direction = -1 if f.startswith("-") else 1
         parts.append(f"{name}_{direction}")
-    return "_".join(parts)
+    suffix = "_partial" if partial else "_sparse" if sparse else ""
+    return "_".join(parts) + suffix
 
 
 def _existing_index_names() -> set[str]:
     return {i["name"] for i in db[COLLECTION].list_indexes()}
 
 
+def _equivalent_index_name(key: list[tuple[str, int]], sparse: bool, partial_filter: dict | None) -> str | None:
+    wanted_key = dict(key)
+    for index in db[COLLECTION].list_indexes():
+        if dict(index.get("key", {})) != wanted_key:
+            continue
+        if bool(index.get("sparse", False)) != sparse:
+            continue
+        if index.get("partialFilterExpression") != partial_filter:
+            continue
+        return index["name"]
+    return None
+
+
 @router.get("/indexes")
 def list_indexes():
     indexes = list(db[COLLECTION].list_indexes())
-    return {"indexes": [{"name": i["name"], "key": dict(i["key"])} for i in indexes]}
+    return {
+        "indexes": [{
+            "name": i["name"],
+            "key": dict(i["key"]),
+            "sparse": bool(i.get("sparse", False)),
+            "partial_filter": i.get("partialFilterExpression"),
+        } for i in indexes]
+    }
 
 
 def _build_worker(name: str, key, kwargs):
@@ -73,16 +95,19 @@ def create_index(
         raise HTTPException(status_code=422, detail="Campo de índice não permitido ou duplicado.")
     if partial_filter not in (None, {"em_estoque": True}):
         raise HTTPException(status_code=422, detail="Filtro parcial não permitido nesta demonstração.")
-
-    name = _index_name(fields)
-
-    if name in _existing_index_names():
-        return {"status": "exists", "index_name": name, "message": "Índice já existe na coleção."}
+    if sparse and partial_filter:
+        raise HTTPException(status_code=422, detail="Escolha índice sparse ou parcial, não ambos.")
 
     key = [(f.lstrip("-"), DESCENDING if f.startswith("-") else ASCENDING) for f in fields]
+    equivalent = _equivalent_index_name(key, sparse, partial_filter)
+    if equivalent:
+        return {"status": "exists", "index_name": equivalent, "message": "Índice equivalente já existe na coleção."}
+
+    name = _index_name(fields, sparse=sparse, partial=partial_filter is not None)
     # Desde o MongoDB 4.2 todo build de índice é "hybrid": não bloqueia leituras
-    # nem escritas (a antiga opção background foi deprecada e é ignorada).
-    kwargs: dict = {"sparse": sparse}
+    # e escritas durante a maior parte do processo; locks exclusivos curtos
+    # ainda existem no início e no fim.
+    kwargs: dict = {"name": name, "sparse": sparse}
     if partial_filter:
         kwargs["partialFilterExpression"] = partial_filter
 
@@ -90,6 +115,18 @@ def create_index(
         current = _builds.get(name)
         if current and current.get("status") == "building":
             return {"status": "building", "index_name": name, "message": "Build já está em andamento."}
+        # Estado é só conveniência da UI. Evita crescimento indefinido se a PoV
+        # ficar exposta e receber muitas combinações de índices ao longo do dia.
+        for old_name in list(_builds):
+            if len(_builds) < MAX_TRACKED_BUILDS:
+                break
+            if _builds[old_name].get("status") != "building":
+                _builds.pop(old_name)
+        if len(_builds) >= MAX_TRACKED_BUILDS:
+            raise HTTPException(
+                status_code=429,
+                detail="Muitos builds simultâneos. Aguarde a conclusão dos atuais.",
+            )
         _builds[name] = {"status": "building", "elapsed_seconds": 0, "error": None}
     threading.Thread(target=_build_worker, args=(name, key, kwargs), daemon=True).start()
 
@@ -98,14 +135,16 @@ def create_index(
         "index_name": name,
         "fields": fields,
         "note": (
-            "Build iniciado (hybrid build, MongoDB 4.2+). A coleção continua "
-            "atendendo leituras e escritas normalmente durante toda a construção."
+            "Build iniciado (hybrid build, MongoDB 4.2+). Leituras e escritas "
+            "continuam durante a maior parte da construção; há locks curtos nas transições."
         ),
     }
 
 
 @router.get("/build-status")
-def build_status(name: str):
+def build_status(
+    name: str = Query(..., min_length=3, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")
+):
     """
     Estado de um build iniciado por /create. A fonte da verdade é o worker
     (índices em construção já aparecem em listIndexes, então não basta checar

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { Light as SyntaxHighlighter } from 'react-syntax-highlighter'
 import js from 'react-syntax-highlighter/dist/esm/languages/hljs/javascript'
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs'
@@ -40,17 +40,23 @@ export default function Reindexacao() {
   const [explainSel, setExplainSel] = useState('composto')
   const [explainRes, setExplainRes] = useState(null)
   const [explainLoading, setExplainLoading] = useState(false)
+  const cancelled = useRef(false)
 
   const fetchIndexes = async () => {
     const data = await call('/reindexacao/indexes')
     if (data) setIndexes(data.indexes)
   }
 
-  useEffect(() => { fetchIndexes() }, [])
+  useEffect(() => {
+    cancelled.current = false
+    fetchIndexes()
+    return () => { cancelled.current = true }
+  }, [])
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
   const handleCreate = async (scenario) => {
+    cancelled.current = false
     setSelected(scenario.key)
     setResult({ phase: 'starting', name: null })
     setProbe(null)
@@ -79,7 +85,7 @@ export default function Reindexacao() {
     let probeCount = 0
     let probeStop = false
     const probeLoop = (async () => {
-      while (!probeStop) {
+      while (!probeStop && !cancelled.current) {
         const p = await call('/reindexacao/read-probe')
         if (p && p.ok) {
           probeCount += 1
@@ -92,6 +98,7 @@ export default function Reindexacao() {
     try {
       for (let i = 0; i < 60; i++) {
         await sleep(2000)
+        if (cancelled.current) return
         const st = await call(`/reindexacao/build-status?name=${data.index_name}`)
         if (!st) continue
         if (st.status === 'done') {
@@ -270,6 +277,8 @@ export default function Reindexacao() {
                 </span>
                 <code style={{ fontSize: 12 }}>{idx.name}</code>
                 <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>→ {JSON.stringify(idx.key)}</span>
+                {idx.sparse && <span className="badge badge-blue">sparse</span>}
+                {idx.partial_filter && <span className="badge badge-blue">partial</span>}
               </div>
               {idx.name !== '_id_' && (
                 <button className="btn btn-xs btn-danger" onClick={() => handleDrop(idx.name)}>Remover</button>

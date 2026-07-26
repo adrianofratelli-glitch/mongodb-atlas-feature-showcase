@@ -1,16 +1,16 @@
 {
   "name": "frontend",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Frontend da MongoDB Atlas Feature Showcase",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "check": "vite build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["mongodb", "atlas", "pov"],
+  "author": "Adriano Fratelli",
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.2",

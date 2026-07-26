@@ -39,7 +39,10 @@ command -v curl >/dev/null || fail "curl não encontrado."
 
 MONGO_URI="$(grep -E '^MONGO_URI=' "$ENV_FILE" | head -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' -e 's/\r$//')"
 [[ -n "$MONGO_URI" ]] || fail "MONGO_URI ausente em backend/.env."
-[[ "$CONNECTORS" -ge 1 ]] || fail "Número de connectors inválido: $CONNECTORS"
+[[ "$CONNECTORS" =~ ^[0-9]+$ ]] || fail "Número de connectors inválido: $CONNECTORS"
+[[ "$PARTICOES" =~ ^[0-9]+$ ]] || fail "Número de partições inválido: $PARTICOES"
+(( CONNECTORS >= 1 && CONNECTORS <= PARTICOES )) ||
+  fail "Connectors deve ficar entre 1 e o número de partições ($PARTICOES)."
 
 echo "▶ Aguardando o Kafka Connect em $CONNECT_URL ..."
 ready=0
@@ -54,26 +57,29 @@ curl -fsS "$CONNECT_URL/connector-plugins" | grep -q "MongoSourceConnector" ||
 
 # Remove connectors de execuções anteriores (o layout pode ter mudado).
 existentes="$(curl -fsS "$CONNECT_URL/connectors" || echo '[]')"
-for antigo in $(printf '%s' "$existentes" | tr -d '[]"' | tr ',' ' '); do
-  case "$antigo" in
-    "$CONNECTOR_NAME"|"$CONNECTOR_NAME"-*)
-      curl -fsS -X DELETE "$CONNECT_URL/connectors/$antigo" >/dev/null 2>&1 || true ;;
-  esac
-done
+printf '%s' "$existentes" | python3 -c 'import json,sys
+base=sys.argv[1]
+for name in json.load(sys.stdin):
+    if name == base or name.startswith(base + "-"):
+        print(name)' "$CONNECTOR_NAME" |
+  while IFS= read -r antigo; do
+    curl -fsS -X DELETE "$CONNECT_URL/connectors/$antigo" >/dev/null 2>&1 || true
+  done
 sleep 2
 
 registra() { # nome, pipeline_json_escapado
   local nome="$1" filtro="$2"
   local config
-  config=$(cat <<JSON
-{
+  config="$(MONGO_CONNECT_URI="$MONGO_URI" STREAM_DB="$STREAMING_DB" STREAM_COLL="$COLLECTION" \
+    STREAM_FILTER="$filtro" python3 -c 'import json,os
+print(json.dumps({
   "connector.class": "com.mongodb.kafka.connect.MongoSourceConnector",
-  "connection.uri": "$MONGO_URI",
-  "database": "$STREAMING_DB",
-  "collection": "$COLLECTION",
+  "connection.uri": os.environ["MONGO_CONNECT_URI"],
+  "database": os.environ["STREAM_DB"],
+  "collection": os.environ["STREAM_COLL"],
   "topic.prefix": "atlas",
   "publish.full.document.only": "true",
-  "pipeline": "$filtro",
+  "pipeline": os.environ["STREAM_FILTER"],
   "startup.mode": "copy_existing",
   "output.format.value": "json",
   "output.format.key": "json",
@@ -82,17 +88,15 @@ registra() { # nome, pipeline_json_escapado
   "tasks.max": "1",
   "key.converter": "org.apache.kafka.connect.storage.StringConverter",
   "value.converter": "org.apache.kafka.connect.storage.StringConverter"
-}
-JSON
-)
-  curl -fsS -X PUT -H "Content-Type: application/json" \
-    --data "$config" "$CONNECT_URL/connectors/$nome/config" >/dev/null
+}))')"
+  printf '%s' "$config" | curl -fsS -X PUT -H "Content-Type: application/json" \
+    --data-binary @- "$CONNECT_URL/connectors/$nome/config" >/dev/null
   echo "   ✓ $nome"
 }
 
 if [[ "$CONNECTORS" -eq 1 ]]; then
   echo "▶ Registrando 1 connector (todas as partições) ..."
-  registra "$CONNECTOR_NAME" '[{\"$match\": {\"operationType\": \"insert\"}}]'
+  registra "$CONNECTOR_NAME" '[{"$match": {"operationType": "insert"}}]'
 else
   echo "▶ Registrando $CONNECTORS connectors sobre $PARTICOES partições ..."
   for ((i = 0; i < CONNECTORS; i++)); do
@@ -102,7 +106,7 @@ else
       lista="${lista:+$lista, }$p"
     done
     [[ -n "$lista" ]] || continue
-    filtro='[{\"$match\": {\"operationType\": \"insert\", \"fullDocument.particao\": {\"$in\": ['"$lista"']}}}]'
+    filtro='[{"$match": {"operationType": "insert", "fullDocument.particao": {"$in": ['"$lista"']}}}]'
     registra "$CONNECTOR_NAME-$i" "$filtro"
   done
 fi

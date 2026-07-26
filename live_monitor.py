@@ -22,7 +22,14 @@ MONGO_URI    = os.getenv("MONGO_URI")
 DB_NAME      = os.getenv("MONGO_DB", "POC")
 CLUSTER_NAME = os.getenv("ATLAS_CLUSTER", "atlas")
 
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+if not MONGO_URI:
+    raise SystemExit("MONGO_URI não configurada em backend/.env.")
+
+client = MongoClient(
+    MONGO_URI,
+    appname="mongodb-atlas-feature-showcase-monitor",
+    serverSelectionTimeoutMS=5000,
+)
 db     = client[DB_NAME]
 col    = db["produtos"]
 
@@ -110,7 +117,7 @@ def render(read_ms, write_ms, last_doc):
     print()
     print(f"  {GRAY}─────────────────────────────────────────────────────────────────────{RESET}")
     print(f"  {YELLOW}⚡ Crie índices, ative Online Archive, valide schemas...{RESET}")
-    print(f"  {YELLOW}   as operações aqui NÃO param e NÃO dão erro.{RESET}")
+    print(f"  {YELLOW}   leituras e escritas continuam sendo medidas; falhas aparecem no contador.{RESET}")
     print()
     print(f"  {GRAY}{datetime.now().strftime('%H:%M:%S')}  próxima op em ~1s{RESET}")
 
