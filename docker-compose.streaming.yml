@@ -1,0 +1,90 @@
+# Infraestrutura local da COLUNA 2 do módulo Streaming.
+#
+#   docker compose -f docker-compose.streaming.yml up -d
+#   ./scripts/setup-kafka-connector.sh
+#
+# Redpanda fala o protocolo Kafka e sobe em segundos, sem ZooKeeper — é o que
+# deixa a demo viável num notebook e com Wi-Fi ruim. O plugin
+# mongodb-kafka-connect é baixado na PRIMEIRA subida e fica no volume nomeado;
+# depois disso o ambiente sobe offline.
+
+name: mdb-showcase-streaming
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.2.8
+    container_name: showcase-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --overprovisioned
+      - --node-id 0
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+    ports:
+      - "19092:19092"   # brokers para o backend (KAFKA_BROKERS=localhost:19092)
+      - "9644:9644"     # admin API
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  connect:
+    image: confluentinc/cp-kafka-connect:7.7.1
+    container_name: showcase-connect
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8083:8083"     # Connect REST API (CONNECT_URL)
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: redpanda:9092
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: showcase-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_LOG4J_ROOT_LOGLEVEL: WARN
+    volumes:
+      - connect-plugins:/usr/share/confluent-hub-components
+    command:
+      - bash
+      - -c
+      - |
+        if [ ! -d /usr/share/confluent-hub-components/mongodb-kafka-connect-mongodb ]; then
+          echo "Baixando o plugin mongodb-kafka-connect (só na primeira subida)..."
+          confluent-hub install --no-prompt mongodb/kafka-connect-mongodb:1.14.1
+        fi
+        exec /etc/confluent/docker/run
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connectors >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  console:
+    image: redpandadata/console:v2.7.2
+    container_name: showcase-redpanda-console
+    depends_on:
+      - redpanda
+    ports:
+      - "8085:8080"     # http://localhost:8085 — inspeção do tópico durante a demo
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      CONNECT_ENABLED: "true"
+      CONNECT_CLUSTERS_NAME: showcase-connect
+      CONNECT_CLUSTERS_URL: http://connect:8083
+
+volumes:
+  connect-plugins:
