@@ -21,6 +21,46 @@ against a live cluster. Built with FastAPI and React 18.
 
 Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`, and so on).
 
+## What changed in this version
+
+The old **Redis vs Change Streams** module is gone. It compared MongoDB against a
+Redis that ran simulated in memory, so half the comparison was not real. Deleted
+with it: the page, three React components that only it used, its backend router,
+the standalone CLI demo under `demo_redis_vs_changestream/`, and every Redis
+mention in the docs and dependencies.
+
+In its place there is a **Streaming** module. One generator writes PIX-shaped
+transactions to Atlas, and three consumers read the same writes at the same time:
+Change Streams inside the app, the MongoDB Kafka Connector on a real broker, and
+an Atlas Stream Processing job doing 10-second windows. Nothing is simulated.
+If a piece is not set up, its column says so and the other two keep working.
+
+![Streaming module](docs/screenshots/07-streaming.png)
+
+### The three columns
+
+Same data, three ways to consume it. Each column shows what it costs: events per
+second, p50/p95/p99 latency, and the state of the thing that is actually running.
+
+![The three columns side by side](docs/screenshots/07b-streaming-colunas.png)
+
+The button on the left column kills the change stream cursor for 3 seconds while
+the generator keeps writing, then reopens it from the saved resume token. Events
+that arrived during the gap come back marked as recovered. Next to it is the
+oplog window, which is how long a consumer can stay down and still catch up.
+
+### Numbers a manager can use
+
+Throughput convinces engineers. The panel at the bottom turns the same
+measurements into cost per million transactions, reaction time, money in flight,
+and how many manual reconciliations a 3-second outage would create.
+
+![Business panel](docs/screenshots/07c-streaming-negocio.png)
+
+It also shows the value distribution measured with `$percentile` on the live
+collection. The median sits about six times below the mean, which is the whole
+reason an average ticket on its own is misleading.
+
 ## Screenshots
 
 | Hot / Cold Tiering | Aggregation Pipeline |
@@ -31,15 +71,17 @@ Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`
 |---|---|
 | ![Schema Validation](docs/screenshots/04-schema.png) | ![Change Streams](docs/screenshots/05-changestreams.png) |
 
-| ACID Transactions | Streaming |
-|---|---|
-| ![Transactions](docs/screenshots/06-transactions.png) | ![Streaming](docs/screenshots/07-streaming.png) |
+| ACID Transactions |
+|---|
+| ![Transactions](docs/screenshots/06-transactions.png) |
 
 ## Stack
 
 - Backend: Python 3.11, FastAPI, PyMongo, Uvicorn
 - Frontend: React 18, Vite, plain CSS
-- Database: MongoDB Atlas (M20), with `produtos` and `avaliacoes` collections
+- Database: MongoDB Atlas, with `produtos` and `avaliacoes` collections
+- Optional for the Streaming module: Kafka (local, via Homebrew or Docker) and an
+  Atlas Stream Processing instance
 
 ## Getting Started
 
@@ -125,7 +167,7 @@ Columns 2 and 3 need the setup below; without it they render as
 **"não configurado"** with these instructions, and the rest of the module keeps
 working. No panel ever shows synthetic data.
 
-**1. Start Kafka locally.** Two options — pick one.
+**1. Start Kafka locally.** Two ways to do it, pick one.
 
 *Native (no Docker required, recommended on a laptop):*
 
@@ -144,8 +186,8 @@ docker compose -f docker-compose.streaming.yml up -d
 
 Either way the `mongodb-kafka-connect` plugin is downloaded on the first run
 only and cached locally, so later runs work offline. The native path uses
-`localhost:9092`; the Docker path uses `localhost:19092` — set `KAFKA_BROKERS`
-in `backend/.env` accordingly.
+`localhost:9092` and the Docker path uses `localhost:19092`, so set
+`KAFKA_BROKERS` in `backend/.env` accordingly.
 
 **2. Register the source connectors** (reads `MONGO_URI` from `backend/.env`):
 
@@ -161,9 +203,9 @@ It PUTs a `MongoSourceConnector` config on the Connect REST API
 Inspect it live at http://localhost:8085.
 
 **3. Create the Stream Processing Instance** (Atlas UI → Stream Processing):
-create an SPI **in the same region as the cluster** — the processor reads the
-cluster's change stream, so co-locating removes a cross-region hop from every
-window — add an *Atlas Database* connection named `atlasCluster`, then:
+create an SPI in the same region as the cluster. The processor reads the
+cluster's change stream, so keeping them together saves a cross-region hop on
+every window. Add an *Atlas Database* connection named `atlasCluster`, then:
 
 ```bash
 # in backend/.env: ASP_ENABLED=true and ASP_CONNECTION_STRING=<SPI connection string>
@@ -174,24 +216,25 @@ The processor reads the change stream of `pix.transacoes`, sends malformed
 documents to a DLQ, aggregates 10-second tumbling windows by `uf` and `tipo`
 (count, summed volume, average ticket) and `$merge`s each closed window into
 `pix.metricas_janela`. The backend surfaces those windows by watching that
-collection with a change stream — the ASP result reaches the screen through the
-mechanics of column 1.
+collection with a change stream, so the stream processing result reaches the
+screen through the same mechanism as column 1.
 
 Tear everything down with `./scripts/teardown-streaming.sh` (add `--volumes` to
 drop the cached plugin).
 
 **Cleaning up between runs.** `POST /streaming/reset` (the **Reset** button) is
 the real cleanup: it clears `transacoes`, `metricas_janela` and `dlq` and zeroes
-every counter — above 300k documents it drops and recreates the collection, so
-half a million documents go in ~10 s instead of timing out.
+every counter. Above 300k documents it drops and recreates the collection, so
+half a million documents take about 10 seconds instead of timing out.
 
 The 30-minute TTL index on `ts` (`STREAMING_TTL_SEGUNDOS`) is the safety net for
 when you forget to reset, not the main mechanism. The window is deliberately
-longer than any demo burst: in steady state the TTL deleter removes at the same
-rate you insert — 10k/s in is 10k/s deleted, whether the TTL is 2 minutes or 30 —
-so a short window only guarantees that deletion competes with the peak while the
-audience is watching, and floods the oplog the resume-token demo depends on. A
-long window pushes that cleanup to after the presentation, on an idle cluster.
+longer than any demo burst. In steady state the TTL deleter removes at the same
+rate you insert: 10k/s in is 10k/s deleted, whether the TTL is 2 minutes or 30.
+A short window only guarantees that deletion competes with your peak while the
+audience is watching, and it floods the oplog that the resume-token demo depends
+on. A long window pushes the cleanup to after the presentation, on an idle
+cluster.
 
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,
@@ -199,76 +242,76 @@ Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `STREAMING_TTL_SEGUNDOS`, `TETO_MEDIDO_TPS` (display only), and
 `CUSTO_CLUSTER_USD_HORA` / `CUSTO_ASP_USD_HORA` to override list prices.
 
-### Transaction value profile
+### Transaction values
 
-Values are not drawn uniformly — a flat draw produces a meaningless average
-ticket. `PERFIS_VALORES` declares weighted bands per transaction type, drawn
-uniformly in log scale inside each band. Two calibrations ship, selected with
-`STREAMING_PERFIL_VALORES`:
+Real payment traffic is lopsided: lots of small transfers and a few big ones that
+carry most of the money. Drawing values uniformly loses that, and the average
+ticket comes out wrong. `PERFIS_VALORES` declares weighted value bands per
+transaction type instead. Pick one with `STREAMING_PERFIL_VALORES`:
 
-| Profile | Median | Mean | Mean/median | Top 1% of volume |
+| Profile | Median | Mean | Mean ÷ median | Top 1% of volume |
 |---|---|---|---|---|
 | `varejo` (default) | R$ 91 | R$ 559 | 6.2× | 36% |
 | `corpo_medio` | R$ 500 | R$ 1,252 | 2.5× | 18% |
 
-Both keep a long tail on purpose. A uniform draw between R$ 100 and R$ 2,000
-collapses the mean-to-median ratio to 1.4× and leaves the top 1% carrying only
-3% of the volume — which erases exactly the asymmetry a payments team
-recognises in its own flow.
+Both keep the long tail. We tried a flat draw between R$ 100 and R$ 2,000: the
+mean lands almost on the median (1.4×) and the top 1% ends up carrying 3% of the
+volume, which is not what a payments flow looks like.
 
 `GET /streaming/perfil-valores` returns the declared bands next to percentiles
-**measured** with `$percentile` over a sample of the live collection, and the
-UI shows both — the shape is measured, the calibration is a premise. Replace
-the bands with the client's real figures and the business panel becomes theirs.
+measured with `$percentile` on the live collection. Swap the bands for the
+client's own numbers and the business panel starts speaking about their traffic.
 
 ### Cost figures
 
-The business panel prices the **tiers actually running**, read live: the
-cluster auto-scales between M20 and M30, so a fixed price would be wrong half
-the time. List prices for AWS us-east-1 (M20 $0.20/h, M30 $0.54/h, SP10
-$0.19/h, SP30 $0.39/h) live in `PRECOS_USD_HORA`; the two env vars above
-override them for negotiated contracts or other regions. Data transfer is not
-included, and Kafka is local here, so it costs nothing in this setup.
+The panel prices whatever tiers are running right now, read from Atlas. The
+cluster auto-scales between M20 and M30, so a hardcoded price would be wrong half
+the time. AWS us-east-1 list prices (M20 $0.20/h, M30 $0.54/h, SP10 $0.19/h,
+SP30 $0.39/h) are in `PRECOS_USD_HORA`, and the two env vars above override them.
+Data transfer is not counted, and Kafka runs locally here, so it costs nothing in
+this setup.
 
-### Reading the numbers
+### What the numbers mean
 
-The module is built for a PIX-scale audience, so it is explicit about what is
-measured and what is assumed:
+Everything on screen is measured against the running cluster. Where something is
+an assumption, the UI says so.
 
-- **Measured:** sustained TPS (5 s sliding window, never the requested value),
-  events/s per column, p50/p95/p99 latency over 100% of the events, the volume
-  the processor aggregated, and the app↔cluster RTT.
+**Measured:** sustained TPS (a 5-second sliding window, never the value you
+asked for), events per second per column, p50/p95/p99 over every event, the
+volume the processor aggregated, and the round trip to the cluster.
 
-  On the provisioned environment (**M30 cluster + SP10 stream processing +
-  10 consumer partitions**) the measured ceiling is **9,500 TPS**: Change
-  Streams at 9,507 events/s (p50 458 ms) and the ASP processor aggregating
-  9,483 tx/s. Kafka keeps up too, but only once partitioned: a single source
-  connector runs **one task per collection** and saturates at ~6,300 msg/s, so
-  `setup-kafka-connector.sh` registers two connectors, each filtering a subset
-  of `particao` into the same topic. Two is the sweet spot — every extra
-  connector is another oplog reader competing with the ASP processor
-  (4 connectors: Kafka 9,565 msg/s but ASP down to 7,113 tx/s).
+On this environment (M30 cluster, SP10 stream processing, 10 consumer
+partitions) the ceiling is **9,500 TPS**. Change Streams handle 9,507 events/s
+at p50 458 ms and the stream processor aggregates 9,483 tx/s.
 
-  SP10 has a cliff between 9,500 and 10,000: past saturation, throughput does
-  not plateau — it *drops*, to ~7,500 tx/s (reproduced twice). SP10 is a
-  deliberate choice, the cheapest tier that carries this demo. **Swapping only
-  the stream processor to SP30, with no other change, the same pipeline
-  aggregated 9,968 tx/s at the 10,000 TPS input where SP10 had already
-  collapsed.** The ceiling belongs to this environment, not to the product.
+Kafka needed partitioning to keep up. A single source connector runs one task per
+collection and tops out near 6,300 msg/s, so `setup-kafka-connector.sh` registers
+two connectors, each filtering part of the `particao` field into the same topic.
+Two is the sweet spot: with four, Kafka reaches 9,565 msg/s but the stream
+processor drops to 7,113 tx/s, because each connector is one more reader
+competing for the oplog.
 
-  A caveat worth knowing: the processor takes its tier **at start time**, from
-  the workspace default unless one is passed explicitly. Since Reset restarts
-  the processor, the workspace default is what the demo will actually run on.
-- **Premises (labelled as such in the UI):** the daily PIX volume, Inter's 10%
-  share and the 3× peak factor. They only provide a ruler — the presets
-  (347 / 1.041 / 3.472 TPS) are derived from them.
-- **Sampled:** the per-event feeds, which show one frame every 120 ms because a
-  browser tab cannot render thousands of rows per second. Counters and
-  percentiles still cover every event.
+Past 9,500 the SP10 tier does not plateau, it falls back to about 7,500 tx/s. We
+reproduced that twice. SP10 is a deliberate choice, since it is the cheapest tier
+that carries this demo. Changing only the processor to SP30, nothing else,
+handled 9,968 tx/s at the same 10,000 TPS input where SP10 had already given up.
+The ceiling belongs to this environment, not to the product.
 
-The latency shown includes the app↔cluster round trip, printed above the
-columns. Presenting from Brazil against a US cluster puts ~200 ms of pure
-distance in every number.
+One thing that trips people up: a stream processor picks its tier when it
+starts, from the workspace default unless you pass one. Reset restarts the
+processor, so the workspace default is what the demo actually runs on.
+
+**Assumptions,** labelled in the UI: the daily PIX volume, the 10% share and the
+3× peak factor. They are only a ruler for the measured numbers, and the presets
+(1,041 / 3,472 / 6,944 / 9,500 TPS) come from them.
+
+**Sampled:** the per-event feeds show one frame every 120 ms, because a browser
+tab cannot draw thousands of rows per second. The counters and percentiles behind
+them still cover every event.
+
+Latency includes the round trip to the cluster, which is printed above the
+columns. Running this from Brazil against a US cluster adds about 200 ms of pure
+distance to every number.
 
 ## Security model
 
