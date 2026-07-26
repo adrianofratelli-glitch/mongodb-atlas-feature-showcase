@@ -20,6 +20,11 @@ MONGO_CONNECTOR_VERSION="${MONGO_CONNECTOR_VERSION:-1.15.0}"
 BROKER="${KAFKA_BROKERS:-localhost:9092}"
 CONNECT_PORT="${CONNECT_PORT:-8083}"
 CONNECT_LOG="$RUN_DIR/connect.log"
+CONNECTOR_NAME="${CONNECT_CONNECTOR_NAME:-atlas-pix-source}"
+STREAMING_DB="${STREAMING_DB:-pix}"
+STREAMING_COLLECTION="${STREAMING_COLLECTION:-transacoes}"
+TOPIC="atlas.$STREAMING_DB.$STREAMING_COLLECTION"
+CONSUMER_GROUP="${KAFKA_CONSUMER_GROUP:-showcase-pix-observer}"
 
 fail() { echo "❌ $1" >&2; exit 1; }
 porta_ativa() { lsof -ti:"$1" >/dev/null 2>&1; }
@@ -107,6 +112,26 @@ estado() {
 }
 
 derrubar() {
+  echo "▶ Removendo connector e dados Kafka da PoV..."
+  if porta_ativa "$CONNECT_PORT"; then
+    curl -fsS "http://localhost:$CONNECT_PORT/connectors" 2>/dev/null |
+      python3 -c 'import json,sys
+base=sys.argv[1]
+for name in json.load(sys.stdin):
+    if name == base or name.startswith(base + "-"):
+        print(name)' "$CONNECTOR_NAME" |
+      while IFS= read -r connector; do
+        curl -fsS -X DELETE "http://localhost:$CONNECT_PORT/connectors/$connector" >/dev/null 2>&1 || true
+      done || true
+  fi
+  if porta_ativa 9092; then
+    /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server "$BROKER" \
+      --delete --if-exists --topic "$TOPIC" >/dev/null 2>&1 || true
+    /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server "$BROKER" \
+      --delete --if-exists --topic "__mongodb_heartbeats" >/dev/null 2>&1 || true
+    /opt/homebrew/opt/kafka/bin/kafka-consumer-groups --bootstrap-server "$BROKER" \
+      --delete --group "$CONSUMER_GROUP" >/dev/null 2>&1 || true
+  fi
   if [[ -f "$RUN_DIR/connect.pid" ]]; then
     local pid
     pid="$(cat "$RUN_DIR/connect.pid")"

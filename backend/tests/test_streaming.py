@@ -179,6 +179,57 @@ def test_particao_do_documento_fica_no_intervalo():
         assert doc["ts"] is not None
 
 
+def test_transacao_carrega_identidade_da_execucao():
+    doc = streaming._new_transacao("pix-run-42", 7)
+    assert doc["run_id"] == "pix-run-42"
+    assert doc["sequencia"] == 7
+
+
+def test_tracker_reconcilia_unicos_e_expoe_reentrega():
+    tracker = streaming.RunTracker()
+    tracker.record("change_streams", "run-1", "E1")
+    tracker.record("change_streams", "run-1", "E1")
+    tracker.record("change_streams", "run-1", "E2")
+    snap = tracker.snapshot("run-1")["change_streams"]
+    assert snap["unicos"] == 2
+    assert snap["duplicados"] == 1
+
+
+def test_so_history_lost_invalida_resume_token():
+    assert streaming._resume_token_invalido(
+        streaming.OperationFailure("histórico saiu do oplog", code=286)
+    )
+    assert not streaming._resume_token_invalido(streaming.PyMongoError("queda transitória"))
+    assert not streaming._resume_token_invalido(
+        streaming.OperationFailure("não primário", code=10107)
+    )
+
+
+def test_checkpoint_change_stream_e_persistido_e_recarregado(monkeypatch):
+    class CheckpointsFake:
+        def __init__(self):
+            self.doc = {"_id": "change-stream-partition-2", "resume_token": {"_data": "abc"}}
+
+        def find_one(self, _filter):
+            return self.doc
+
+        def replace_one(self, _filter, doc, upsert=False):
+            assert upsert
+            self.doc = doc
+
+        def delete_one(self, _filter):
+            self.doc = None
+
+    checkpoints = CheckpointsFake()
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_CHECKPOINTS: checkpoints})
+    worker = streaming.ChangeStreamWorker(particao=2, particoes=3)
+    worker._load_checkpoint()
+    assert worker.token == {"_data": "abc"}
+    worker.token = {"_data": "def"}
+    worker._persist_checkpoint(force=True)
+    assert checkpoints.doc["resume_token"] == {"_data": "def"}
+
+
 # ---------------------------------------------------------------------------
 # Perfil de valores — o formato importa mais que a média
 # ---------------------------------------------------------------------------
@@ -271,6 +322,7 @@ class _CollectionFake:
         self.erro_insert = erro_insert
         self.removidos = []
         self.filtro_find = None
+        self.substituidos = []
 
     def find(self, filtro=None, *_args):
         self.filtro_find = filtro
@@ -282,6 +334,9 @@ class _CollectionFake:
 
     def delete_many(self, filtro):
         self.removidos.extend(filtro["_id"]["$in"])
+
+    def replace_one(self, filtro, documento, upsert=False):
+        self.substituidos.append((filtro, documento, upsert))
 
 
 def test_dlq_preserva_item_quando_insert_falha_transitoriamente(monkeypatch):
@@ -299,13 +354,19 @@ def test_dlq_preserva_item_quando_insert_falha_transitoriamente(monkeypatch):
 def test_dlq_remove_item_quando_indice_confirma_duplicidade(monkeypatch):
     dlq = _CollectionFake([{"_id": 7, "fullDocument": {"endToEndId": "E7"}}])
     tx = _CollectionFake(erro_insert=streaming.DuplicateKeyError("duplicado"))
-    monkeypatch.setattr(streaming, "sdb", {streaming.COL_DLQ: dlq, streaming.COL_TX: tx})
+    audit = _CollectionFake()
+    monkeypatch.setattr(streaming, "sdb", {
+        streaming.COL_DLQ: dlq,
+        streaming.COL_TX: tx,
+        streaming.COL_DLQ_AUDIT: audit,
+    })
 
     resultado = streaming._reprocessa_dlq(10)
 
     assert resultado["ja_existiam"] == 1
     assert resultado["removidos_da_dlq"] == 1
     assert dlq.removidos == [7]
+    assert audit.substituidos[0][1]["resultado"] == "ja_existia"
 
 
 # ---------------------------------------------------------------------------
@@ -366,12 +427,10 @@ def test_connector_pausado_fica_degradado():
 
 
 # ---------------------------------------------------------------------------
-# Cenário PIX — premissas separadas de medição
+# Cenário PIX — prova conceitual, não sizing
 # ---------------------------------------------------------------------------
-def test_derivados_do_cenario_batem_com_as_premissas():
-    assert streaming.INTER_TX_DIA == int(streaming.PIX_BRASIL_TX_DIA * streaming.INTER_SHARE)
-    assert streaming.INTER_TPS_MEDIO == round(streaming.INTER_TX_DIA / streaming.SEGUNDOS_DIA)
-    assert streaming.INTER_TPS_PICO == streaming.INTER_TPS_MEDIO * streaming.PICO_FATOR
+def test_carga_conceitual_cabe_no_limite_da_api():
+    assert 10 <= streaming.CONCEPT_TPS <= 20_000
 
 
 def test_ttl_e_maior_que_uma_rajada_de_demo():
@@ -382,6 +441,10 @@ def test_ttl_e_maior_que_uma_rajada_de_demo():
 def test_pipeline_asp_usa_bordas_oficiais_e_configuracao_dinamica():
     assert 'stream.window.start' in streaming.ASP_PIPELINE_SNIPPET
     assert 'stream.window.end' in streaming.ASP_PIPELINE_SNIPPET
+    assert 'boundary: "eventTime"' in streaming.ASP_PIPELINE_SNIPPET
+    assert "allowedLateness" in streaming.ASP_PIPELINE_SNIPPET
+    assert "fullDocument.run_id" in streaming.ASP_PIPELINE_SNIPPET
+    assert "alertas_valor_alto" in streaming.ASP_PIPELINE_SNIPPET
     assert 'fullDocument: "required"' not in streaming.ASP_PIPELINE_SNIPPET
     assert f'db: "{streaming.STREAM_DB}"' in streaming.ASP_PIPELINE_SNIPPET
 
@@ -409,6 +472,75 @@ def test_asp_reachable_nao_aceita_outro_processor_started(monkeypatch):
     assert tier is None
 
 
+def test_asp_runtime_stats_expoe_checkpoint_lag_e_estado(monkeypatch):
+    class AdminFake:
+        @staticmethod
+        def command(command):
+            assert command["getStreamProcessorStats"] == streaming.ASP_PROCESSOR_NAME
+            assert command["options"]["verbose"]
+            return {
+                "stats": {
+                    "inputMessageCount": 100,
+                    "outputMessageCount": 10,
+                    "dlqMessageCount": 2,
+                    "changeStreamTimeDifferenceSecs": 3,
+                    "stateSize": 4096,
+                    "watermark": streaming._now(),
+                    "operatorStats": [
+                        {"maxMemoryUsage": 1000},
+                        {"maxMemoryUsage": 2500},
+                    ],
+                }
+            }
+
+    class ClientFake:
+        admin = AdminFake()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(streaming, "ASP_ENABLED", True)
+    monkeypatch.setattr(streaming, "ASP_CONNECTION_STRING", "mongodb://spi")
+    monkeypatch.setattr("pymongo.MongoClient", lambda *_args, **_kwargs: ClientFake())
+
+    stats = streaming._asp_runtime_stats()
+
+    assert stats["disponivel"]
+    assert stats["input"] == 100
+    assert stats["lag_oplog_s"] == 3
+    assert stats["state_bytes"] == 4096
+    assert stats["max_memory_bytes"] == 2500
+
+
+def test_asp_stop_espera_estado_terminal(monkeypatch):
+    class AdminFake:
+        def __init__(self):
+            self.stopped = False
+
+        def command(self, command):
+            if "stopStreamProcessor" in command:
+                self.stopped = True
+                return {"ok": 1}
+            return {
+                "streamProcessors": [{
+                    "name": streaming.ASP_PROCESSOR_NAME,
+                    "state": "STOPPED" if self.stopped else "STARTED",
+                }]
+            }
+
+    class ClientFake:
+        admin = AdminFake()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(streaming, "ASP_ENABLED", True)
+    monkeypatch.setattr(streaming, "ASP_CONNECTION_STRING", "mongodb://spi")
+    monkeypatch.setattr("pymongo.MongoClient", lambda *_args, **_kwargs: ClientFake())
+
+    assert streaming._asp_stop_wait(timeout_s=1)
+
+
 def test_janelas_asp_filtram_duas_horas_e_ordenam(monkeypatch):
     windows = _CollectionFake([{"window_end": streaming._now()}])
     monkeypatch.setattr(streaming, "sdb", {streaming.COL_WINDOWS: windows})
@@ -418,3 +550,45 @@ def test_janelas_asp_filtram_duas_horas_e_ordenam(monkeypatch):
     assert "window_end" in windows.filtro_find
     assert "$gte" in windows.filtro_find["window_end"]
     assert resultado["total"] == 1
+
+
+def test_reconciliacao_fecha_quando_todos_os_caminhos_contabilizam(monkeypatch):
+    class CountCollection:
+        def __init__(self, count=0, aggregate_result=None):
+            self.count = count
+            self.aggregate_result = aggregate_result or []
+
+        def count_documents(self, _filter):
+            return self.count
+
+        def aggregate(self, _pipeline):
+            return iter(self.aggregate_result)
+
+    tracker = streaming.RunTracker()
+    for channel in ("change_streams", "kafka"):
+        for e2e in ("E1", "E2", "E3"):
+            tracker.record(channel, "run-ok", e2e)
+
+    generator = type("GeneratorFake", (), {"running": False, "run_id": "run-ok"})()
+    monkeypatch.setattr(streaming, "generator", generator)
+    monkeypatch.setattr(streaming, "run_tracker", tracker)
+    monkeypatch.setattr(streaming, "sdb", {
+        streaming.COL_TX: CountCollection(count=3),
+        streaming.COL_WINDOWS: CountCollection(
+            aggregate_result=[{"processadas": 2, "alertas_valor_alto": 1}]
+        ),
+        streaming.COL_DLQ: CountCollection(count=1),
+        streaming.COL_DLQ_AUDIT: CountCollection(count=0),
+    })
+
+    result = streaming._reconcile_run("run-ok")
+
+    assert result["final"] == "reconciliado"
+    assert result["change_streams"]["reconciliado"]
+    assert result["kafka"]["reconciliado"]
+    assert result["asp"]["contabilizadas"] == 3
+
+
+def test_api_rejeita_carga_acima_do_teto_da_poc():
+    with pytest.raises(ValueError):
+        streaming.GeneratorStart(tps=2_001)

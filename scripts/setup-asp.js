@@ -27,6 +27,7 @@
 const CONNECTION = process.env.ASP_CONNECTION_NAME || 'atlasCluster';
 const DB = process.env.STREAMING_DB || 'pix';
 const PROCESSOR = process.env.ASP_PROCESSOR_NAME || 'pixJanelas10s';
+const RECREATE = ['1', 'true', 'yes'].includes((process.env.ASP_RECREATE || '').toLowerCase());
 
 const source = {
   $source: {
@@ -45,8 +46,9 @@ const validate = {
     validator: {
       $and: [
         { 'fullDocument.endToEndId': { $type: 'string' } },
+        { 'fullDocument.run_id': { $type: 'string' } },
         { 'fullDocument.valor': { $type: ['decimal', 'double', 'int', 'long'] } },
-        { 'fullDocument.tipo': { $in: ['PIX', 'TED', 'BOLETO'] } },
+        { 'fullDocument.tipo': { $eq: 'PIX' } },
         { 'fullDocument.uf': { $type: 'string' } },
       ],
     },
@@ -56,22 +58,34 @@ const validate = {
 
 const window = {
   $tumblingWindow: {
+    boundary: 'eventTime',
     interval: { size: 10, unit: 'second' },
+    allowedLateness: { size: 3, unit: 'second' },
     pipeline: [
       {
         $group: {
-          _id: { uf: '$fullDocument.uf', tipo: '$fullDocument.tipo' },
+          _id: {
+            run_id: '$fullDocument.run_id',
+            uf: '$fullDocument.uf',
+            tipo: '$fullDocument.tipo',
+          },
           qtd: { $count: {} },
           volume: { $sum: { $toDouble: '$fullDocument.valor' } },
           ticket: { $avg: { $toDouble: '$fullDocument.valor' } },
+          alertas_valor_alto: {
+            $sum: { $cond: [{ $gte: [{ $toDouble: '$fullDocument.valor' }, 5000] }, 1, 0] },
+          },
+          maior_valor: { $max: { $toDouble: '$fullDocument.valor' } },
         },
       },
       {
         $set: {
+          run_id: '$_id.run_id',
           uf: '$_id.uf',
           tipo: '$_id.tipo',
           volume: { $round: ['$volume', 2] },
           ticket: { $round: ['$ticket', 2] },
+          maior_valor: { $round: ['$maior_valor', 2] },
         },
       },
     ],
@@ -87,12 +101,12 @@ const windowBounds = {
   },
 };
 
-// _id determinístico por (janela, uf, tipo): o $merge grava uma linha por janela
+// _id determinístico por (execução, janela, uf, tipo): o $merge grava uma linha por janela
 // fechada, e o change stream do backend vê cada uma delas chegar.
 const shape = {
   $set: {
     _id: {
-      $concat: [{ $toString: '$window_start' }, '|', '$uf', '|', '$tipo'],
+      $concat: ['$run_id', '|', { $toString: '$window_start' }, '|', '$uf', '|', '$tipo'],
     },
   },
 };
@@ -113,8 +127,21 @@ const options = {
 
 const existing = sp.listStreamProcessors({ name: PROCESSOR });
 if (existing.length > 0) {
-  print(`▶ Processor '${PROCESSOR}' já existe — recriando.`);
-  sp[PROCESSOR].stop();
+  if (!RECREATE) {
+    print(`ℹ️ Processor '${PROCESSOR}' já existe; definição preservada e checkpoint mantido.`);
+    print('   Para substituir deliberadamente: ASP_RECREATE=true mongosh "$ASP_CONNECTION_STRING" --file scripts/setup-asp.js');
+    quit(0);
+  }
+  print(`▶ ASP_RECREATE=true — substituindo processor '${PROCESSOR}' e descartando seu checkpoint.`);
+  if (existing[0].state === 'STARTED') {
+    sp[PROCESSOR].stop();
+    for (let tentativa = 0; tentativa < 120; tentativa += 1) {
+      const atual = sp.listStreamProcessors({ name: PROCESSOR });
+      if (atual.length === 0 || atual[0].state === 'STOPPED') break;
+      if (tentativa === 119) throw new Error(`Processor '${PROCESSOR}' não chegou a STOPPED.`);
+      sleep(500);
+    }
+  }
   sp[PROCESSOR].drop();
 }
 

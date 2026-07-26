@@ -11,9 +11,9 @@ Um único gerador de escritas (pix.transacoes) alimenta as três colunas:
                                resultado por change stream (fecho didático: o
                                resultado do ASP volta pela coluna 1).
 
-REGRA: nada é mockado. Toda métrica exibida vem de uma operação real. Quando um
-componente não está configurado (Kafka fora do ar, ASP_ENABLED=false), o
-endpoint responde estado "nao_configurado" e a UI mostra as instruções de setup.
+REGRA: o workload é sintético, mas todos os caminhos e resultados são reais.
+O objetivo é provar integridade, recuperação e capacidades com carga moderada,
+não produzir um benchmark ou sizing de produção.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from bson import Decimal128
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure, PyMongoError
 
 from database import client
 from settings import settings
@@ -47,44 +47,25 @@ STREAM_DB = os.getenv("STREAMING_DB", "pix").strip() or "pix"
 COL_TX = "transacoes"
 COL_WINDOWS = "metricas_janela"
 COL_DLQ = "dlq"
+COL_DLQ_AUDIT = "dlq_audit"
+COL_CHECKPOINTS = "consumer_checkpoints"
 TOPIC = f"atlas.{STREAM_DB}.{COL_TX}"
 CONNECTOR_NAME = os.getenv("CONNECT_CONNECTOR_NAME", "atlas-pix-source").strip() or "atlas-pix-source"
 CONNECT_URL = os.getenv("CONNECT_URL", "http://localhost:8083").strip()
 KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "localhost:19092").strip()
+KAFKA_CONSUMER_GROUP = (
+    os.getenv("KAFKA_CONSUMER_GROUP", "showcase-pix-observer").strip()
+    or "showcase-pix-observer"
+)
 ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
 ASP_CONNECTION_NAME = os.getenv("ASP_CONNECTION_NAME", "atlasCluster").strip() or "atlasCluster"
 # Só para exibição: o que está provisionado nesta PoV.
 CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
-# Preço de lista do ambiente, US$/hora. Premissa editável: entra na conta de
-# custo por milhão de transações, que é o número que um gestor leva para a
-# reunião de orçamento.
-# Preço de lista por hora, AWS us-east-1 (mongodb.com/cloud/atlas/pricing).
-# O custo é calculado sobre os tiers REAIS em execução: o cluster tem
-# auto-scaling M20↔M30, então fixar um preço faria a conta mentir metade do
-# tempo. Os tiers do ASP têm faixa por região; usamos o piso da faixa.
-PRECOS_USD_HORA = {
-    "M10": 0.08, "M20": 0.20, "M30": 0.54, "M40": 0.95, "M50": 1.89,
-    "SP2": 0.06, "SP5": 0.11, "SP10": 0.19, "SP30": 0.39, "SP50": 1.56,
-}
-# Overrides opcionais (contrato negociado, outra região).
-CUSTO_CLUSTER_USD_HORA = float(os.getenv("CUSTO_CLUSTER_USD_HORA", "0") or 0)
-CUSTO_ASP_USD_HORA = float(os.getenv("CUSTO_ASP_USD_HORA", "0") or 0)
-
-
-def _preco_hora(tier: str | None, override: float) -> tuple[float, str]:
-    """(preço, origem) — override do .env vence a tabela de lista."""
-    if override > 0:
-        return override, "configurado"
-    if tier and tier in PRECOS_USD_HORA:
-        return PRECOS_USD_HORA[tier], "lista"
-    return 0.0, "desconhecido"
-# Sistemas a operar para o mesmo resultado, com e sem change stream nativo.
-SISTEMAS_COM_MONGO = 1
-SISTEMAS_SEM_MONGO = 3
-# Teto MEDIDO com as três colunas ativas: acima disso o Kafka e o ASP ficam para trás.
-TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "9500"))
+# Cargas deliberadamente moderadas: a PoV prova conceitos sem induzir sizing
+# nem exigir tiers maiores só para produzir um número de palco.
+CONCEPT_TPS = min(2_000, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "500"))))
 
 # TTL = rede de segurança, não a limpeza principal (essa é o botão Reset, que
 # dropa a coleção na hora).
@@ -99,31 +80,14 @@ TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "9500"))
 TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "1800"))
 PURGE_TIMEOUT_MS = 180_000
 # Partições do consumo do change stream (um cursor + uma thread por partição).
-CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "10")))
+CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "1")))
 # Amostragem do feed SSE (contadores e percentis seguem cobrindo 100%).
 FEED_INTERVALO_S = 0.12
 METRICAS_INTERVALO_S = 0.5
 
 sdb = client[STREAM_DB]
 
-# ---------------------------------------------------------------------------
-# Cenário PIX — PREMISSAS declaradas, não medições.
-#
-# Tudo aqui é rotulado como premissa na UI e serve só para dar escala aos
-# números MEDIDOS (o TPS que a demo realmente sustenta é medido contra o
-# Atlas). Nenhum destes valores é apresentado como resultado da demo.
-# ---------------------------------------------------------------------------
-PIX_BRASIL_TX_DIA = 300_000_000          # ordem de grandeza divulgada pelo BCB
-INTER_SHARE = 0.10                       # premissa do cenário: 10% do mercado
-SEGUNDOS_DIA = 86_400
-INTER_TX_DIA = int(PIX_BRASIL_TX_DIA * INTER_SHARE)
-INTER_TPS_MEDIO = round(INTER_TX_DIA / SEGUNDOS_DIA)          # ~347 TPS
-PICO_FATOR = 3                                                 # premissa: pico ≈ 3× a média
-INTER_TPS_PICO = INTER_TPS_MEDIO * PICO_FATOR                  # ~1041 TPS
-BRASIL_TPS_MEDIO = round(PIX_BRASIL_TX_DIA / SEGUNDOS_DIA)     # ~3472 TPS
-
-# UFs com peso aproximado de participação no volume — SP e RJ concentram, como
-# no fluxo real. PREMISSA declarada, não medição.
+# Distribuição sintética de UFs para produzir grupos diferentes nas janelas.
 _UFS = ["SP", "RJ", "MG", "RS", "PR", "BA", "PE", "SC", "GO", "CE"]
 _UF_PESOS = [30, 14, 11, 8, 8, 7, 6, 6, 5, 5]
 
@@ -153,36 +117,20 @@ _UF_PESOS = [30, 14, 11, 8, 8, 7, 6, 6, 5, 5]
 # faz uma squad de pagamentos reconhecer o próprio fluxo.
 PERFIS_VALORES: dict[str, dict[str, Any]] = {
     "varejo": {
-        "tipos": [("PIX", 84), ("BOLETO", 13), ("TED", 3)],
+        "tipos": [("PIX", 100)],
         "faixas": {
             "PIX": [
                 (46, 5.0, 60.0), (33, 60.0, 250.0), (17, 250.0, 1_200.0),
                 (3.7, 1_200.0, 6_000.0), (0.3, 6_000.0, 30_000.0),
             ],
-            "BOLETO": [
-                (48, 30.0, 180.0), (38, 180.0, 900.0),
-                (13, 900.0, 4_000.0), (1, 4_000.0, 15_000.0),
-            ],
-            "TED": [
-                (50, 400.0, 3_000.0), (40, 3_000.0, 15_000.0),
-                (9, 15_000.0, 60_000.0), (1, 60_000.0, 200_000.0),
-            ],
         },
     },
     "corpo_medio": {
-        "tipos": [("PIX", 84), ("BOLETO", 13), ("TED", 3)],
+        "tipos": [("PIX", 100)],
         "faixas": {
             "PIX": [
                 (15, 20.0, 100.0), (45, 100.0, 700.0), (30, 700.0, 2_000.0),
                 (9, 2_000.0, 8_000.0), (1, 8_000.0, 25_000.0),
-            ],
-            "BOLETO": [
-                (15, 50.0, 100.0), (45, 100.0, 900.0),
-                (35, 900.0, 3_000.0), (5, 3_000.0, 12_000.0),
-            ],
-            "TED": [
-                (45, 500.0, 3_000.0), (42, 3_000.0, 15_000.0),
-                (12, 15_000.0, 50_000.0), (1, 50_000.0, 150_000.0),
             ],
         },
     },
@@ -311,6 +259,55 @@ meter_kafka = Meter()
 meter_asp = Meter()
 
 
+class RunTracker:
+    """Contagem idempotente, por execução, dos caminhos observados pela PoV."""
+
+    MAX_IDS_PER_CHANNEL = 500_000
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._ids: dict[str, dict[str, set[str]]] = {}
+        self._duplicates: dict[str, dict[str, int]] = {}
+        self._truncated: set[tuple[str, str]] = set()
+
+    def record(self, channel: str, run_id: str | None, end_to_end_id: str | None) -> None:
+        if not run_id or not end_to_end_id:
+            return
+        with self._lock:
+            by_channel = self._ids.setdefault(run_id, {})
+            ids = by_channel.setdefault(channel, set())
+            duplicates = self._duplicates.setdefault(run_id, {})
+            if end_to_end_id in ids:
+                duplicates[channel] = duplicates.get(channel, 0) + 1
+                return
+            if len(ids) >= self.MAX_IDS_PER_CHANNEL:
+                self._truncated.add((run_id, channel))
+                return
+            ids.add(end_to_end_id)
+
+    def snapshot(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            channels = self._ids.get(run_id, {})
+            duplicates = self._duplicates.get(run_id, {})
+            return {
+                channel: {
+                    "unicos": len(ids),
+                    "duplicados": duplicates.get(channel, 0),
+                    "completo_em_memoria": (run_id, channel) not in self._truncated,
+                }
+                for channel, ids in channels.items()
+            }
+
+    def reset(self) -> None:
+        with self._lock:
+            self._ids.clear()
+            self._duplicates.clear()
+            self._truncated.clear()
+
+
+run_tracker = RunTracker()
+
+
 async def _sse_stream(request: Request, hub: Hub, hello: dict[str, Any]):
     """Gerador SSE comum às três colunas: evento inicial + broadcast + keepalive."""
     q = hub.subscribe()
@@ -376,11 +373,13 @@ def _ensure_indexes() -> None:
         })
 
 
-def _new_transacao() -> dict[str, Any]:
+def _new_transacao(run_id: str = "execucao-local", sequencia: int | None = None) -> dict[str, Any]:
     pagador = random.randint(1, 5000)
     tipo = random.choices(_TIPOS, weights=_TIPO_PESOS)[0]
     return {
         "endToEndId": f"E{uuid.uuid4().hex[:31].upper()}",
+        "run_id": run_id,
+        "sequencia": sequencia,
         "pagadorId": f"P{pagador:06d}",
         # Partição de consumo derivada do pagador — é assim que um banco
         # particionaria o fluxo (por conta), e é o que permite um consumidor
@@ -415,6 +414,8 @@ class Generator:
         self.tps_alvo = 0
         self.inserted = 0
         self.started_at: datetime | None = None
+        self.run_id: str | None = None
+        self._sequence = 0
         self._recent: list[tuple[float, int]] = []   # (monotonic, docs) p/ TPS medido
         self._start_mono: float | None = None
         self._lock = threading.Lock()                # _recent/_inserted são tocados pelas threads de insert
@@ -452,6 +453,8 @@ class Generator:
         if self.running:
             return                                    # já rodando: só ajusta o TPS
         self.started_at = _now()
+        self.run_id = f"pix-{self.started_at:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
+        self._sequence = 0
         self._recent = []
         self._start_mono = time.monotonic()
         self.task = asyncio.create_task(self._run())
@@ -476,6 +479,9 @@ class Generator:
             self.inserted = 0
             self._recent = []
             self._start_mono = time.monotonic()
+        self.run_id = None
+        self.started_at = None
+        self._sequence = 0
 
     def _insert_batch(self, docs: list[dict[str, Any]]) -> None:
         """
@@ -515,7 +521,13 @@ class Generator:
                     # o gerador dispara uma rajada bem acima do alvo pedido.
                     carry = min(carry + batch_size, self.tps_alvo * self.TICK_S * 2)
                 else:
-                    task = asyncio.create_task(self._batch([_new_transacao() for _ in range(batch_size)]))
+                    inicio = self._sequence
+                    self._sequence += batch_size
+                    docs = [
+                        _new_transacao(self.run_id or "execucao-local", inicio + i)
+                        for i in range(batch_size)
+                    ]
+                    task = asyncio.create_task(self._batch(docs))
                     self._inflight.add(task)
                     task.add_done_callback(self._inflight.discard)
             next_tick += self.TICK_S
@@ -526,13 +538,18 @@ generator = Generator()
 
 
 class GeneratorStart(BaseModel):
-    tps: int = Field(default=BRASIL_TPS_MEDIO, ge=1, le=20000)
+    tps: int = Field(default=CONCEPT_TPS, ge=1, le=2_000)
 
 
 @router.post("/generator/start")
 async def generator_start(body: GeneratorStart):
     await generator.start(body.tps)
-    return {"running": True, "tps_alvo": generator.tps_alvo, "colecao": f"{STREAM_DB}.{COL_TX}"}
+    return {
+        "running": True,
+        "run_id": generator.run_id,
+        "tps_alvo": generator.tps_alvo,
+        "colecao": f"{STREAM_DB}.{COL_TX}",
+    }
 
 
 @router.post("/generator/stop")
@@ -555,11 +572,7 @@ async def generator_status():
         "ttl_segundos": TTL_SECONDS,
         "ttl_ativo": True,
         "started_at": generator.started_at.isoformat() if generator.started_at else None,
-        # Escala derivada do TPS MEDIDO — projeção aritmética, não uma medição
-        # de 24 h. A UI rotula como projeção.
-        "projecao_dia": int(medido * SEGUNDOS_DIA),
-        "pct_dia_inter": round(medido * SEGUNDOS_DIA / INTER_TX_DIA * 100, 1) if INTER_TX_DIA else None,
-        "pct_dia_brasil": round(medido * SEGUNDOS_DIA / PIX_BRASIL_TX_DIA * 100, 1) if PIX_BRASIL_TX_DIA else None,
+        "run_id": generator.run_id,
     }
 
 
@@ -716,9 +729,9 @@ class SondaLeitura:
     """
     Consulta pontual de UMA transação enquanto o cluster está sob escrita.
 
-    A demo mostrava só vazão de escrita; a pergunta operacional do dia a dia é
-    outra — "enquanto grava 9.500/s, meu app consulta uma transação em quanto
-    tempo?". A sonda faz find_one por endToEndId (índice único), do mesmo
+    A vazão isolada não responde à pergunta operacional: "enquanto o fluxo
+    contínuo grava, meu app consulta uma transação em quanto tempo?". A sonda
+    faz find_one por endToEndId (índice único), do mesmo
     processo, e mede.
     """
 
@@ -876,134 +889,27 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
     return checks
 
 
-@router.get("/negocio")
-async def negocio():
-    """
-    Traduz as métricas técnicas medidas em números de negócio.
-
-    Tudo aqui é DERIVADO de medição real (TPS medido, latência p50, ticket médio
-    que o processor somou, eventos recuperados). O que é premissa — preço de
-    lista por hora — vem rotulado, para a UI poder separar as duas coisas.
-    """
-    tps = generator.measured_tps()
-    cs = meter_cs.snapshot()
-    latencia_ms = cs.get("p50")
-    totais = await asyncio.to_thread(_asp_totais)
-
-    # Custo sobre os tiers REAIS em execução agora.
-    info_cluster = await asyncio.to_thread(_cluster_info_sync)
-    tier_cluster = info_cluster.get("tier")
-    asp_ok, _, tier_asp = await asyncio.to_thread(_asp_reachable)
-    preco_cluster, origem_cluster = _preco_hora(tier_cluster, CUSTO_CLUSTER_USD_HORA)
-    preco_asp, origem_asp = _preco_hora(tier_asp if asp_ok else None, CUSTO_ASP_USD_HORA)
-    custo_hora = preco_cluster + preco_asp
-
-    agregadas = totais["transacoes_agregadas"]
-    volume = totais["volume_agregado"]
-    ticket_medio = round(volume / agregadas, 2) if agregadas else None
-
-    # 1. Custo por milhão de transações
-    custo_por_milhao = None
-    if tps > 0 and custo_hora > 0:
-        custo_por_milhao = round((custo_hora / 3600) / tps * 1_000_000, 3)
-
-    # 3. Volume financeiro "em trânsito" na janela de latência
-    reais_por_segundo = round(ticket_medio * tps, 2) if (ticket_medio and tps) else None
-    valor_em_transito = (
-        round(reais_por_segundo * (latencia_ms / 1000), 2)
-        if (reais_por_segundo and latencia_ms) else None
-    )
-
-    # Potencial: uma queda de 3 s no ritmo atual. Sem resume token, cada evento
-    # dessa janela vira conferência manual.
-    potencial_queda_3s = int(cs.get("eventos_s") or 0) * 3
-
-    return {
-        "custo_por_milhao_usd": custo_por_milhao,
-        "custo_inclui_asp": preco_asp > 0,
-        "custo": {
-            "cluster_tier": tier_cluster,
-            "cluster_usd_hora": preco_cluster,
-            "cluster_origem": origem_cluster,
-            "asp_tier": tier_asp if asp_ok else None,
-            "asp_usd_hora": preco_asp,
-            "asp_origem": origem_asp,
-            "total_usd_hora": round(custo_hora, 4),
-        },
-        "reconciliacoes_potenciais_3s": potencial_queda_3s,
-        "latencia_reacao_ms": latencia_ms,
-        "reais_por_segundo": reais_por_segundo,
-        "valor_em_transito_brl": valor_em_transito,
-        "reconciliacoes_evitadas": cs_worker.recovered,
-        "sistemas_com_mongo": SISTEMAS_COM_MONGO,
-        "sistemas_sem_mongo": SISTEMAS_SEM_MONGO,
-        "ticket_medio": ticket_medio,
-        "transacoes_agregadas": agregadas,
-        "premissas": {
-            "custo_ambiente_usd_hora": round(custo_hora, 4),
-            "nota": "TPS, latência e contagem são MEDIDOS nesta sessão. O custo soma os tiers "
-                    "REAIS em execução (cluster + stream processor) a preço de lista da AWS "
-                    "us-east-1 — não inclui transferência de dados nem o Kafka, que aqui é "
-                    "local. O ticket médio foi calculado pelo processor sobre as transações "
-                    "que passaram, sobre uma distribuição sintética CALIBRADA para o formato "
-                    "do PIX (mediana ~R$ 87, média ~R$ 550, cauda longa). O fluxo em R$ mostra "
-                    "ordem de grandeza: trocando as faixas por dados reais do Inter, os mesmos "
-                    "cartões passam a valer para a conversa de negócio.",
-        },
-    }
-
-
 @router.get("/cenario")
 async def cenario():
-    """
-    Premissas do cenário PIX usadas como RÉGUA para os números medidos.
-
-    Devolve explicitamente o que é premissa e o que é derivado dela, para a UI
-    poder rotular. Nada aqui é resultado de medição — o que a demo mede é o TPS
-    sustentado contra o Atlas, exposto em /streaming/generator/status.
-    """
+    """Cargas moderadas para provar capacidades sem sugerir sizing."""
     return {
         "premissas": {
-            "pix_brasil_tx_dia": PIX_BRASIL_TX_DIA,
-            "inter_share": INTER_SHARE,
-            "pico_fator": PICO_FATOR,
-            "fonte": "volume diário do PIX na ordem de grandeza divulgada pelo BCB; "
-                     "participação do Inter e fator de pico são premissas deste cenário",
+            "workload": "sintético",
+            "objetivo": "provar integridade, recuperação, fan-out, janela, estado e DLQ",
+            "sizing": False,
         },
-        "derivados": {
-            "inter_tx_dia": INTER_TX_DIA,
-            "inter_tps_medio": INTER_TPS_MEDIO,
-            "inter_tps_pico": INTER_TPS_PICO,
-            "brasil_tps_medio": BRASIL_TPS_MEDIO,
-        },
-        # Só cargas altas: mostrar 300 TPS para uma squad que opera PIX não diz
-        # nada. O menor preset já é o PICO do Inter.
         "presets": [
-            {"label": "Pico Inter", "tps": INTER_TPS_PICO,
-             "detalhe": f"{PICO_FATOR}× a média do Inter ({INTER_TPS_MEDIO} TPS) — premissa de pico intradiário"},
-            {"label": "PIX Brasil inteiro", "tps": BRASIL_TPS_MEDIO,
-             "detalhe": f"{PIX_BRASIL_TX_DIA:,} transações/dia ÷ 86.400 s".replace(",", ".")},
-            {"label": "2× PIX Brasil", "tps": BRASIL_TPS_MEDIO * 2,
-             "detalhe": "o dobro do PIX nacional inteiro, no mesmo cluster"},
-            {"label": "Teto medido", "tps": TETO_MEDIDO_TPS,
-             "detalhe": f"máximo sustentado no cluster {CLUSTER_TIER} com o Stream Processing "
-                        f"no menor tier (SP10): Change Streams e ASP acompanham"},
+            {"label": "Passo a passo", "tps": max(10, CONCEPT_TPS // 5),
+             "detalhe": "fluxo leve para acompanhar cada mecanismo"},
+            {"label": "Fluxo contínuo", "tps": CONCEPT_TPS,
+             "detalhe": "carga moderada para observar janelas e reconciliação"},
+            {"label": "Rajada controlada", "tps": min(2_000, CONCEPT_TPS * 2),
+             "detalhe": "demonstra backlog e recuperação sem pretensão de benchmark"},
         ],
         "ambiente": {
             "cluster": (await asyncio.to_thread(_cluster_info_sync))["tier"],
-            # tier do ASP não vem daqui: /streaming/asp/status lê o real da SPI.
             "particoes_consumo": CS_PARTICOES,
-            "teto_medido_tps": TETO_MEDIDO_TPS,
-            "nota": f"{TETO_MEDIDO_TPS:,}".replace(",", ".") +
-                    " TPS é o teto MEDIDO com o Stream Processing no menor tier (SP10), "
-                    "escolhido de propósito para manter a PoV barata: Change Streams entregam "
-                    "9.507 ev/s e o processor agrega 9.483 tx/s. Acima disso o SP10 satura e "
-                    "cai para ~7.500 tx/s. O Kafka satura antes (~7.000 msg/s) por rodar "
-                    "1 task por coleção.",
-            "asterisco": "* Teto do AMBIENTE, não do produto. Só trocando o tier do Stream "
-                         "Processing para SP30 — sem tocar em cluster, código ou partições — "
-                         "o mesmo pipeline agregou 9.968 tx/s a 10.000 TPS de entrada, onde o "
-                         "SP10 já tinha quebrado. Escalar é uma linha de configuração.",
+            "nota": "Os números mostram apenas esta execução. Não são capacidade do produto nem sizing.",
         },
     }
 
@@ -1027,6 +933,39 @@ def _asp_command(cmd: dict[str, Any]) -> bool:
     except PyMongoError:
         logger.exception("Comando do ASP falhou: %s", cmd)
         return False
+
+
+def _asp_stop_wait(timeout_s: int = 60) -> bool:
+    """Para o processor e só retorna depois que não pode mais gravar saídas."""
+    if not (ASP_ENABLED and ASP_CONNECTION_STRING):
+        return False
+    from pymongo import MongoClient
+
+    spi = MongoClient(ASP_CONNECTION_STRING, serverSelectionTimeoutMS=8000)
+    try:
+        resposta = spi.admin.command({"listStreamProcessors": 1})
+        processor = next(
+            (p for p in resposta.get("streamProcessors", []) if p.get("name") == ASP_PROCESSOR_NAME),
+            None,
+        )
+        if not processor:
+            return False
+        if processor.get("state") != "STOPPED":
+            spi.admin.command({"stopStreamProcessor": ASP_PROCESSOR_NAME})
+        limite = time.monotonic() + timeout_s
+        while time.monotonic() < limite:
+            atual = spi.admin.command({"listStreamProcessors": 1})
+            state = next(
+                (p.get("state") for p in atual.get("streamProcessors", [])
+                 if p.get("name") == ASP_PROCESSOR_NAME),
+                None,
+            )
+            if state == "STOPPED":
+                return True
+            time.sleep(1)
+        raise RuntimeError(f"processor {ASP_PROCESSOR_NAME} não chegou a STOPPED em {timeout_s}s")
+    finally:
+        spi.close()
 
 
 def _drop_and_recreate() -> int:
@@ -1086,7 +1025,7 @@ def _purge(col: str) -> tuple[int, int]:
 
 
 @router.post("/reset")
-async def reset():
+async def reset(finalizar: bool = False):
     await generator.stop()
     # O worker do change stream NÃO é parado aqui: ele só volta a subir quando um
     # novo assinante SSE chega, e a aba já aberta na demo não reabre o
@@ -1095,15 +1034,41 @@ async def reset():
     restantes = 0
     asp_reiniciado = False
     kafka_reiniciado = False
+    asp_parado = False
+
+    if finalizar:
+        try:
+            asp_parado = await asyncio.to_thread(_asp_stop_wait)
+        except (PyMongoError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Limpeza cancelada: o processor não parou com segurança ({exc}).",
+            ) from exc
+        await asyncio.to_thread(cs_worker.discard_checkpoints)
 
     grande = await asyncio.to_thread(sdb[COL_TX].estimated_document_count)
     if grande > DROP_ACIMA_DE:
-        await asyncio.to_thread(_asp_command, {"stopStreamProcessor": ASP_PROCESSOR_NAME})
+        if not finalizar:
+            try:
+                asp_parado = await asyncio.to_thread(_asp_stop_wait)
+            except (PyMongoError, RuntimeError) as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Reset cancelado: o processor não parou com segurança ({exc}).",
+                ) from exc
+        await asyncio.to_thread(cs_worker.discard_checkpoints)
         deleted[COL_TX] = await asyncio.to_thread(_drop_and_recreate)
-        asp_reiniciado = await asyncio.to_thread(_asp_command, {"startStreamProcessor": ASP_PROCESSOR_NAME})
-        alvos = (COL_WINDOWS, COL_DLQ)
+        if not finalizar:
+            asp_reiniciado = await asyncio.to_thread(
+                _asp_command,
+                {"startStreamProcessor": ASP_PROCESSOR_NAME},
+            )
+        alvos = (COL_WINDOWS, COL_DLQ, COL_DLQ_AUDIT)
     else:
-        alvos = (COL_TX, COL_WINDOWS, COL_DLQ)
+        alvos = (COL_TX, COL_WINDOWS, COL_DLQ, COL_DLQ_AUDIT)
+
+    if finalizar:
+        alvos = (*alvos, COL_CHECKPOINTS)
 
     for col in alvos:
         removed, left = await asyncio.to_thread(_purge, col)
@@ -1112,14 +1077,16 @@ async def reset():
     # Religa os connectors SEMPRE: um drop anterior invalida o change stream
     # deles e as tasks não se recuperam sozinhas — sem isto a coluna 2 fica
     # vermelha depois do Reset. É idempotente e barato.
-    try:
-        kafka_reiniciado = (await asyncio.to_thread(_connector_restart_sync)).get("reiniciado", False)
-    except Exception:  # noqa: BLE001 - Kafka é opcional na demo
-        kafka_reiniciado = False
+    if not finalizar:
+        try:
+            kafka_reiniciado = (await asyncio.to_thread(_connector_restart_sync)).get("reiniciado", False)
+        except Exception:  # noqa: BLE001 - Kafka é opcional na demo
+            kafka_reiniciado = False
 
     generator.reset_counters()
     cs_worker.reset_counters()
     kafka_consumer.reset_counters()
+    run_tracker.reset()
     sonda_leitura.reset_counters()
     # O medidor do ASP também: sem isto a coluna 3 seguia exibindo percentis de
     # rodadas anteriores (35 s, 100 s) depois de um Reset, enquanto as outras
@@ -1131,12 +1098,21 @@ async def reset():
     # a UI mostra o número em vez de fingir que a limpeza terminou.
     return {"reset": True, "removidos": deleted, "restantes": restantes,
             "via_drop": grande > DROP_ACIMA_DE, "asp_reiniciado": asp_reiniciado,
-            "kafka_reiniciado": kafka_reiniciado}
+            "asp_parado": asp_parado, "kafka_reiniciado": kafka_reiniciado,
+            "finalizado": finalizar}
 
 
 # ---------------------------------------------------------------------------
 # COLUNA 1 — Change Streams
 # ---------------------------------------------------------------------------
+CHANGE_STREAM_HISTORY_LOST_CODES = {286}
+
+
+def _resume_token_invalido(exc: PyMongoError) -> bool:
+    """Só abandona checkpoint quando o servidor confirma perda do histórico."""
+    return isinstance(exc, OperationFailure) and exc.code in CHANGE_STREAM_HISTORY_LOST_CODES
+
+
 class ChangeStreamWorker:
     """
     UM cursor de collection.watch() por PARTIÇÃO, cada um na sua thread,
@@ -1163,6 +1139,7 @@ class ChangeStreamWorker:
         {"$project": {
             "_id": 1,
             "fullDocument.endToEndId": 1,
+            "fullDocument.run_id": 1,
             "fullDocument.uf": 1,
             "fullDocument.tipo": 1,
             "fullDocument.valor": 1,
@@ -1184,6 +1161,8 @@ class ChangeStreamWorker:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ultimo_feed = 0.0
         self._ultima_metrica = 0.0
+        self._ultimo_checkpoint = 0.0
+        self._checkpoint_carregado = False
         # At-least-once significa que o MESMO evento pode chegar duas vezes
         # (retomada a partir de um token anterior, por exemplo). Aqui a gente
         # MEDE em vez de afirmar: janela limitada dos últimos ids vistos.
@@ -1215,6 +1194,8 @@ class ChangeStreamWorker:
     def ensure_started(self, loop: asyncio.AbstractEventLoop) -> None:
         if self.active:
             return
+        if not self._checkpoint_carregado:
+            self._load_checkpoint()
         self._loop = loop
         self.active = True
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"streaming-cs-{self.particao}")
@@ -1227,6 +1208,49 @@ class ChangeStreamWorker:
         if not self.active:
             raise HTTPException(status_code=409, detail="Change stream não está aberto.")
         self._drop_requested = True
+
+    @property
+    def checkpoint_id(self) -> str:
+        return f"change-stream-partition-{self.particao}"
+
+    def _load_checkpoint(self) -> None:
+        try:
+            saved = sdb[COL_CHECKPOINTS].find_one({"_id": self.checkpoint_id})
+            self.token = saved.get("resume_token") if saved else None
+        except PyMongoError:
+            logger.exception("Falha ao carregar checkpoint da partição %d", self.particao)
+        finally:
+            self._checkpoint_carregado = True
+
+    def _persist_checkpoint(self, force: bool = False) -> None:
+        if not self.token:
+            return
+        agora = time.monotonic()
+        if not force and agora - self._ultimo_checkpoint < 0.5:
+            return
+        try:
+            sdb[COL_CHECKPOINTS].replace_one(
+                {"_id": self.checkpoint_id},
+                {
+                    "_id": self.checkpoint_id,
+                    "resume_token": self.token,
+                    "updated_at": _now(),
+                },
+                upsert=True,
+            )
+            self._ultimo_checkpoint = agora
+        except PyMongoError:
+            # Um checkpoint anterior provoca reentrega, não perda. O consumidor
+            # idempotente continua sendo a última linha de defesa.
+            logger.exception("Falha ao persistir checkpoint da partição %d", self.particao)
+
+    def discard_checkpoint(self) -> None:
+        self.token = None
+        self._checkpoint_carregado = True
+        try:
+            sdb[COL_CHECKPOINTS].delete_one({"_id": self.checkpoint_id})
+        except PyMongoError:
+            logger.exception("Falha ao remover checkpoint da partição %d", self.particao)
 
     def _publish(self, payload: dict[str, Any]) -> None:
         if self._loop:
@@ -1260,25 +1284,30 @@ class ChangeStreamWorker:
                     })
                     for change in stream:
                         self.token = change["_id"]
+                        self._persist_checkpoint()
                         self._emit(change)
                         if not self.active or self._drop_requested:
                             break
             except PyMongoError as exc:
-                # Depois de um drop da coleção o resume token guardado deixa de
-                # ser válido: insistir nele deixaria a coluna morta para sempre.
-                # Descarta o token e reabre do zero.
-                if self.token is not None:
+                if self.token is not None and _resume_token_invalido(exc):
                     logger.warning("Partição %d: token inválido (%s); reabrindo sem resume",
                                    self.particao, type(exc).__name__)
-                    self.token = None
+                    self.discard_checkpoint()
                     continue
-                logger.exception("Change stream do módulo Streaming falhou")
-                self._publish({"type": "erro", "detalhe": f"{type(exc).__name__}: {exc}"})
+                # Falha transitória mantém o último checkpoint. Reabrir sem ele
+                # criaria uma janela silenciosa de perda.
+                logger.warning("Change stream da partição %d falhou; retomando do checkpoint: %s",
+                               self.particao, type(exc).__name__)
+                self._publish({
+                    "type": "erro",
+                    "detalhe": f"{type(exc).__name__}: retomando do checkpoint persistido",
+                })
                 time.sleep(2)
                 continue
 
             if self._drop_requested:
                 self._drop_requested = False
+                self._persist_checkpoint(force=True)
                 self._publish({"type": "derrubado", "espera_s": 3, "token": self.token_str()})
                 time.sleep(3)                      # gerador continua escrevendo
                 self.reopen_at = _now()
@@ -1304,6 +1333,7 @@ class ChangeStreamWorker:
             self.recovered += 1
 
         e2e = doc.get("endToEndId")
+        run_tracker.record("change_streams", doc.get("run_id"), e2e)
         if e2e:
             if e2e in self._vistos_set:
                 self.duplicados += 1
@@ -1398,6 +1428,10 @@ class ChangeStreamCluster:
         for w in self.workers:
             w.request_drop()
 
+    def discard_checkpoints(self) -> None:
+        for w in self.workers:
+            w.discard_checkpoint()
+
 
 cs_worker = ChangeStreamCluster(CS_PARTICOES)
 
@@ -1431,6 +1465,8 @@ async def changestream_status():
         "duplicados": cs_worker.duplicados,
         "particoes": cs_worker.particoes,
         "token": cs_worker.token_str(),
+        "checkpoint": f"{STREAM_DB}.{COL_CHECKPOINTS}",
+        "checkpoint_persistente": True,
         **meter_cs.snapshot(),
     }
 
@@ -1478,6 +1514,18 @@ class KafkaConsumer:
         self.last_offset = None
         meter_kafka.reset()
 
+    async def restart(self) -> None:
+        task, self.task = self.task, None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self.estado = "reiniciando"
+        self.detalhe = "reabrindo o mesmo consumer group a partir do offset confirmado"
+        self.ensure_started()
+
     def ensure_started(self) -> None:
         if not self.running:
             self.task = asyncio.create_task(self._run())
@@ -1494,9 +1542,10 @@ class KafkaConsumer:
         consumer = AIOKafkaConsumer(
             TOPIC,
             bootstrap_servers=KAFKA_BROKERS,
-            group_id=f"showcase-streaming-{uuid.uuid4().hex[:8]}",
-            auto_offset_reset="latest",
-            enable_auto_commit=False,
+            group_id=KAFKA_CONSUMER_GROUP,
+            auto_offset_reset="earliest",
+            enable_auto_commit=True,
+            auto_commit_interval_ms=1_000,
         )
         try:
             await consumer.start()
@@ -1519,6 +1568,7 @@ class KafkaConsumer:
                 latency_ms = round((_now() - ts).total_seconds() * 1000, 1) if ts else None
                 self.messages += 1
                 self.last_offset = msg.offset
+                run_tracker.record("kafka", doc.get("run_id"), doc.get("endToEndId"))
                 meter_kafka.record(latency_ms)      # percentis sobre 100% das mensagens
 
                 agora = time.monotonic()
@@ -1527,6 +1577,7 @@ class KafkaConsumer:
                     hub_kafka.publish({
                         "type": "mensagem",
                         "endToEndId": doc.get("endToEndId"),
+                        "run_id": doc.get("run_id"),
                         "uf": doc.get("uf"),
                         "tipo": doc.get("tipo"),
                         "partition": msg.partition,
@@ -1669,6 +1720,8 @@ async def kafka_status():
             "detalhe": kafka_consumer.detalhe,
             "mensagens": kafka_consumer.messages,
             "offset_atual": kafka_consumer.last_offset,
+            "group_id": KAFKA_CONSUMER_GROUP,
+            "offset_persistente": True,
         },
         "topico": TOPIC,
         "brokers": KAFKA_BROKERS,
@@ -1682,6 +1735,17 @@ async def kafka_restart():
         return await asyncio.to_thread(_connector_restart_sync)
     except Exception as exc:  # noqa: BLE001 - Connect fora do ar é estado esperado
         raise HTTPException(status_code=409, detail=f"Kafka Connect indisponível ({type(exc).__name__}).") from exc
+
+
+@router.post("/kafka/consumer/restart")
+async def kafka_consumer_restart():
+    """Reinicia o observador mantendo o consumer group e seus offsets."""
+    await kafka_consumer.restart()
+    return {
+        "reiniciado": True,
+        "group_id": KAFKA_CONSUMER_GROUP,
+        "mensagem": "Consumidor reaberto com o mesmo group.id; reentregas seguem visíveis na reconciliação.",
+    }
 
 
 @router.get("/kafka")
@@ -1706,28 +1770,35 @@ ASP_PIPELINE_SNIPPET = """[
 
   // documento malformado vai para a DLQ; o processor nao cai
   { $validate: { validator: { $and: [
+        { "fullDocument.run_id": { $type: "string" } },
         { "fullDocument.valor": { $type: ["decimal","double","int","long"] } },
-        { "fullDocument.tipo":  { $in: ["PIX","TED","BOLETO"] } } ] },
+        { "fullDocument.tipo":  { $eq: "PIX" } } ] },
       validationAction: "dlq" } },
 
   { $tumblingWindow: {
+      boundary: "eventTime",
       interval: { size: 10, unit: "second" },
+      allowedLateness: { size: 3, unit: "second" },
       pipeline: [
         { $group: {
-            _id: { uf: "$fullDocument.uf", tipo: "$fullDocument.tipo" },
+            _id: { run_id: "$fullDocument.run_id", uf: "$fullDocument.uf", tipo: "$fullDocument.tipo" },
             qtd:    { $count: {} },
             volume: { $sum: { $toDouble: "$fullDocument.valor" } },
-            ticket: { $avg: { $toDouble: "$fullDocument.valor" } } } },
-        { $set: { uf: "$_id.uf", tipo: "$_id.tipo",
+            ticket: { $avg: { $toDouble: "$fullDocument.valor" } },
+            alertas_valor_alto: { $sum: { $cond: [
+              { $gte: [ { $toDouble: "$fullDocument.valor" }, 5000 ] }, 1, 0 ] } },
+            maior_valor: { $max: { $toDouble: "$fullDocument.valor" } } } },
+        { $set: { run_id: "$_id.run_id", uf: "$_id.uf", tipo: "$_id.tipo",
                   volume: { $round: ["$volume", 2] },
-                  ticket: { $round: ["$ticket", 2] } } } ] } },
+                  ticket: { $round: ["$ticket", 2] },
+                  maior_valor: { $round: ["$maior_valor", 2] } } } ] } },
 
   // bordas oficiais da janela, estáveis mesmo com eventos atrasados
   { $set: { window_start: { $meta: "stream.window.start" },
             window_end:   { $meta: "stream.window.end" } } },
 
-  // _id deterministico por (janela, uf, tipo) => $merge idempotente
-  { $set: { _id: { $concat: [ { $toString: "$window_start" }, "|", "$uf", "|", "$tipo" ] } } },
+  // _id deterministico por (execucao, janela, uf, tipo) => $merge idempotente
+  { $set: { _id: { $concat: [ "$run_id", "|", { $toString: "$window_start" }, "|", "$uf", "|", "$tipo" ] } } },
   { $merge: { into: { connectionName: __CONNECTION__, db: __DB__, coll: "metricas_janela" },
               whenMatched: "replace", whenNotMatched: "insert" } }
 ]""".replace("__CONNECTION__", json.dumps(ASP_CONNECTION_NAME)).replace("__DB__", json.dumps(STREAM_DB))
@@ -1763,6 +1834,82 @@ def _asp_reachable() -> tuple[bool, str, str | None]:
             spi.close()
     except Exception as exc:  # noqa: BLE001 - SPI ausente é estado esperado da demo
         return False, f"SPI inacessível: {type(exc).__name__}", None
+
+
+def _asp_runtime_stats() -> dict[str, Any]:
+    """Métricas oficiais do processor; indisponibilidade não derruba a demo."""
+    if not (ASP_ENABLED and ASP_CONNECTION_STRING):
+        return {"disponivel": False}
+    from pymongo import MongoClient
+
+    try:
+        spi = MongoClient(ASP_CONNECTION_STRING, serverSelectionTimeoutMS=5000, connect=False)
+        try:
+            resposta = spi.admin.command({
+                "getStreamProcessorStats": ASP_PROCESSOR_NAME,
+                "options": {"scale": 1, "verbose": True},
+            })
+        finally:
+            spi.close()
+    except PyMongoError as exc:
+        logger.warning("Stats do ASP indisponíveis: %s", type(exc).__name__)
+        return {"disponivel": False, "detalhe": type(exc).__name__}
+
+    stats = resposta.get("stats") or {}
+    operators = stats.get("operatorStats") or []
+    max_memory = max((op.get("maxMemoryUsage") or 0 for op in operators), default=0)
+    return {
+        "disponivel": True,
+        "input": stats.get("inputMessageCount"),
+        "output": stats.get("outputMessageCount"),
+        "dlq": stats.get("dlqMessageCount"),
+        "lag_oplog_s": stats.get("changeStreamTimeDifferenceSecs"),
+        "state_bytes": stats.get("stateSize"),
+        "watermark": stats.get("watermark"),
+        "max_memory_bytes": max_memory,
+        "latencia": stats.get("latency"),
+    }
+
+
+def _asp_restart_from_checkpoint() -> dict[str, Any]:
+    """Stop/start controlado: o start padrão retoma do último checkpoint."""
+    if not (ASP_ENABLED and ASP_CONNECTION_STRING):
+        raise RuntimeError("ASP não configurado")
+    from pymongo import MongoClient
+
+    spi = MongoClient(ASP_CONNECTION_STRING, serverSelectionTimeoutMS=8000)
+    try:
+        antes = spi.admin.command({"listStreamProcessors": 1})
+        processor = next(
+            (p for p in antes.get("streamProcessors", []) if p.get("name") == ASP_PROCESSOR_NAME),
+            None,
+        )
+        if not processor:
+            raise RuntimeError(f"processor {ASP_PROCESSOR_NAME} não encontrado")
+        if processor.get("state") == "STARTED":
+            spi.admin.command({"stopStreamProcessor": ASP_PROCESSOR_NAME})
+            limite = time.monotonic() + 60
+            while time.monotonic() < limite:
+                atual = spi.admin.command({"listStreamProcessors": 1})
+                state = next(
+                    (p.get("state") for p in atual.get("streamProcessors", [])
+                     if p.get("name") == ASP_PROCESSOR_NAME),
+                    None,
+                )
+                if state == "STOPPED":
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError("processor não chegou ao estado STOPPED")
+        spi.admin.command({"startStreamProcessor": ASP_PROCESSOR_NAME})
+        return {
+            "reiniciado": True,
+            "processor": ASP_PROCESSOR_NAME,
+            "retomada": "checkpoint_gerenciado",
+            "mensagem": "Processor reiniciado; o ASP retoma automaticamente do último checkpoint.",
+        }
+    finally:
+        spi.close()
 
 
 ASP_ATRASO_ALERTA_S = 30.0
@@ -1805,6 +1952,7 @@ async def asp_status():
     janelas = await asyncio.to_thread(sdb[COL_WINDOWS].count_documents, {})
     dlq = await asyncio.to_thread(sdb[COL_DLQ].count_documents, {})
     totais = await asyncio.to_thread(_asp_totais)
+    runtime = await asyncio.to_thread(_asp_runtime_stats) if ok else {"disponivel": False}
     atraso = await asyncio.to_thread(_asp_atraso_s) if ok else None
     return {
         "estado": "configurado" if ok else "nao_configurado",
@@ -1820,7 +1968,16 @@ async def asp_status():
         "janelas": janelas,
         "dlq": dlq,
         "pipeline": ASP_PIPELINE_SNIPPET,
+        "runtime": json.loads(json.dumps(runtime, default=str)),
     }
+
+
+@router.post("/asp/restart-checkpoint")
+async def asp_restart_checkpoint():
+    try:
+        return await asyncio.to_thread(_asp_restart_from_checkpoint)
+    except (PyMongoError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=f"Não foi possível reiniciar o processor: {exc}") from exc
 
 
 class AspWatcher:
@@ -1866,11 +2023,14 @@ class AspWatcher:
                                 latency_ms = round((_now() - fim).total_seconds() * 1000, 1)
                             meter_asp.record(latency_ms)
                             payload.update({
+                                "run_id": doc.get("run_id") or key.get("run_id"),
                                 "uf": doc.get("uf") or key.get("uf"),
                                 "tipo": doc.get("tipo") or key.get("tipo"),
                                 "qtd": doc.get("qtd"),
                                 "volume": doc.get("volume"),
                                 "ticket": doc.get("ticket"),
+                                "alertas_valor_alto": doc.get("alertas_valor_alto", 0),
+                                "maior_valor": doc.get("maior_valor"),
                                 "window_start": doc.get("window_start"),
                                 "window_end": doc.get("window_end"),
                                 "latency_ms": latency_ms,
@@ -1922,7 +2082,7 @@ DEFEITOS = [
 
 def _doc_invalido(indice: int) -> dict[str, Any]:
     defeito, patch = DEFEITOS[indice % len(DEFEITOS)]
-    doc = _new_transacao()
+    doc = _new_transacao(generator.run_id or "teste-dlq")
     doc["endToEndId"] = f"INVALIDO-{defeito.upper()}-{uuid.uuid4().hex[:10].upper()}"
     doc["status"] = "malformado"
     doc["defeito"] = defeito
@@ -2023,6 +2183,8 @@ def _reprocessa_dlq(limite: int) -> dict[str, Any]:
         limpo = {
             "endToEndId": f"E{e2e.rsplit('-', 1)[-1]}" if e2e.startswith("INVALIDO-")
                           else (e2e or f"E{uuid.uuid4().hex[:31].upper()}"),
+            "run_id": origem.get("run_id") or "reprocessamento-dlq",
+            "sequencia": origem.get("sequencia"),
             "pagadorId": origem.get("pagadorId") or "P000000",
             "recebedorId": origem.get("recebedorId") or "R000000",
             "particao": origem.get("particao", 0),
@@ -2034,16 +2196,35 @@ def _reprocessa_dlq(limite: int) -> dict[str, Any]:
             "ts": _now(),
             "status": "reprocessada",
         }
+        resultado = "reprocessado"
         try:
             sdb[COL_TX].insert_one(limpo)
             corrigidos += 1
         except DuplicateKeyError:
             ja_existiam += 1          # índice único confirma que já foi reprocessado
+            resultado = "ja_existia"
         except PyMongoError:
             # Falha transitória não é confirmação de duplicidade: preservar o
             # item na DLQ evita perda de evento e permite nova tentativa.
             falharam += 1
             logger.exception("Falha transitória ao reprocessar item da DLQ")
+            continue
+        try:
+            sdb[COL_DLQ_AUDIT].replace_one(
+                {"_id": dlq_doc["_id"]},
+                {
+                    "_id": dlq_doc["_id"],
+                    "run_id": limpo["run_id"],
+                    "endToEndId": limpo["endToEndId"],
+                    "resultado": resultado,
+                    "resolvido_em": _now(),
+                },
+                upsert=True,
+            )
+        except PyMongoError:
+            # Sem trilha de auditoria não removemos a evidência original.
+            falharam += 1
+            logger.exception("Falha ao registrar auditoria do reprocessamento da DLQ")
             continue
         remover.append(dlq_doc["_id"])
 
@@ -2091,3 +2272,83 @@ async def asp_janelas(limit: int = 30):
         "total": len(docs),
         "janelas": json.loads(json.dumps(docs, default=str)),
     }
+
+
+def _reconcile_run(run_id: str) -> dict[str, Any]:
+    source = sdb[COL_TX].count_documents({"run_id": run_id})
+    asp_rows = list(sdb[COL_WINDOWS].aggregate([
+        {"$match": {"run_id": run_id}},
+        {"$group": {
+            "_id": None,
+            "processadas": {"$sum": "$qtd"},
+            "alertas_valor_alto": {"$sum": "$alertas_valor_alto"},
+        }},
+    ]))
+    asp_processed = int(asp_rows[0].get("processadas") or 0) if asp_rows else 0
+    alertas = int(asp_rows[0].get("alertas_valor_alto") or 0) if asp_rows else 0
+    dlq_aberta = sdb[COL_DLQ].count_documents({
+        "$or": [
+            {"doc.fullDocument.run_id": run_id},
+            {"fullDocument.run_id": run_id},
+        ]
+    })
+    dlq_resolvida = sdb[COL_DLQ_AUDIT].count_documents({"run_id": run_id})
+    dlq = dlq_aberta + dlq_resolvida
+    observed = run_tracker.snapshot(run_id)
+
+    def channel(name: str) -> dict[str, Any]:
+        data = observed.get(name, {"unicos": 0, "duplicados": 0, "completo_em_memoria": True})
+        return {
+            **data,
+            "pendentes": max(source - data["unicos"], 0),
+            "reconciliado": source > 0 and data["unicos"] == source,
+        }
+
+    asp_accounted = asp_processed + dlq
+    return {
+        "run_id": run_id,
+        "gerador_ativo": generator.running and generator.run_id == run_id,
+        "fonte": {"inseridas": source, "colecao": f"{STREAM_DB}.{COL_TX}"},
+        "change_streams": channel("change_streams"),
+        "kafka": channel("kafka"),
+        "asp": {
+            "agregadas": asp_processed,
+            "dlq_aberta": dlq_aberta,
+            "dlq_resolvida": dlq_resolvida,
+            "dlq_total": dlq,
+            "contabilizadas": asp_accounted,
+            "pendentes": max(source - asp_accounted, 0),
+            "reconciliado": source > 0 and asp_accounted == source,
+            "alertas_valor_alto": alertas,
+        },
+        "final": (
+            "reconciliado"
+            if source > 0
+            and not generator.running
+            and channel("change_streams")["reconciliado"]
+            and channel("kafka")["reconciliado"]
+            and asp_accounted == source
+            else "em_processamento"
+        ),
+        "escopo": (
+            "Contadores de Change Streams e Kafka valem desde o início deste processo da API; "
+            "fonte, ASP e DLQ são consultados no Atlas."
+        ),
+    }
+
+
+@router.get("/reconciliacao")
+async def reconciliacao(run_id: str | None = None):
+    alvo = run_id or generator.run_id
+    if not alvo:
+        ultimo = await asyncio.to_thread(
+            lambda: sdb[COL_TX].find_one(
+                {"run_id": {"$type": "string"}},
+                {"run_id": 1},
+                sort=[("ts", -1)],
+            )
+        )
+        alvo = ultimo.get("run_id") if ultimo else None
+    if not alvo:
+        return {"estado": "sem_execucao", "mensagem": "Inicie o gerador para criar uma execução reconciliável."}
+    return await asyncio.to_thread(_reconcile_run, alvo)

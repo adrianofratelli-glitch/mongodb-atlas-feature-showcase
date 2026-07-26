@@ -28,6 +28,11 @@ PROJ="$(le_env ATLAS_PROJECT_ID)"
 CLUSTER="$(le_env ATLAS_CLUSTER)"
 PROCESSOR="${ASP_PROCESSOR_NAME:-$(le_env ASP_PROCESSOR_NAME)}"
 PROCESSOR="${PROCESSOR:-pixJanelas10s}"
+ASP_URI="$(le_env ASP_CONNECTION_STRING)"
+ASP_CONNECTION="${ASP_CONNECTION_NAME:-$(le_env ASP_CONNECTION_NAME)}"
+ASP_CONNECTION="${ASP_CONNECTION:-atlasCluster}"
+STREAM_DB="${STREAMING_DB:-$(le_env STREAMING_DB)}"
+STREAM_DB="${STREAM_DB:-pix}"
 API="https://cloud.mongodb.com/api/atlas/v2"
 ATLAS_MEDIA_TYPE="application/vnd.atlas.2025-03-12+json"
 ACCEPT="Accept: $ATLAS_MEDIA_TYPE"
@@ -60,6 +65,7 @@ processor() { # stop|start
   local cmd="$1"
   "$BASE/backend/venv/bin/python" - "$cmd" "$PROCESSOR" "$ENV_FILE" <<'PY'
 import sys
+import time
 acao, nome, env_file = sys.argv[1], sys.argv[2], sys.argv[3]
 uri = ""
 for linha in open(env_file):
@@ -90,10 +96,44 @@ try:
         else:
             cmd = "stopStreamProcessor" if acao == "stop" else "startStreamProcessor"
             c.admin.command({cmd: nome})
-            print(f"   processor {nome}: {acao} solicitado")
+            for _ in range(120):
+                atual = c.admin.command({"listStreamProcessors": 1})
+                state = next(
+                    (p.get("state") for p in atual.get("streamProcessors", [])
+                     if p.get("name") == nome),
+                    None,
+                )
+                if state == esperado:
+                    print(f"   processor {nome}: {esperado}")
+                    break
+                time.sleep(0.5)
+            else:
+                print(f"   processor {nome} não chegou a {esperado}", file=sys.stderr)
+                sys.exit(1)
 finally:
     c.close()
 PY
+}
+
+limpa_dados_pix() {
+  "$BASE/backend/venv/bin/python" "$BASE/scripts/cleanup-streaming-data.py"
+}
+
+recria_processor() {
+  if [[ -z "$ASP_URI" ]]; then
+    echo "   ASP_CONNECTION_STRING ausente — processor não configurado"
+    return 0
+  fi
+  command -v mongosh >/dev/null || {
+    echo "❌ mongosh é necessário para criar o processor automaticamente." >&2
+    return 1
+  }
+  echo "▶ Criando uma execução limpa do processor ASP..."
+  ASP_RECREATE=true \
+    ASP_CONNECTION_NAME="$ASP_CONNECTION" \
+    ASP_PROCESSOR_NAME="$PROCESSOR" \
+    STREAMING_DB="$STREAM_DB" \
+    mongosh "$ASP_URI" --quiet --file "$BASE/scripts/setup-asp.js"
 }
 
 case "${1:-status}" in
@@ -111,17 +151,36 @@ case "${1:-status}" in
     done
     [[ "$pronto" == "1" ]] || { echo "❌ Cluster não chegou a IDLE no prazo." >&2; exit 1; }
     estado_cluster
-    processor start
-    "$BASE/scripts/kafka-local.sh" up || echo "   (Kafka opcional falhou — a coluna 2 renderiza 'não configurado')"
+    # Um ciclo de apresentação começa sem documentos, offsets de aplicação ou
+    # estado de janela da rodada anterior.
+    processor stop || true
+    limpa_dados_pix
+    recria_processor
+    if "$BASE/scripts/kafka-local.sh" up; then
+      "$BASE/scripts/setup-kafka-connector.sh" ||
+        echo "   (connector falhou — a coluna Kafka mostra o diagnóstico)"
+    else
+      echo "   (Kafka opcional falhou — a coluna 2 renderiza 'não configurado')"
+    fi
     echo "✅ Ambiente pronto."
     ;;
   down)
     echo "▶ Desligando o ambiente..."
-    processor stop
-    "$BASE/scripts/kafka-local.sh" down || true
-    pausa_cluster true
-    echo "✅ Sem custo de compute: cluster pausado e processor parado."
-    echo "   (armazenamento do cluster continua sendo cobrado)"
+    falhou=0
+    processor stop || echo "   processor ausente ou já indisponível — seguindo com a limpeza"
+    limpa_dados_pix || {
+      falhou=1
+      echo "❌ A limpeza direta dos dados PIX falhou." >&2
+    }
+    "$BASE/scripts/kafka-local.sh" down || falhou=1
+    pausa_cluster true || falhou=1
+    if [[ "$falhou" == "0" ]]; then
+      echo "✅ Sem custo de compute: cluster pausado e processor parado."
+      echo "   (armazenamento do cluster continua sendo cobrado)"
+    else
+      echo "⚠️ O desligamento foi solicitado, mas houve falha parcial; confira o status." >&2
+      exit 1
+    fi
     ;;
   status)
     echo "cluster : $(estado_cluster)"

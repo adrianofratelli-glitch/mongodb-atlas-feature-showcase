@@ -4,21 +4,13 @@
 # módulo Streaming). Lê MONGO_URI de backend/.env — a credencial nunca vai para
 # o repo.
 #
-#   ./scripts/setup-kafka-connector.sh          # 2 connectors, particionados
-#   ./scripts/setup-kafka-connector.sh 1        # um connector só (limite: 1 task)
-#   KAFKA_CONNECTORS=6 ./scripts/setup-kafka-connector.sh
+#   ./scripts/setup-kafka-connector.sh          # 1 connector, menor custo/complexidade
+#   STREAMING_CS_PARTICOES=4 ./scripts/setup-kafka-connector.sh 2
+#                                                # experimento com filtros disjuntos
 #
-# POR QUE MAIS DE UM: o source connector roda UMA task por coleção — um cursor
-# de change stream só. Medido, isso satura em ~6.300 msg/s enquanto as outras
-# colunas seguem a 9.500. A saída é a mesma da coluna 1: particionar. Cada
-# connector filtra `particao` no próprio pipeline e todos publicam no MESMO
-# tópico, então o consumidor não muda.
-#
-# POR QUE 2 E NÃO MAIS: cada connector é mais um cursor lendo o oplog, e eles
-# competem com o processor do ASP. Medido a 9.500 TPS:
-#   1 connector  -> Kafka 6.327 msg/s (atrás)      · ASP 9.483 tx/s
-#   2 connectors -> Kafka acompanha o gerador      · ASP 8.894 tx/s
-#   4 connectors -> Kafka 9.565 msg/s              · ASP 7.113 tx/s (o ASP perde)
+# Um source connector por coleção já prova o conceito CDC → Kafka. Mais de um
+# abre cursores adicionais com filtros disjuntos; é um experimento da PoV, não
+# partição nativa nem recomendação de sizing.
 #
 set -euo pipefail
 
@@ -29,8 +21,8 @@ CONNECTOR_NAME="${CONNECT_CONNECTOR_NAME:-atlas-pix-source}"
 STREAMING_DB="${STREAMING_DB:-pix}"
 COLLECTION="transacoes"
 # Precisa bater com STREAMING_CS_PARTICOES do backend: é o mesmo campo `particao`.
-PARTICOES="${STREAMING_CS_PARTICOES:-10}"
-CONNECTORS="${1:-${KAFKA_CONNECTORS:-2}}"
+PARTICOES="${STREAMING_CS_PARTICOES:-1}"
+CONNECTORS="${1:-${KAFKA_CONNECTORS:-1}}"
 
 fail() { echo "❌ $1" >&2; exit 1; }
 
@@ -80,7 +72,9 @@ print(json.dumps({
   "topic.prefix": "atlas",
   "publish.full.document.only": "true",
   "pipeline": os.environ["STREAM_FILTER"],
-  "startup.mode": "copy_existing",
+  "startup.mode": "latest",
+  "heartbeat.interval.ms": "10000",
+  "heartbeat.topic.name": "__mongodb_heartbeats",
   "output.format.value": "json",
   "output.format.key": "json",
   "poll.await.time.ms": "500",
