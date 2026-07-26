@@ -239,6 +239,22 @@ export default function Streaming() {
   // ── Tradução para números de negócio ────────────────────────────────────
   const [negocio, setNegocio] = useState(null)
   const [perfil, setPerfil] = useState(null)
+  const [oplog, setOplog] = useState(null)
+  const [leitura, setLeitura] = useState(null)
+  const [dlqResumo, setDlqResumo] = useState(null)
+  useEffect(() => {
+    const tick = async () => {
+      const [o, l, d] = await Promise.all([
+        call('/streaming/oplog'), call('/streaming/leitura'), call('/streaming/asp/dlq/resumo'),
+      ])
+      if (o) setOplog(o)
+      if (l) setLeitura(l)
+      if (d) setDlqResumo(d)
+    }
+    tick()
+    const t = setInterval(tick, 4000)
+    return () => clearInterval(t)
+  }, [call])
   useEffect(() => {
     const tick = async () => { const d = await call('/streaming/perfil-valores'); if (d) setPerfil(d) }
     tick()
@@ -253,7 +269,13 @@ export default function Streaming() {
   }, [call])
 
   const aspOk = aspStatus?.estado === 'configurado'
-  const injectInvalid = async () => { await call('/streaming/asp/inject-invalid', { method: 'POST' }) }
+  const injectInvalid = async (quantidade = 1) => {
+    await call(`/streaming/asp/inject-invalid?quantidade=${quantidade}`, { method: 'POST' })
+  }
+  const reprocessarDlq = async () => {
+    const r = await call('/streaming/asp/dlq/reprocessar?limite=1000', { method: 'POST' })
+    if (r) { const d = await call('/streaming/asp/dlq/resumo'); if (d) setDlqResumo(d) }
+  }
 
   // ── Reset global ─────────────────────────────────────────────────────────
   const resetAll = async () => {
@@ -412,6 +434,14 @@ export default function Streaming() {
               <span className="str-token-l">resume token</span>
               <code>{csState.token || '—'}</code>
             </div>
+            <div className="str-token">
+              <span className="str-token-l">janela do oplog</span>
+              <code title={oplog?.detalhe}>
+                {oplog?.janela_min != null
+                  ? `${(oplog.janela_min / 60).toFixed(1).replace('.', ',')} h de queda recuperável`
+                  : '—'}
+              </code>
+            </div>
             {csState.fase === 'derrubado' && (
               <div className="str-alert">Cursor derrubado — o gerador continua escrevendo. Reabrindo em 3 s com <code>resume_after</code>…</div>
             )}
@@ -428,6 +458,18 @@ export default function Streaming() {
                   <span className="str-row-ms">{fmtMs(e.latency_ms)}</span>
                 </div>
               ))}
+            </div>
+            <div className="str-note">
+              <strong>Duplicados recebidos: {num(csMetrics?.duplicados ?? csState.duplicados ?? 0)}.</strong>{' '}
+              A entrega é <strong>at-least-once</strong>: retomar por um token anterior pode reentregar evento.
+              Por isso o consumidor precisa ser <strong>idempotente</strong> — aqui a chave é o
+              <code> endToEndId</code>, e a agregação do ASP grava com <code>_id</code> determinístico
+              (janela+uf+tipo), então reprocessar substitui em vez de somar duas vezes.
+            </div>
+            <div className="str-note">
+              A recuperação vale <strong>enquanto o ponto de retomada estiver no oplog</strong> —
+              hoje {oplog?.janela_min != null ? `${(oplog.janela_min / 60).toFixed(1).replace('.', ',')} h` : '—'}{' '}
+              ({oplog?.detalhe}). É o prazo real da garantia, não uma promessa aberta.
             </div>
             <div className="str-note">
               O feed acima é uma <strong>amostra</strong> do fluxo (a aba não renderiza milhares de linhas por segundo) —
@@ -525,7 +567,7 @@ export default function Streaming() {
           <div className="str-col-head">
             <span>🪟 Atlas Stream Processing</span>
             <span className={`badge ${aspOk ? 'badge-green' : 'badge-yellow'}`}>
-              {aspOk ? '● processor ativo' : '○ não configurado'}
+              {!aspStatus ? '○ verificando' : aspOk ? '● processor ativo' : '○ não configurado'}
             </span>
           </div>
           <div className="str-col-body">
@@ -559,9 +601,26 @@ export default function Streaming() {
                   <Percentis m={aspMetrics} color="#a855f7" />
                 )}
                 <Sparkline values={janelas.slice(0, 24).map(j => j.qtd || 0).reverse()} />
-                <button className="btn btn-default btn-sm" style={{ width: '100%' }} onClick={injectInvalid}>
-                  🧪 Injetar documento inválido
-                </button>
+                <div className="str-dlq-acoes">
+                  <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1)}>🧪 1 inválido</button>
+                  <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1000)}>🧪 1.000</button>
+                  <button className="btn btn-default btn-xs" onClick={reprocessarDlq} disabled={!dlqResumo?.total}>
+                    ♻️ Reprocessar
+                  </button>
+                </div>
+                {dlqResumo?.total > 0 && (
+                  <div className="str-alert">
+                    <strong>{num(dlqResumo.total)}</strong> na DLQ e o processor <strong>continuou rodando</strong>.
+                    {dlqResumo.por_motivo?.[0] && (
+                      <div style={{ marginTop: 4, fontSize: 11 }}>
+                        motivo: <code>{dlqResumo.por_motivo[0].motivo}</code>
+                      </div>
+                    )}
+                    <div style={{ marginTop: 4, fontSize: 11 }}>
+                      Reprocessar corrige e reinsere com o mesmo <code>endToEndId</code> — rodar duas vezes não duplica.
+                    </div>
+                  </div>
+                )}
                 <div style={{ overflowX: 'auto' }}>
                   <table className="lg-table">
                     <thead><tr><th>UF</th><th>Tipo</th><th>Qtd</th><th>Volume</th><th>Ticket</th></tr></thead>
@@ -645,6 +704,17 @@ export default function Streaming() {
                 {negocio.reconciliacoes_evitadas
                   ? 'eventos recuperados na queda — sem resume token, viram conferência manual'
                   : `no ritmo atual, uma queda de 3 s deixaria ${num(negocio.reconciliacoes_potenciais_3s)} eventos para reconciliar à mão`}
+              </div>
+            </div>
+            <div className="str-neg-c">
+              <div className="str-neg-k">Consulta sob carga</div>
+              <div className="str-neg-v" style={leitura?.p50 != null ? { color: '#00ED64' } : undefined}>
+                {leitura?.p50 != null ? fmtMs(leitura.p50) : '—'}
+              </div>
+              <div className="str-neg-s">
+                {leitura?.consultas
+                  ? `p95 ${fmtMs(leitura.p95)} · ${num(leitura.consultas)} consultas por endToEndId enquanto grava (inclui RTT)`
+                  : 'buscando uma transação enquanto o cluster grava'}
               </div>
             </div>
             <div className="str-neg-c">

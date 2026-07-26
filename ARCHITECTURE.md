@@ -53,10 +53,14 @@ One write generator feeds three consumers of the same change. Data lives in
 `pix.transacoes`, `pix.metricas_janela` and `pix.dlq` (`STREAMING_DB` overrides
 the database name).
 
-**Negócio**
+**Negócio e operação**
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/streaming/oplog` | Oplog retention window in minutes, read from `local.oplog.rs`, plus the configured minimum retention. This is the **operational limit of the resume-token guarantee** — recovery works only while the resume point is still in the oplog. |
+| `GET` | `/streaming/leitura` | Latency of a point lookup by `endToEndId` sampled every 250 ms **while the generator writes**, with p50/p95/p99. Answers the daily operational question the throughput numbers do not. |
+| `GET` | `/streaming/asp/dlq/resumo` | DLQ grouped by rejection reason, with first/last occurrence. |
+| `POST` | `/streaming/asp/dlq/reprocessar` | Fixes the known defect and re-inserts, preserving the original `endToEndId` — running it twice does not duplicate, the unique index blocks it. Idempotency by business key. |
 | `GET` | `/streaming/negocio` | Business translation of the measured metrics: cost per million transactions, reaction window, R$/s in flight, reconciliations avoided, systems to operate. Everything is derived from live measurements; the only premise (list price per hour) is returned separately and labelled. |
 
 **Cenário e rede**
@@ -89,7 +93,7 @@ all so every partition recovers from its own token.
 |---|---|---|
 | `GET` | `/streaming/changestream` | **SSE.** One `collection.watch()` cursor per partition (`[{$match: {operationType: "insert"}}]`, `full_document="updateLookup"`) broadcast to all subscribers. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries the end-to-end `latency_ms` (document `ts` vs receipt), the truncated resume token and the `recuperado` flag. |
 | `POST` | `/streaming/changestream/drop-resume` | Closes the cursor, waits 3 s while the generator keeps writing, reopens with `resume_after(<resume token>)`. Events whose `ts` precedes the reopen are flagged `recuperado` — the proof that nothing was lost. |
-| `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, `token`, plus `eventos_s` and the p50/p95/p99 latency percentiles. |
+| `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, **`duplicados`**, `token`, plus `eventos_s` and the p50/p95/p99 latency percentiles. Delivery is at-least-once, so duplicates are *measured* over a bounded window of recent `endToEndId`s rather than asserted away. |
 
 **Column 2 — MongoDB Kafka Connector**
 
@@ -105,7 +109,7 @@ all so every partition recovers from its own token.
 |---|---|---|
 | `GET` | `/streaming/asp` | **SSE** of closed windows and DLQ documents. The backend does not query the SPI: it watches `pix.metricas_janela` and `pix.dlq` with change streams, so the ASP result reaches the screen through the mechanics of column 1. |
 | `GET` | `/streaming/asp/status` | `configurado` / `nao_configurado` — the real processor state read with `listStreamProcessors` on the SPI, not just connectivity — plus window/DLQ counts, the totals the processor has aggregated (`transacoes_agregadas`, `volume_agregado`) and the pipeline as a code block for the slide. |
-| `POST` | `/streaming/asp/inject-invalid` | Inserts a document violating the expected schema; the processor's `$validate` stage routes it to the DLQ instead of failing. Returns 409 when ASP is not configured. |
+| `POST` | `/streaming/asp/inject-invalid` | `?quantidade=N` (up to 5,000) inserts documents violating the expected schema in four different ways, so the DLQ shows distinct reasons; `$validate` routes them to the DLQ instead of failing the processor. Partial failures are tolerated and reported. Returns 409 when ASP is not configured. |
 | `GET` | `/streaming/asp/dlq` | Last DLQ documents. |
 | `GET` | `/streaming/asp/janelas` | Last closed windows straight from the collection the processor writes. |
 

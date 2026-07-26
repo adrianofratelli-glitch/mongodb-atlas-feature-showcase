@@ -35,7 +35,7 @@ from bson import Decimal128
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from pymongo.errors import PyMongoError
+from pymongo.errors import BulkWriteError, PyMongoError
 
 from database import client
 from settings import settings
@@ -304,6 +304,7 @@ class Meter:
 
 
 meter_cs = Meter()
+meter_leitura = Meter()
 meter_kafka = Meter()
 meter_asp = Meter()
 
@@ -666,6 +667,118 @@ async def perfil_valores():
     }
 
 
+_oplog_cache: dict[str, Any] = {"ts": 0.0, "dados": None}
+
+
+def _oplog_janela() -> dict[str, Any]:
+    """
+    Janela de retenção do oplog, em minutos.
+
+    É o LIMITE OPERACIONAL da garantia do resume token: ele recupera uma queda
+    do consumidor apenas enquanto o ponto de retomada ainda estiver no oplog.
+    Sem este número, "recupera tudo" é uma promessa sem prazo — e é a primeira
+    pergunta de quem opera pagamento ("e se cair 4 horas no domingo?").
+    """
+    agora = time.monotonic()
+    if _oplog_cache["dados"] and agora - _oplog_cache["ts"] < 30:
+        return _oplog_cache["dados"]
+
+    dados: dict[str, Any] = {"janela_min": None, "detalhe": None}
+    try:
+        oplog = client["local"]["oplog.rs"]
+        primeiro = next(oplog.find({}, {"ts": 1}).sort("$natural", 1).limit(1), None)
+        ultimo = next(oplog.find({}, {"ts": 1}).sort("$natural", -1).limit(1), None)
+        if primeiro and ultimo:
+            segundos = ultimo["ts"].time - primeiro["ts"].time
+            dados["janela_min"] = round(segundos / 60, 1)
+        trunc = client.admin.command("serverStatus").get("oplogTruncation") or {}
+        retencao = trunc.get("oplogMinRetentionHours")
+        dados["retencao_minima_h"] = retencao
+        dados["detalhe"] = (
+            f"retenção mínima configurada: {retencao}h" if retencao
+            else "sem retenção mínima configurada — a janela varia com o volume de escrita"
+        )
+    except PyMongoError as exc:
+        dados["detalhe"] = f"oplog não legível ({type(exc).__name__})"
+
+    _oplog_cache.update(ts=agora, dados=dados)
+    return dados
+
+
+class SondaLeitura:
+    """
+    Consulta pontual de UMA transação enquanto o cluster está sob escrita.
+
+    A demo mostrava só vazão de escrita; a pergunta operacional do dia a dia é
+    outra — "enquanto grava 9.500/s, meu app consulta uma transação em quanto
+    tempo?". A sonda faz find_one por endToEndId (índice único), do mesmo
+    processo, e mede.
+    """
+
+    INTERVALO_S = 0.25
+
+    def __init__(self) -> None:
+        self.task: asyncio.Task | None = None
+        self.consultas = 0
+        self.erros = 0
+
+    @property
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    def ensure_started(self) -> None:
+        if not self.running:
+            self.task = asyncio.create_task(self._run())
+
+    def reset_counters(self) -> None:
+        self.consultas = 0
+        self.erros = 0
+        meter_leitura.reset()
+
+    def _consulta(self, e2e: str) -> float | None:
+        inicio = time.perf_counter()
+        try:
+            achado = sdb[COL_TX].find_one({"endToEndId": e2e}, {"_id": 1})
+        except PyMongoError:
+            self.erros += 1
+            return None
+        if achado is None:
+            return None
+        return (time.perf_counter() - inicio) * 1000
+
+    async def _run(self) -> None:
+        while True:
+            e2e = cs_worker.um_e2e_recente()
+            if e2e:
+                ms = await asyncio.to_thread(self._consulta, e2e)
+                if ms is not None:
+                    self.consultas += 1
+                    meter_leitura.record(ms)
+            await asyncio.sleep(self.INTERVALO_S)
+
+
+sonda_leitura = SondaLeitura()
+
+
+@router.get("/leitura")
+async def leitura():
+    """Latência de consulta pontual medida enquanto o gerador escreve."""
+    sonda_leitura.ensure_started()
+    return {
+        "ativa": sonda_leitura.running,
+        "consultas": sonda_leitura.consultas,
+        "erros": sonda_leitura.erros,
+        "colecao": f"{STREAM_DB}.{COL_TX}",
+        "indice": "endToEndId_unique",
+        **meter_leitura.snapshot(),
+    }
+
+
+@router.get("/oplog")
+async def oplog():
+    return await asyncio.to_thread(_oplog_janela)
+
+
 @router.get("/cluster")
 async def cluster():
     return await asyncio.to_thread(_cluster_info_sync)
@@ -1000,6 +1113,7 @@ async def reset():
     generator.reset_counters()
     cs_worker.reset_counters()
     kafka_consumer.reset_counters()
+    sonda_leitura.reset_counters()
     # O medidor do ASP também: sem isto a coluna 3 seguia exibindo percentis de
     # rodadas anteriores (35 s, 100 s) depois de um Reset, enquanto as outras
     # duas colunas já tinham zerado.
@@ -1057,11 +1171,18 @@ class ChangeStreamWorker:
         self.token: dict | None = None
         self.events = 0
         self.recovered = 0
+        self.ultimo_e2e: str | None = None
         self.reopen_at: datetime | None = None
         self._drop_requested = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ultimo_feed = 0.0
         self._ultima_metrica = 0.0
+        # At-least-once significa que o MESMO evento pode chegar duas vezes
+        # (retomada a partir de um token anterior, por exemplo). Aqui a gente
+        # MEDE em vez de afirmar: janela limitada dos últimos ids vistos.
+        self.duplicados = 0
+        self._vistos: deque[str] = deque(maxlen=200_000)
+        self._vistos_set: set[str] = set()
 
     def pipeline(self) -> list[dict[str, Any]]:
         if self.particoes <= 1:
@@ -1078,7 +1199,10 @@ class ChangeStreamWorker:
         # perder a continuidade que o botão "Derrubar e retomar" demonstra.
         self.events = 0
         self.recovered = 0
+        self.duplicados = 0
         self.reopen_at = None
+        self._vistos.clear()
+        self._vistos_set.clear()
         meter_cs.reset()
 
     def ensure_started(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -1171,6 +1295,18 @@ class ChangeStreamWorker:
         self.events += 1
         if recuperado:
             self.recovered += 1
+
+        e2e = doc.get("endToEndId")
+        if e2e:
+            if e2e in self._vistos_set:
+                self.duplicados += 1
+            else:
+                if len(self._vistos) == self._vistos.maxlen:
+                    self._vistos_set.discard(self._vistos[0])
+                self._vistos.append(e2e)
+                self._vistos_set.add(e2e)
+        self.ultimo_e2e = e2e                # alimenta a sonda de leitura
+
         meter_cs.record(latency_ms)          # 100% dos eventos entram nos percentis
 
         agora = time.monotonic()
@@ -1192,6 +1328,7 @@ class ChangeStreamWorker:
                 "type": "metricas",
                 "eventos": cs_worker.events,
                 "recuperados": cs_worker.recovered,
+                "duplicados": cs_worker.duplicados,
                 "particoes": cs_worker.particoes,
                 "token": self.token_str(),
                 **meter_cs.snapshot(),
@@ -1219,6 +1356,17 @@ class ChangeStreamCluster:
     @property
     def recovered(self) -> int:
         return sum(w.recovered for w in self.workers)
+
+    @property
+    def duplicados(self) -> int:
+        return sum(w.duplicados for w in self.workers)
+
+    def um_e2e_recente(self) -> str | None:
+        """Um endToEndId visto há pouco, para a sonda de leitura consultar."""
+        for w in self.workers:
+            if w.ultimo_e2e:
+                return w.ultimo_e2e
+        return None
 
     def token_str(self) -> str | None:
         # O token exibido é o da partição 0; cada worker guarda o seu.
@@ -1273,6 +1421,7 @@ async def changestream_status():
         "aberto": cs_worker.active,
         "eventos": cs_worker.events,
         "recuperados": cs_worker.recovered,
+        "duplicados": cs_worker.duplicados,
         "particoes": cs_worker.particoes,
         "token": cs_worker.token_str(),
         **meter_cs.snapshot(),
@@ -1746,25 +1895,155 @@ async def asp_sse(request: Request):
     return _sse_response(request, hub_asp, hello)
 
 
+# Defeitos realistas: cada um viola o validador de um jeito diferente, para a
+# DLQ mostrar MOTIVOS distintos em vez de mil cópias do mesmo erro.
+# Cada defeito viola o validador de um jeito diferente, para a DLQ mostrar
+# MOTIVOS distintos. Nenhum deles pode colidir com o índice único: um
+# endToEndId nulo passaria no $validate errado — e o índice só aceita UM null,
+# então o segundo doc quebraria o insert em vez de chegar à DLQ.
+DEFEITOS = [
+    ("valor_nao_numerico", {"valor": "isto-nao-e-um-numero"}),
+    ("tipo_fora_do_enum", {"tipo": "CRIPTO"}),
+    ("uf_invalida", {"uf": None}),
+    ("end_to_end_id_nao_texto", {"endToEndId": 0}),   # sobrescrito abaixo com um número único
+]
+
+
+def _doc_invalido(indice: int) -> dict[str, Any]:
+    defeito, patch = DEFEITOS[indice % len(DEFEITOS)]
+    doc = _new_transacao()
+    doc["endToEndId"] = f"INVALIDO-{defeito.upper()}-{uuid.uuid4().hex[:10].upper()}"
+    doc["status"] = "malformado"
+    doc["defeito"] = defeito
+    doc.update(patch)
+    if defeito == "end_to_end_id_nao_texto":
+        # Número em vez de texto: viola o $type do validador e continua único.
+        doc["endToEndId"] = random.randint(10**12, 10**13)
+    return doc
+
+
 @router.post("/asp/inject-invalid")
-async def asp_inject_invalid():
-    """Insere um documento que viola o schema esperado — o validador do processor
-    deve mandá-lo para a DLQ em vez de derrubar o processor."""
+async def asp_inject_invalid(quantidade: int = 1):
+    """
+    Injeta documentos que violam o schema esperado.
+
+    Um doc só prova o mecanismo; mil provam a OPERAÇÃO — que o processor não cai,
+    que a DLQ acumula com motivo, e que dá para reprocessar depois.
+    """
     ok, detalhe, _ = await asyncio.to_thread(_asp_reachable)
     if not ok:
         raise HTTPException(status_code=409, detail=f"Atlas Stream Processing não configurado ({detalhe}).")
-    doc = {
-        "endToEndId": f"INVALIDO-{uuid.uuid4().hex[:12].upper()}",
-        "pagadorId": None,
-        "recebedorId": None,
-        "valor": "isto-nao-e-um-numero",     # viola o tipo esperado
-        "tipo": "CRIPTO",                    # fora do enum PIX|TED|BOLETO
-        "uf": "ZZ",                          # UF inexistente
-        "ts": _now(),
-        "status": "malformado",
+    quantidade = max(1, min(quantidade, 5_000))
+    docs = [_doc_invalido(i) for i in range(quantidade)]
+
+    def _injeta() -> int:
+        try:
+            return len(sdb[COL_TX].insert_many(docs, ordered=False).inserted_ids)
+        except BulkWriteError as erro:
+            # Falha parcial é aceitável aqui: o que importa é o que chegou à DLQ.
+            gravados = erro.details.get("nInserted", 0)
+            logger.warning("Injeção parcial: %d de %d (%d erros)", gravados, quantidade,
+                           len(erro.details.get("writeErrors", [])))
+            return gravados
+
+    gravados = await asyncio.to_thread(_injeta)
+    return {
+        "injetados": gravados,
+        "solicitados": quantidade,
+        "defeitos": sorted({d["defeito"] for d in docs}),
+        "colecao_dlq": f"{STREAM_DB}.{COL_DLQ}",
     }
-    await asyncio.to_thread(sdb[COL_TX].insert_one, doc)
-    return {"injetado": True, "endToEndId": doc["endToEndId"], "colecao_dlq": f"{STREAM_DB}.{COL_DLQ}"}
+
+
+def _dlq_resumo() -> dict[str, Any]:
+    """Agrupa a DLQ por motivo — é assim que se opera uma fila de rejeitados."""
+    pipeline = [
+        {"$group": {
+            "_id": {"$ifNull": ["$errInfo.reason", "motivo não informado"]},
+            "qtd": {"$sum": 1},
+            "primeiro": {"$min": "$_stream_meta.source.ts"},
+            "ultimo": {"$max": "$_stream_meta.source.ts"},
+        }},
+        {"$sort": {"qtd": -1}},
+        {"$limit": 10},
+    ]
+    grupos = list(sdb[COL_DLQ].aggregate(pipeline))
+    return {
+        "total": sdb[COL_DLQ].count_documents({}),
+        "por_motivo": [
+            {"motivo": g["_id"], "qtd": g["qtd"],
+             "primeiro": str(g.get("primeiro") or ""), "ultimo": str(g.get("ultimo") or "")}
+            for g in grupos
+        ],
+    }
+
+
+@router.get("/asp/dlq/resumo")
+async def asp_dlq_resumo():
+    return await asyncio.to_thread(_dlq_resumo)
+
+
+def _reprocessa_dlq(limite: int) -> dict[str, Any]:
+    """
+    Reprocessa a DLQ: corrige o defeito conhecido e reinsere na coleção.
+
+    É o que um job de reprocessamento faz na vida real — a DLQ não é um cemitério,
+    é uma fila de retentativa. Cada documento volta com o MESMO endToEndId de
+    origem (sem o prefixo INVALIDO-), então reprocessar duas vezes não duplica:
+    o índice único barra. Idempotência por chave de negócio.
+    """
+    corrigidos = 0
+    ja_existiam = 0
+    sem_origem = 0
+    remover: list[Any] = []
+
+    for dlq_doc in sdb[COL_DLQ].find().limit(limite):
+        # A DLQ do ASP guarda o evento de change stream inteiro em `doc`; o
+        # documento original fica em doc.fullDocument.
+        origem = (dlq_doc.get("doc") or {}).get("fullDocument") or dlq_doc.get("fullDocument") or {}
+        if not origem:
+            sem_origem += 1
+            continue
+
+        e2e = str(origem.get("endToEndId") or "")
+        # Chave de negócio preservada: reprocessar duas vezes não duplica, o
+        # índice único barra a segunda tentativa. Idempotência por endToEndId.
+        limpo = {
+            "endToEndId": f"E{e2e.rsplit('-', 1)[-1]}" if e2e.startswith("INVALIDO-")
+                          else (e2e or f"E{uuid.uuid4().hex[:31].upper()}"),
+            "pagadorId": origem.get("pagadorId") or "P000000",
+            "recebedorId": origem.get("recebedorId") or "R000000",
+            "particao": origem.get("particao", 0),
+            # Correções determinísticas do defeito que mandou o doc para a DLQ:
+            "valor": Decimal128(f"{_sorteia_valor('PIX'):.2f}") if not isinstance(
+                origem.get("valor"), Decimal128) else origem["valor"],
+            "tipo": origem["tipo"] if origem.get("tipo") in _TIPOS else "PIX",
+            "uf": origem["uf"] if origem.get("uf") in _UFS else "SP",
+            "ts": _now(),
+            "status": "reprocessada",
+        }
+        try:
+            sdb[COL_TX].insert_one(limpo)
+            corrigidos += 1
+        except PyMongoError:
+            ja_existiam += 1          # índice único: reprocessar de novo não duplica
+        remover.append(dlq_doc["_id"])
+
+    if remover:
+        sdb[COL_DLQ].delete_many({"_id": {"$in": remover}})
+
+    return {
+        "reprocessados": corrigidos,
+        "ja_existiam": ja_existiam,
+        "sem_documento_de_origem": sem_origem,
+        "removidos_da_dlq": len(remover),
+    }
+
+
+@router.post("/asp/dlq/reprocessar")
+async def asp_dlq_reprocessar(limite: int = 1_000):
+    limite = max(1, min(limite, 5_000))
+    return await asyncio.to_thread(_reprocessa_dlq, limite)
 
 
 @router.get("/asp/dlq")

@@ -203,6 +203,31 @@ def test_distribuicao_e_assimetrica_como_pix():
 
 
 # ---------------------------------------------------------------------------
+# DLQ — defeitos precisam chegar à DLQ, não quebrar o insert
+# ---------------------------------------------------------------------------
+def test_nenhum_defeito_gera_end_to_end_id_nulo():
+    """
+    Regressão: o defeito "sem endToEndId" gerava null, e o índice único só
+    aceita UM null — do segundo doc em diante o insert quebrava com duplicate
+    key em vez de o documento chegar à DLQ.
+    """
+    for i in range(len(streaming.DEFEITOS) * 4):
+        doc = streaming._doc_invalido(i)
+        assert doc["endToEndId"] is not None, doc.get("defeito")
+
+
+def test_documentos_invalidos_sao_unicos_entre_si():
+    ids = [streaming._doc_invalido(i)["endToEndId"] for i in range(400)]
+    assert len(set(ids)) == len(ids)
+
+
+def test_todo_defeito_marca_o_motivo_no_documento():
+    nomes = {d[0] for d in streaming.DEFEITOS}
+    vistos = {streaming._doc_invalido(i)["defeito"] for i in range(len(streaming.DEFEITOS) * 3)}
+    assert vistos == nomes
+
+
+# ---------------------------------------------------------------------------
 # Datas vindas do Kafka
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("valor", [
