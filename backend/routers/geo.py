@@ -16,6 +16,7 @@ Todos os endpoints devolvem o pipeline executado: nada na tela vem de mock.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any
@@ -51,34 +52,35 @@ def _haversine_stages(destino: str, lat1: Any, lng1: Any, lat2: Any, lng2: Any) 
 
     a  = sin²(Δφ/2) + cos φ₁ · cos φ₂ · sin²(Δλ/2)
     km = 2R · asin(√a)
+
+    Tudo num único `$addFields` com `$let` aninhado: a versão em quatro stages
+    encadeadas custava quatro passadas completas sobre o resultado da janela —
+    medido em `executionStats`, era a maior fatia do tempo do pipeline.
     """
-    return [
-        {"$addFields": {
-            "_phi1": {"$degreesToRadians": lat1},
-            "_phi2": {"$degreesToRadians": lat2},
-            "_dphi": {"$degreesToRadians": {"$subtract": [lat2, lat1]}},
-            "_dlmb": {"$degreesToRadians": {"$subtract": [lng2, lng1]}},
-        }},
-        {"$addFields": {
-            "_a": {"$add": [
-                {"$pow": [{"$sin": {"$divide": ["$_dphi", 2]}}, 2]},
+    return [{"$addFields": {destino: {"$let": {
+        "vars": {
+            "phi1": {"$degreesToRadians": lat1},
+            "phi2": {"$degreesToRadians": lat2},
+            "dphi": {"$degreesToRadians": {"$subtract": [lat2, lat1]}},
+            "dlmb": {"$degreesToRadians": {"$subtract": [lng2, lng1]}},
+        },
+        "in": {"$let": {
+            "vars": {"a": {"$add": [
+                {"$pow": [{"$sin": {"$divide": ["$$dphi", 2]}}, 2]},
                 {"$multiply": [
-                    {"$cos": "$_phi1"},
-                    {"$cos": "$_phi2"},
-                    {"$pow": [{"$sin": {"$divide": ["$_dlmb", 2]}}, 2]},
+                    {"$cos": "$$phi1"},
+                    {"$cos": "$$phi2"},
+                    {"$pow": [{"$sin": {"$divide": ["$$dlmb", 2]}}, 2]},
                 ]},
-            ]},
-        }},
-        {"$addFields": {
+            ]}},
             # $min contra 1 protege o $asin de erro de arredondamento em pares
             # praticamente antipodais.
-            destino: {"$multiply": [
+            "in": {"$multiply": [
                 2 * RAIO_TERRA_KM,
-                {"$asin": {"$sqrt": {"$min": ["$_a", 1]}}},
+                {"$asin": {"$sqrt": {"$min": ["$$a", 1]}}},
             ]},
         }},
-        {"$unset": ["_phi1", "_phi2", "_dphi", "_dlmb", "_a"]},
-    ]
+    }}}}]
 
 
 def _resumo_plano(explain: dict) -> dict[str, Any]:
@@ -283,7 +285,14 @@ def impossible_travel(
         # A primeira transação de cada cliente não tem anterior.
         {"$match": {"ts_ant": {"$ne": None}}},
         {"$addFields": {"minutos": {"$divide": [{"$subtract": ["$ts", "$ts_ant"]}, 60_000]}}},
-        {"$match": {"minutos": {"$gt": 0}}},
+        # Corte geométrico antes do haversine: nenhum par de pontos na Terra
+        # dista mais que meia circunferência, então um intervalo maior que
+        # (π·R / limite) horas não pode violar o limite, seja qual for a
+        # geografia. Descarta a maior parte dos documentos antes da parte cara
+        # do pipeline sem depender de nada específico deste dataset.
+        {"$match": {
+            "minutos": {"$gt": 0, "$lt": (math.pi * RAIO_TERRA_KM / limiteKmh) * 60},
+        }},
     ]
     pipeline += _haversine_stages(
         "km",

@@ -106,11 +106,40 @@ def test_impossible_travel_monta_setwindowfields_e_haversine(monkeypatch):
     assert resposta["limite_kmh"] == 900
 
 
-def test_haversine_mql_espelha_a_formula_do_seed():
-    """A fórmula usada nos stages é a mesma que o seed usa para plantar as fraudes."""
+def test_haversine_cabe_em_uma_unica_stage():
+    """Quatro $addFields encadeados custavam quatro passadas sobre a janela."""
     stages = geo._haversine_stages("km", 1, 2, 3, 4)
-    assert stages[-1] == {"$unset": ["_phi1", "_phi2", "_dphi", "_dlmb", "_a"]}
-    assert stages[-2]["$addFields"]["km"]["$multiply"][0] == pytest.approx(2 * geo.RAIO_TERRA_KM)
+    assert len(stages) == 1
+    externo = stages[0]["$addFields"]["km"]["$let"]
+    assert set(externo["vars"]) == {"phi1", "phi2", "dphi", "dlmb"}
+    interno = externo["in"]["$let"]
+    assert interno["in"]["$multiply"][0] == pytest.approx(2 * geo.RAIO_TERRA_KM)
+    # $min contra 1 evita que arredondamento estoure o domínio do $asin.
+    assert interno["in"]["$multiply"][1]["$asin"]["$sqrt"] == {"$min": ["$$a", 1]}
+
+
+def test_impossible_travel_corta_pelo_limite_geometrico(monkeypatch):
+    """Nenhum par na Terra dista mais que meia circunferência: intervalos longos
+    não podem violar o limite, e são descartados antes do haversine."""
+
+    class FalsaColecao:
+        def aggregate(self, pipeline, **_kwargs):
+            return iter([])
+
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+    pipeline = geo.impossible_travel(limiteKmh=900)["pipeline"]
+
+    corte = next(e["$match"]["minutos"] for e in pipeline
+                 if "$match" in e and "minutos" in e["$match"])
+    esperado = (math.pi * geo.RAIO_TERRA_KM / 900) * 60
+    assert corte["$gt"] == 0
+    assert corte["$lt"] == pytest.approx(esperado)
+    # O corte precisa vir antes da parte cara.
+    indice_corte = next(i for i, e in enumerate(pipeline)
+                        if "$match" in e and "minutos" in e["$match"])
+    indice_haversine = next(i for i, e in enumerate(pipeline)
+                            if "$addFields" in e and "km" in e["$addFields"])
+    assert indice_corte < indice_haversine
 
 
 # ── Demo C ──────────────────────────────────────────────────────────────────

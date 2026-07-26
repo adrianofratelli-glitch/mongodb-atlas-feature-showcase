@@ -138,8 +138,10 @@ same way Kafka and ASP are.
 
 The map is rendered as inline SVG with a hand-written linear projection over the
 Brazilian bounding box — no Leaflet, no Mapbox, no tiles, no new frontend
-dependency. The page renders completely with external network blocked, which is
-the actual constraint in an auditorium.
+dependency. With the external network blocked the module still renders and every
+number still comes from the cluster; the one external request in the app is the
+Google Fonts link in `frontend/index.html`, which is app-wide and pre-existing,
+and typography falls back to system fonts when it fails.
 
 ### SSE conventions
 
