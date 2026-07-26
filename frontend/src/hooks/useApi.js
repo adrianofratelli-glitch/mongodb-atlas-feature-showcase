@@ -53,7 +53,9 @@ export function useApi() {
       }
       return await res.json()
     } catch (e) {
-      if (!mounted.current || upstreamSignal?.aborted) return null
+      // Navegar entre módulos desmonta a tela e cancela suas requisições.
+      // Esse cancelamento é esperado e não deve virar um falso erro global.
+      if ((controller.signal.aborted && !timedOut) || !mounted.current || upstreamSignal?.aborted) return null
       const rawMessage = e instanceof Error ? e.message : String(e)
       const message = timedOut
         ? `Tempo limite de ${Math.round(timeoutMs / 1000)} s excedido — verifique o backend e a operação no Atlas`

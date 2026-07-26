@@ -10,16 +10,19 @@ const SCENARIOS = [
   {
     key: 'simples', title: 'Índice Simples', fields: ['categoria'],
     description: 'Índice em campo único para filtros de categoria — base para a maioria das queries',
+    command: 'db.produtos.createIndex({ categoria: 1 })',
     query: `// Desde o 4.2, todo build é "hybrid":\n// leituras e escritas seguem durante a maior parte do build\ndb.produtos.createIndex(\n  { categoria: 1 }\n)`,
   },
   {
     key: 'composto', title: 'Índice Composto', fields: ['categoria', '-preco'],
     description: 'Cobre queries combinadas (categoria + preço desc) — elimina COLLSCAN',
+    command: 'db.produtos.createIndex({ categoria: 1, preco: -1 })',
     query: `db.produtos.createIndex(\n  { categoria: 1, preco: -1 }\n)`,
   },
   {
     key: 'parcial', title: 'Índice Parcial', fields: ['preco'],
     description: 'Apenas sobre produtos em estoque — menor footprint na RAM e disco',
+    command: 'db.produtos.createIndex({ preco: 1 }, { partialFilterExpression: { em_estoque: true } })',
     query: `db.produtos.createIndex(\n  { preco: 1 },\n  { partialFilterExpression: { em_estoque: true } }\n)`,
     partial_filter: { em_estoque: true },
   },
@@ -40,6 +43,7 @@ export default function Reindexacao() {
   const [explainSel, setExplainSel] = useState('composto')
   const [explainRes, setExplainRes] = useState(null)
   const [explainLoading, setExplainLoading] = useState(false)
+  const [showAllIndexes, setShowAllIndexes] = useState(false)
   const cancelled = useRef(false)
 
   const fetchIndexes = async () => {
@@ -154,9 +158,13 @@ export default function Reindexacao() {
               <span className="badge badge-green">Online Build</span>
             </div>
             <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>{s.description}</p>
-            <SyntaxHighlighter language="javascript" style={atomOneDark} customStyle={{ borderRadius: 6, fontSize: 11.5, margin: 0 }}>
-              {s.query}
-            </SyntaxHighlighter>
+            <code className="idx-command" title={s.command}>{s.command}</code>
+            <details className="code-details">
+              <summary>Ver comando comentado</summary>
+              <SyntaxHighlighter language="javascript" style={atomOneDark} customStyle={{ borderRadius: 6, fontSize: 11.5, margin: '8px 0 0' }}>
+                {s.query}
+              </SyntaxHighlighter>
+            </details>
             <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center' }}
               onClick={() => handleCreate(s)}
               disabled={selected === s.key && result && (result.phase === 'starting' || result.phase === 'building')}>
@@ -219,6 +227,13 @@ export default function Reindexacao() {
           pelo próprio banco. O número que conta a história é <strong>docs examinados vs retornados</strong>.
           Dica: se já aparecer IXSCAN, remova o índice na lista abaixo e rode de novo para ver o "antes".
         </p>
+        <div className="idx-plan-flow" aria-label="Evolução esperada do plano de execução">
+          <span className="badge badge-red">COLLSCAN</span>
+          <span>criar índice adequado</span>
+          <span aria-hidden="true">→</span>
+          <span className="badge badge-green">IXSCAN</span>
+          <span>menos documentos examinados</span>
+        </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
           {EXPLAIN_SCENARIOS.map(sc => (
             <button key={sc.key} className={`tag ${explainSel === sc.key ? 'active' : ''}`}
@@ -269,7 +284,9 @@ export default function Reindexacao() {
           <button className="btn btn-sm btn-default" onClick={fetchIndexes}>↻ Atualizar</button>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {indexes.map(idx => (
+          {(showAllIndexes ? indexes : indexes.filter(idx =>
+            idx.name === '_id_' || ['categoria_1', 'categoria_1_preco_-1', 'preco_1_partial'].includes(idx.name)
+          )).map(idx => (
             <div key={idx.name} className="result-row" style={{ justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className={`badge ${idx.name === '_id_' ? 'badge-blue' : 'badge-green'}`}>
@@ -286,6 +303,12 @@ export default function Reindexacao() {
             </div>
           ))}
         </div>
+        {indexes.length > 4 && (
+          <button className="btn btn-sm btn-default" style={{ marginTop: 12 }}
+            onClick={() => setShowAllIndexes(v => !v)}>
+            {showAllIndexes ? 'Mostrar apenas índices da demo' : `Ver todos os ${indexes.length} índices`}
+          </button>
+        )}
       </div>
     </div>
   )

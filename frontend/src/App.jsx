@@ -6,6 +6,7 @@ import SchemaValidation from './pages/SchemaValidation'
 import ChangeStreams from './pages/ChangeStreams'
 import Transactions from './pages/Transactions'
 import Streaming from './pages/Streaming'
+import Geo from './pages/Geo'
 
 const MODULES = [
   { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Hybrid build sem bloqueio prolongado',            color: '#00ED64', component: Reindexacao },
@@ -15,6 +16,7 @@ const MODULES = [
   { key: 'streams', num: '05', title: 'Change Streams',       subtitle: 'Eventos em tempo real — insert, update, delete', color: '#14b8a6', component: ChangeStreams },
   { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#eab308', component: Transactions },
   { key: 'streaming', num: '07', title: 'Streaming',            subtitle: 'Change Streams × Kafka Connector × Atlas Stream Processing', color: '#e11d48', component: Streaming },
+  { key: 'geo',     num: '08', title: 'Geo',                 subtitle: '2dsphere composto, impossible travel e geo + Atlas Search', color: '#38bdf8', component: Geo },
 ]
 
 // MongoDB leaf logo SVG (official mark)
@@ -33,7 +35,14 @@ function ApiErrorToast() {
 
   useEffect(() => {
     let timer
+    let lastKey = ''
+    let lastAt = 0
     const onError = (e) => {
+      const key = `${e.detail?.path || ''}:${e.detail?.message || ''}`
+      const now = Date.now()
+      if (key === lastKey && now - lastAt < 8000) return
+      lastKey = key
+      lastAt = now
       setToast(e.detail)
       clearTimeout(timer)
       timer = setTimeout(() => setToast(null), 6000)

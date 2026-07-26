@@ -243,8 +243,8 @@ export default function SchemaValidation() {
       )}
 
       {/* Schema usado */}
-      <div className="card">
-        <strong style={{ fontSize: 14, display: 'block', marginBottom: 12 }}>Schema JSON aplicado no Passo 3</strong>
+      <details className="card schema-code-details">
+        <summary>Schema JSON aplicado no Passo 3 <span>ver definição completa</span></summary>
         <SyntaxHighlighter language="javascript" style={atomOneDark} customStyle={{ borderRadius: 8, fontSize: 12 }}>
           {SCHEMA_CODE}
         </SyntaxHighlighter>
@@ -254,7 +254,7 @@ export default function SchemaValidation() {
             O <code>collMod</code> aplica o validador em uma coleção <strong>já existente</strong>, sem downtime — as regras <code>enum</code>, <code>pattern</code> e <code>minimum</code> passam a valer imediatamente para novas escritas.
           </div>
         </div>
-      </div>
+      </details>
     </div>
   )
 }

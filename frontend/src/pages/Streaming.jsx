@@ -3,8 +3,13 @@ import { useApi } from '../hooks/useApi'
 import QueryBlock from '../components/QueryBlock'
 
 const MAX_FEED = 40
-const TPS_MAX = 12000
-const TPS_STEP = 100
+const TPS_MAX = 2000
+const TPS_STEP = 10
+const CONCEPT_PRESETS = [
+  { label: 'Passo a passo', tps: 100, detalhe: 'fluxo leve para acompanhar cada mecanismo' },
+  { label: 'Fluxo contínuo', tps: 500, detalhe: 'carga moderada para observar janelas e reconciliação' },
+  { label: 'Rajada controlada', tps: 1000, detalhe: 'backlog e recuperação sem pretensão de benchmark' },
+]
 
 // Hook de SSE: EventSource sobre /api/... (proxy do Vite → backend :8002).
 // Só GET, então o mutation guard não exige o X-Demo-Token.
@@ -124,16 +129,34 @@ function Sparkline({ values }) {
 export default function Streaming() {
   const { call } = useApi()
 
-  // ── Cenário PIX (premissas declaradas pelo backend) ──────────────────────
+  // ── Cenário PIX conceitual ────────────────────────────────────────────────
   const [cenario, setCenario] = useState(null)
   const [rede, setRede] = useState(null)
   useEffect(() => {
-    call('/streaming/cenario').then((d) => d && setCenario(d))
+    call('/streaming/cenario').then((d) => {
+      if (!d) return
+      // Durante um rollout a UI nova pode conversar por alguns segundos com
+      // uma API antiga. Claims legados de capacidade nunca voltam para a tela:
+      // somente o novo contrato explícito de PoC é aceito.
+      if (d.premissas?.sizing === false) {
+        setCenario(d)
+        return
+      }
+      setCenario({
+        premissas: { workload: 'sintético', sizing: false },
+        presets: CONCEPT_PRESETS,
+        ambiente: {
+          cluster: d.ambiente?.cluster || '—',
+          particoes_consumo: d.ambiente?.particoes_consumo || 1,
+          nota: 'Os números mostram apenas esta execução. Não são capacidade do produto nem sizing.',
+        },
+      })
+    })
     call('/streaming/rede').then((d) => d && setRede(d))
   }, [call])
 
   // ── Gerador ──────────────────────────────────────────────────────────────
-  const [tps, setTps] = useState(3472)
+  const [tps, setTps] = useState(500)
   const [gen, setGen] = useState(null)
 
   const tpsTocado = useRef(false)
@@ -143,7 +166,9 @@ export default function Streaming() {
     setGen(data)
     // Enquanto o operador não mexeu no slider, ele reflete o que o backend está
     // de fato rodando (inclusive se outra aba/curl mudou o TPS).
-    if (!tpsTocado.current && data.running && data.tps_alvo) setTps(data.tps_alvo)
+    if (!tpsTocado.current && data.running && data.tps_alvo) {
+      setTps(Math.min(TPS_MAX, Math.max(10, data.tps_alvo)))
+    }
   }, [call])
 
   useEffect(() => {
@@ -153,12 +178,13 @@ export default function Streaming() {
   }, [refreshGen])
 
   const aplicarTps = useCallback(async (valor) => {
+    const tpsSeguro = Math.min(TPS_MAX, Math.max(10, Number(valor) || 10))
     tpsTocado.current = true
-    setTps(valor)
+    setTps(tpsSeguro)
     await call('/streaming/generator/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tps: valor }),
+      body: JSON.stringify({ tps: tpsSeguro }),
     })
     refreshGen()
   }, [call, refreshGen])
@@ -216,6 +242,9 @@ export default function Streaming() {
     const d = await call('/streaming/kafka/status')
     if (d) setKafkaStatus(d)
   }
+  const reiniciarConsumidorKafka = async () => {
+    await call('/streaming/kafka/consumer/restart', { method: 'POST' })
+  }
 
   // ── Coluna 3 — Atlas Stream Processing ───────────────────────────────────
   const [janelas, setJanelas] = useState([])
@@ -236,12 +265,11 @@ export default function Streaming() {
     return () => clearInterval(t)
   }, [call])
 
-  // ── Tradução para números de negócio ────────────────────────────────────
-  const [negocio, setNegocio] = useState(null)
-  const [perfil, setPerfil] = useState(null)
+  // ── Evidências de confiabilidade ─────────────────────────────────────────
   const [oplog, setOplog] = useState(null)
   const [leitura, setLeitura] = useState(null)
   const [dlqResumo, setDlqResumo] = useState(null)
+  const [reconciliacao, setReconciliacao] = useState(null)
   useEffect(() => {
     const tick = async () => {
       const [o, l, d] = await Promise.all([
@@ -256,17 +284,18 @@ export default function Streaming() {
     return () => clearInterval(t)
   }, [call])
   useEffect(() => {
-    const tick = async () => { const d = await call('/streaming/perfil-valores'); if (d) setPerfil(d) }
+    if (!gen?.run_id) {
+      setReconciliacao(null)
+      return undefined
+    }
+    const tick = async () => {
+      const d = await call(`/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
+      if (d) setReconciliacao(d)
+    }
     tick()
-    const t = setInterval(tick, 15000)
+    const t = setInterval(tick, 2000)
     return () => clearInterval(t)
-  }, [call])
-  useEffect(() => {
-    const tick = async () => { const d = await call('/streaming/negocio'); if (d) setNegocio(d) }
-    tick()
-    const t = setInterval(tick, 3000)
-    return () => clearInterval(t)
-  }, [call])
+  }, [call, gen?.run_id])
 
   const aspOk = aspStatus?.estado === 'configurado'
   const injectInvalid = async (quantidade = 1) => {
@@ -275,6 +304,9 @@ export default function Streaming() {
   const reprocessarDlq = async () => {
     const r = await call('/streaming/asp/dlq/reprocessar?limite=1000', { method: 'POST', timeoutMs: 120_000 })
     if (r) { const d = await call('/streaming/asp/dlq/resumo'); if (d) setDlqResumo(d) }
+  }
+  const reiniciarAspCheckpoint = async () => {
+    await call('/streaming/asp/restart-checkpoint', { method: 'POST', timeoutMs: 90_000 })
   }
 
   // ── Reset global ─────────────────────────────────────────────────────────
@@ -288,54 +320,37 @@ export default function Streaming() {
   }
 
   const tpsDesvio = gen?.tps_alvo ? Math.round(Math.abs(gen.tps_medido - gen.tps_alvo) / gen.tps_alvo * 100) : null
-  const presets = cenario?.presets || []
-  const der = cenario?.derivados
+  const presets = (cenario?.presets || CONCEPT_PRESETS)
+    .filter((p) => p.tps >= 10 && p.tps <= TPS_MAX)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
       {/* Enredo + escala do cenário */}
-      <div className="card" style={{ padding: '18px 20px' }}>
-        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>Três formas de reagir a uma mudança — no volume do PIX</div>
-        <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.65 }}>
+      <div className="card str-hero">
+        <div className="str-hero-copy">
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>Uma execução PIX, três capacidades complementares</div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-primary)', lineHeight: 1.55 }}>
           Um único gerador escreve em <code>pix.transacoes</code> contra este cluster Atlas. As três colunas consomem
           <strong> a mesma mudança</strong> por caminhos diferentes: dentro da aplicação (Change Streams), no barramento
           (MongoDB Kafka Connector) e num serviço gerenciado com janela e estado (Atlas Stream Processing).
-          A pergunta não é qual é “melhor” — é <em>qual pergunta cada um responde</em>, e se cada um aguenta o seu volume.
-        </div>
-
-        {der && (
-          <div className="str-escala">
-            {[
-              { k: 'PIX Brasil', v: fmtEscala(cenario.premissas.pix_brasil_tx_dia), s: 'transações/dia' },
-              { k: 'Inter (10%)', v: fmtEscala(der.inter_tx_dia), s: 'transações/dia' },
-              { k: 'Média Inter', v: `${num(der.inter_tps_medio)}`, s: 'TPS sustentado' },
-              { k: 'Pico Inter', v: `${num(der.inter_tps_pico)}`, s: 'TPS (3× a média)' },
-            ].map((c) => (
-              <div key={c.k} className="str-escala-c">
-                <div className="str-escala-k">{c.k}</div>
-                <div className="str-escala-v">{c.v}</div>
-                <div className="str-escala-s">{c.s}</div>
-              </div>
-            ))}
+          A prova é de <strong>integridade, retomada, fan-out, janela e tratamento de erro</strong> — não de sizing.
           </div>
-        )}
-
-        <div style={{ marginTop: 12, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          📐 <strong>Premissas, não medições:</strong> o volume diário do PIX está na ordem de grandeza divulgada pelo BCB;
-          a participação de 10% do Inter e o fator de pico de 3× são <em>premissas deste cenário</em> — servem de régua.
-          O que a demo <strong>mede</strong> é o TPS que este cluster realmente sustenta, no painel abaixo.
+          <div className="str-workload-note">
+            Workload sintético, mecanismos reais · <code>run_id</code> reconcilia os três caminhos · TPS e latência valem apenas para esta execução.
+          </div>
         </div>
-        <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          🔎 <strong>Workload sintético, métricas reais:</strong> as transações são geradas pela PoV; cada número operacional
-          vem de uma operação real contra o Atlas ou o Kafka.
-          Componente não configurado aparece como <em>“não configurado”</em>, com o passo a passo — nunca com dado inventado.
+        <div className="str-env-compact">
+          <div><span>Cluster</span><strong>{cenario?.ambiente?.cluster || '—'}</strong></div>
+          <div><span>ASP</span><strong>{aspStatus?.tier || '—'}</strong></div>
+          <div><span>Cursores</span><strong>{cenario?.ambiente?.particoes_consumo || '—'}</strong></div>
+          <div><span>RTT local</span><strong>{rede?.rtt_ms != null ? `${rede.rtt_ms} ms` : '—'}</strong></div>
         </div>
       </div>
 
       {/* Gerador */}
-      <div className="card" style={{ padding: '18px 20px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
+      <div className="card str-generator">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
           <div>
             <div style={{ fontWeight: 700, fontSize: 15 }}>Gerador de transações</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
@@ -367,7 +382,7 @@ export default function Streaming() {
 
         <div className="str-gen-row">
           <label htmlFor="tps" className="str-slider-label">TPS
-            <input id="tps" type="range" min="500" max={TPS_MAX} step={TPS_STEP} value={tps} className="str-slider"
+            <input id="tps" type="range" min="10" max={TPS_MAX} step={TPS_STEP} value={tps} className="str-slider"
               onChange={(e) => {
                 const v = Number(e.target.value)
                 tpsTocado.current = true
@@ -380,42 +395,15 @@ export default function Streaming() {
           </label>
           <div className="str-stats">
             <Stat label="TPS medido" value={num(gen?.tps_medido ?? 0)}
-              sub={tpsDesvio != null && gen?.running ? `${tpsDesvio}% do alvo (${num(gen.tps_alvo)})` : 'gerador parado'}
+              sub={tpsDesvio != null && gen?.running ? `observado nesta execução · alvo ${num(gen.tps_alvo)}` : 'gerador parado'}
               color={gen?.running ? '#00ED64' : undefined} />
-            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub="nesta sessão" />
-            <Stat label="Projeção/dia" value={fmtEscala(gen?.projecao_dia)}
-              sub="TPS medido × 86.400 s" color={gen?.running ? '#00ED64' : undefined} />
-            <Stat label="Do dia do Inter" value={gen?.pct_dia_inter != null ? `${gen.pct_dia_inter}%` : '—'}
-              sub="ritmo atual vs 30 mi/dia" />
+            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub="confirmados pelo Atlas" />
+            <Stat label="Execução" value={gen?.run_id ? gen.run_id.slice(-6).toUpperCase() : '—'}
+              sub="run_id para reconciliação" color={gen?.run_id ? '#00ED64' : undefined} />
+            <Stat label="Objetivo" value="Confiabilidade" sub="sem claim de sizing" />
           </div>
         </div>
       </div>
-
-      {/* Linha de base de rede — sem isto, a latência das colunas é lida como
-          custo do change stream quando é, em boa parte, distância. */}
-      {rede?.rtt_ms != null && (
-        <div className="str-rede">
-          🌐 <strong>RTT desta máquina até o cluster: {rede.rtt_ms} ms</strong> (medido agora, com <code>ping</code> no admin).
-          As latências das três colunas <strong>incluem esse ida-e-volta</strong> — a app roda aqui e o cluster está em
-          outra região. Co-localizando app e cluster, o que sobra é o custo real da entrega, não a distância.
-        </div>
-      )}
-
-      {/* Teto do ambiente — o número alto é do ambiente provisionado, não do produto */}
-      {cenario?.ambiente && (
-        <div className="str-teto">
-          <div className="str-teto-t">⚙️ Ambiente desta PoV — e como ir além</div>
-          <div className="str-teto-g">
-            <div><span className="str-teto-k">Cluster</span><span className="str-teto-v">{cenario.ambiente.cluster}</span></div>
-            <div><span className="str-teto-k">Stream Processing</span><span className="str-teto-v">{aspStatus?.tier || '—'}</span></div>
-            <div><span className="str-teto-k">Partições de consumo</span><span className="str-teto-v">{cenario.ambiente.particoes_consumo}</span></div>
-          </div>
-          <div className="str-teto-n">{cenario.ambiente.nota}</div>
-          {cenario.ambiente.asterisco && (
-            <div className="str-teto-a">{cenario.ambiente.asterisco}</div>
-          )}
-        </div>
-      )}
 
       {/* As três colunas */}
       <div className="str-grid">
@@ -482,10 +470,10 @@ export default function Streaming() {
             </div>
             <div className="str-note">
               Roda <strong>dentro da aplicação</strong>, sem infraestrutura extra. Em compensação, o
-              <strong> resume token é responsabilidade sua</strong>: persistir e retomar dele é o que garante que nada se perca.
-              Um cursor único satura por volta de <strong>5 mil eventos/s</strong>; acima disso o caminho é o mesmo de produção —
-              <strong> particionar o consumo</strong> (aqui, {cenario?.ambiente?.particoes_consumo ?? '—'} cursores, um por partição de conta pagadora),
-              e cada partição retoma pelo seu próprio token.
+              <strong> resume token é responsabilidade sua</strong>. Aqui cada cursor persiste o checkpoint em
+              <code> pix.consumer_checkpoints</code>; falhas transitórias retomam dele e podem reentregar, nunca avançar no escuro.
+              Os {cenario?.ambiente?.particoes_consumo ?? '—'} cursores com filtros disjuntos são uma técnica demonstrativa,
+              não equivalem a partições Kafka nem constituem recomendação de sizing.
             </div>
           </div>
         </div>
@@ -541,6 +529,9 @@ export default function Streaming() {
                   <span className="str-token-l">connectors</span>
                   <code>{kafkaStatus?.connector?.connectors ?? '—'} × 1 task · {kafkaStatus?.particoes_consumo ?? '—'} partições</code>
                 </div>
+                <button className="btn btn-default btn-sm" style={{ width: '100%' }} onClick={reiniciarConsumidorKafka}>
+                  ↻ Reiniciar consumidor pelo offset
+                </button>
                 <div className="str-feed">
                   {kafkaMsgs.length === 0 && <div className="str-empty">Connector RUNNING. Aguardando mensagens no tópico…</div>}
                   {kafkaMsgs.map((m, i) => (
@@ -555,13 +546,14 @@ export default function Streaming() {
             )}
             <div className="str-note">
               O source connector usa <strong>change stream por baixo</strong> — o que ele acrescenta é
-              <strong> gestão de offset</strong> e entrega no barramento. E <code>startup.mode=copy_existing</code>
-              faz o <strong>backfill do histórico</strong> antes de emendar no stream.
+              <strong> gestão de offset</strong> e entrega no barramento. O connector inicia em
+              <code> startup.mode=latest</code> e publica heartbeats; o observador usa um
+              <code> group.id</code> estável e confirma offsets periodicamente.
             </div>
             <div className="str-note">
-              O connector roda <strong>1 task por coleção</strong> (um cursor só), então acima de ~6 mil msg/s
-              ele fica para trás e a latência do tópico cresce — dá para ver no p50 acima. A saída é a mesma
-              da coluna 1: <strong>um connector por partição</strong>, cada um com seu filtro no pipeline.
+              Um connector é suficiente para provar o conceito. Connectors adicionais com filtros disjuntos são
+              apenas um experimento; não são apresentados como partições nativas ou sizing de produção.
+              O ambiente local usa broker único e sem TLS/SASL — HA, ACL e Schema Registry ficam explicitamente fora do escopo.
             </div>
           </div>
         </div>
@@ -595,6 +587,15 @@ export default function Streaming() {
                   <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
                   <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="rejeitados" />
                 </div>
+                {aspStatus?.runtime?.disponivel && (
+                  <div className="str-token">
+                    <span className="str-token-l">checkpoint / watermark</span>
+                    <code>
+                      lag {num(aspStatus.runtime.lag_oplog_s ?? 0)}s · estado {fmtEscala(aspStatus.runtime.state_bytes ?? 0)}B
+                      {aspStatus.runtime.watermark ? ` · ${String(aspStatus.runtime.watermark).slice(11, 19)} UTC` : ''}
+                    </code>
+                  </div>
+                )}
                 {aspStatus?.drenando_backlog ? (
                   <div className="str-alert">
                     ⏳ Processor <strong>drenando backlog</strong> — a última janela fechada tem
@@ -610,6 +611,9 @@ export default function Streaming() {
                   <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1000)}>🧪 1.000</button>
                   <button className="btn btn-default btn-xs" onClick={reprocessarDlq} disabled={!dlqResumo?.total}>
                     ♻️ Reprocessar
+                  </button>
+                  <button className="btn btn-default btn-xs" onClick={reiniciarAspCheckpoint}>
+                    ↻ Restart por checkpoint
                   </button>
                 </div>
                 {dlqResumo?.total > 0 && (
@@ -627,14 +631,15 @@ export default function Streaming() {
                 )}
                 <div style={{ overflowX: 'auto' }}>
                   <table className="lg-table">
-                    <thead><tr><th>UF</th><th>Tipo</th><th>Qtd</th><th>Volume</th><th>Ticket</th></tr></thead>
+                    <thead><tr><th>UF</th><th>Qtd</th><th>Volume</th><th>Valores altos</th><th>Maior</th></tr></thead>
                     <tbody>
                       {janelas.slice(0, 8).map((j, i) => (
                         <tr key={i}>
-                          <td>{j.uf}</td><td>{j.tipo}</td><td>{num(j.qtd)}</td>
+                          <td>{j.uf}</td><td>{num(j.qtd)}</td>
                           {/* forma compacta: a coluna é estreita e o valor cheio era cortado */}
                           <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.volume)}</td>
-                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {num(Math.round(j.ticket ?? 0))}</td>
+                          <td style={{ color: j.alertas_valor_alto ? '#f97316' : undefined }}>{num(j.alertas_valor_alto ?? 0)}</td>
+                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.maior_valor)}</td>
                         </tr>
                       ))}
                       {janelas.length === 0 && <tr><td colSpan={5} className="str-empty">Aguardando a primeira janela fechar (10 s)…</td></tr>}
@@ -654,6 +659,10 @@ export default function Streaming() {
               não de um evento individual: são coisas diferentes de propósito.
             </div>
             <div className="str-note">
+              <strong>Valores altos</strong> é um sinal operacional simples (PIX ≥ R$ 5 mil), não um motor antifraude.
+              Ele prova que o mesmo pipeline pode manter estado de janela e produzir indicadores acionáveis sem mover o fluxo para batch.
+            </div>
+            <div className="str-note">
               O processor faz <code>$merge</code> em <code>pix.metricas_janela</code> e o backend
               <strong> assiste essa coleção com um change stream</strong>: o resultado do ASP chega nesta tela
               pela mecânica da coluna 1. É o fecho das três colunas.
@@ -662,108 +671,63 @@ export default function Streaming() {
         </div>
       </div>
 
-      {/* O que isso significa em dinheiro — o painel para quem não é de plataforma */}
-      {negocio && (
-        <div className="card" style={{ padding: '18px 20px' }}>
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>O que isso significa para o negócio</div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 14 }}>
-            Derivado dos números medidos acima, ao vivo — não são estimativas de catálogo.
+      {/* Prova de integridade da execução, sem extrapolar capacidade */}
+      <div className="card" style={{ padding: '18px 20px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Reconciliação ponta a ponta</div>
+            <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 3 }}>
+              {reconciliacao?.run_id
+                ? <>execução <code>{reconciliacao.run_id}</code></>
+                : 'Inicie o gerador para criar uma execução identificável.'}
+            </div>
           </div>
-          <div className="str-neg">
-            <div className="str-neg-c">
-              <div className="str-neg-k">Custo por milhão de transações</div>
-              <div className="str-neg-v">
-                {negocio.custo_por_milhao_usd != null
-                  ? `US$ ${negocio.custo_por_milhao_usd.toLocaleString('pt-BR', { minimumFractionDigits: 3 })}`
-                  : '—'}
+          {reconciliacao?.final && (
+            <span className={`badge ${reconciliacao.final === 'reconciliado' ? 'badge-green' : 'badge-yellow'}`}>
+              {reconciliacao.final === 'reconciliado' ? '✓ reconciliado' : '◌ drenando'}
+            </span>
+          )}
+        </div>
+        {reconciliacao?.fonte && (
+          <div className="str-neg" style={{ marginTop: 14 }}>
+            {[
+              ['Fonte Atlas', reconciliacao.fonte.inseridas, 0, true],
+              ['Change Streams', reconciliacao.change_streams.unicos, reconciliacao.change_streams.pendentes, reconciliacao.change_streams.reconciliado],
+              ['Kafka', reconciliacao.kafka.unicos, reconciliacao.kafka.pendentes, reconciliacao.kafka.reconciliado],
+              ['ASP + DLQ', reconciliacao.asp.contabilizadas, reconciliacao.asp.pendentes, reconciliacao.asp.reconciliado],
+            ].map(([label, value, pending, ok]) => (
+              <div className="str-neg-c" key={label}>
+                <div className="str-neg-k">{label}</div>
+                <div className="str-neg-v" style={ok ? { color: '#00ED64' } : undefined}>{num(value)}</div>
+                <div className="str-neg-s">{ok ? 'contagem fechada' : `${num(pending)} ainda pendente(s)`}</div>
               </div>
-              <div className="str-neg-s">
-                {negocio.custo?.cluster_tier} (US$ {negocio.custo.cluster_usd_hora}/h)
-                {negocio.custo_inclui_asp
-                  ? ` + ${negocio.custo.asp_tier} (US$ ${negocio.custo.asp_usd_hora}/h)`
-                  : ' · ASP parado, fora da conta'}
+            ))}
+            <div className="str-neg-c">
+              <div className="str-neg-k">Sinais de valor alto</div>
+              <div className="str-neg-v" style={reconciliacao.asp.alertas_valor_alto ? { color: '#f97316' } : undefined}>
+                {num(reconciliacao.asp.alertas_valor_alto)}
               </div>
+              <div className="str-neg-s">produzidos pelo ASP nas janelas</div>
             </div>
             <div className="str-neg-c">
-              <div className="str-neg-k">Janela de reação</div>
-              <div className="str-neg-v">{negocio.latencia_reacao_ms != null ? `${negocio.latencia_reacao_ms} ms` : '—'}</div>
-              <div className="str-neg-s">do PIX cair até o antifraude poder agir (p50)</div>
-            </div>
-            <div className="str-neg-c">
-              <div className="str-neg-k">Fluxo financeiro</div>
-              <div className="str-neg-v">R$ {fmtEscala(negocio.reais_por_segundo)}<span className="str-neg-u">/s</span></div>
-              <div className="str-neg-s">ticket médio real × TPS medido</div>
-            </div>
-            <div className="str-neg-c">
-              <div className="str-neg-k">Em trânsito na janela</div>
-              <div className="str-neg-v">R$ {fmtEscala(negocio.valor_em_transito_brl)}</div>
-              <div className="str-neg-s">valor que atravessa o pipeline a cada janela de reação</div>
-            </div>
-            <div className="str-neg-c">
-              <div className="str-neg-k">Reconciliações evitadas</div>
-              <div className="str-neg-v" style={{ color: negocio.reconciliacoes_evitadas ? '#00ED64' : undefined }}>
-                {num(negocio.reconciliacoes_evitadas)}
-              </div>
-              <div className="str-neg-s">
-                {negocio.reconciliacoes_evitadas
-                  ? 'eventos recuperados na queda — sem resume token, viram conferência manual'
-                  : `no ritmo atual, uma queda de 3 s deixaria ${num(negocio.reconciliacoes_potenciais_3s)} eventos para reconciliar à mão`}
-              </div>
-            </div>
-            <div className="str-neg-c">
-              <div className="str-neg-k">Consulta sob carga</div>
+              <div className="str-neg-k">Consulta por endToEndId</div>
               <div className="str-neg-v" style={leitura?.p50 != null ? { color: '#00ED64' } : undefined}>
                 {leitura?.p50 != null ? fmtMs(leitura.p50) : '—'}
               </div>
-              <div className="str-neg-s">
-                {leitura?.consultas
-                  ? `p95 ${fmtMs(leitura.p95)} · ${num(leitura.consultas)} consultas por endToEndId enquanto grava (inclui RTT)`
-                  : 'buscando uma transação enquanto o cluster grava'}
-              </div>
-            </div>
-            <div className="str-neg-c">
-              <div className="str-neg-k">Sistemas para operar</div>
-              <div className="str-neg-v">{negocio.sistemas_com_mongo}<span className="str-neg-u"> vs {negocio.sistemas_sem_mongo}</span></div>
-              <div className="str-neg-s">o aviso já vem do banco: sem broker e sem processo de sync</div>
+              <div className="str-neg-s">{leitura?.p95 != null ? `p95 ${fmtMs(leitura.p95)}` : 'aguardando execução'}</div>
             </div>
           </div>
-          {perfil?.medido?.amostra > 0 && (
-            <div className="str-perfil">
-              <div className="str-perfil-t">
-                Perfil dos valores — <strong>medido</strong> com <code>$percentile</code> sobre {num(perfil.medido.amostra)} transações da coleção
-              </div>
-              <div className="str-perfil-g">
-                {[
-                  ['mediana', perfil.medido.mediana, 'metade das transações abaixo disso'],
-                  ['média', perfil.medido.media, 'puxada pela cauda, bem acima da mediana'],
-                  ['p90', perfil.medido.p90, '9 em cada 10 abaixo'],
-                  ['p99', perfil.medido.p99, 'a cauda que concentra o volume'],
-                ].map(([k, v, sub]) => (
-                  <div key={k} className="str-perfil-c">
-                    <div className="str-perfil-k">{k}</div>
-                    <div className="str-perfil-v">R$ {fmtBRL(v)}</div>
-                    <div className="str-perfil-s">{sub}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="str-perfil-n">
-                É por isso que ticket médio sozinho engana: a <strong>mediana é ~6× menor que a média</strong>.
-                A composição ({perfil.premissa.tipos.map(t => `${t.tipo} ${t.peso_pct}%`).join(' · ')}) e as
-                faixas de valor são <strong>premissas calibradas</strong> (perfil <code>{perfil.premissa.perfil}</code>) —
-                os percentis acima são medidos. Trocar por dados reais do cliente é mudar uma tabela.
-              </div>
-            </div>
-          )}
-
-          <div style={{ marginTop: 12, fontSize: 11.5, color: 'var(--text-secondary)', lineHeight: 1.55 }}>
-            📐 <strong>O que é medido e o que é premissa:</strong> {negocio.premissas.nota} Custo considerado: US$ {negocio.premissas.custo_ambiente_usd_hora}/h.
-          </div>
+        )}
+        <div className="str-note" style={{ marginTop: 12 }}>
+          Pare o gerador e aguarde a janela fechar: o estado final só fica verde quando a mesma execução está
+          contabilizada nos três caminhos. Durante o fluxo, “pendente” significa backlog observável, não perda.
+          Os contadores de CS/Kafka pertencem ao processo atual da API; Atlas, ASP e DLQ são consultados no banco.
         </div>
-      )}
+      </div>
 
-      {/* Tabela comparativa — sempre visível */}
-      <div className="card" style={{ padding: '18px 20px' }}>
-        <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 12 }}>Qual usar, e quando</div>
+      {/* Referência técnica sob demanda: mantém a narrativa principal compacta. */}
+      <details className="card str-tech-details">
+        <summary>Qual usar, e quando <span>comparar capacidades</span></summary>
         <div style={{ overflowX: 'auto' }}>
           <table className="lg-table">
             <thead>
@@ -779,7 +743,7 @@ export default function Streaming() {
                 <td>Dentro do seu processo</td>
                 <td>Pipeline de agregação no cursor</td>
                 <td>Sem estado</td>
-                <td>Resume token gerido por você</td>
+                <td>Resume token persistido pela aplicação</td>
               </tr>
               <tr>
                 <td><strong style={{ color: '#06b6d4' }}>Kafka Connector</strong></td>
@@ -787,7 +751,7 @@ export default function Streaming() {
                 <td>Kafka Connect</td>
                 <td>Config de connector</td>
                 <td>Sem estado</td>
-                <td>Offsets do Connect</td>
+                <td>Offsets do Connect + consumer group</td>
               </tr>
               <tr>
                 <td><strong style={{ color: '#a855f7' }}>Atlas Stream Processing</strong></td>
@@ -795,12 +759,12 @@ export default function Streaming() {
                 <td>Serviço gerenciado no Atlas</td>
                 <td>Aggregation pipeline</td>
                 <td>Janelas tumbling / hopping</td>
-                <td>Checkpoint gerenciado + DLQ</td>
+                <td>Checkpoint demonstrável + DLQ auditável</td>
               </tr>
             </tbody>
           </table>
         </div>
-      </div>
+      </details>
     </div>
   )
 }

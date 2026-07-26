@@ -7,12 +7,12 @@ import { useApi } from '../hooks/useApi'
 SyntaxHighlighter.registerLanguage('javascript', js)
 
 const TABS = [
-  { key: 'lookup', icon: '🔗', label: '$lookup',             color: '#00ED64' },
-  { key: 'facet',  icon: '📊', label: '$facet',              color: '#06b6d4' },
-  { key: 'union',  icon: '🔀', label: '$unionWith',          color: '#a855f7' },
-  { key: 'group',  icon: '📐', label: '$group + $addFields', color: '#f97316' },
-  { key: 'window', icon: '📈', label: '$setWindowFields',    color: '#00ED64' },
-  { key: 'bucket', icon: '🪣', label: '$bucketAuto',         color: '#f97316' },
+  { key: 'lookup', icon: '🔗', label: 'Produtos + avaliações', operator: '$lookup',          source: 'avaliações', output: 'top produtos enriquecidos', color: '#00ED64' },
+  { key: 'facet',  icon: '📊', label: 'Dashboard em uma query', operator: '$facet',           source: 'produtos em estoque', output: '3 recortes simultâneos', color: '#06b6d4' },
+  { key: 'union',  icon: '🔀', label: 'Feed combinado',         operator: '$unionWith',       source: 'reviews + produtos', output: 'feed unificado', color: '#a855f7' },
+  { key: 'group',  icon: '📐', label: 'Métricas por categoria', operator: '$group',           source: 'produtos em estoque', output: 'KPIs por categoria', color: '#f97316' },
+  { key: 'window', icon: '📈', label: 'Ranking e média móvel',  operator: '$setWindowFields', source: 'top eletrônicos', output: 'ranking por marca', color: '#00ED64' },
+  { key: 'bucket', icon: '🪣', label: 'Faixas de preço',        operator: '$bucketAuto',      source: 'produtos em estoque', output: 'distribuição automática', color: '#f97316' },
 ]
 
 const CODE = {
@@ -361,9 +361,18 @@ export default function Aggregations() {
             fontWeight:  tab === t.key ? 700 : 400,
             background:  tab === t.key ? `${t.color}12` : undefined,
           }}>
-            {t.icon} {t.label}
+            <span>{t.icon} {t.label}</span>
+            <code className="agg-tab-op">{t.operator}</code>
           </button>
         ))}
+      </div>
+
+      <div className="agg-flow" aria-label="Fluxo da agregação selecionada">
+        <div><span className="agg-step">1</span><strong>Fonte</strong><small>{activeTab.source}</small></div>
+        <span className="agg-arrow" aria-hidden="true">→</span>
+        <div><span className="agg-step">2</span><strong>Pipeline</strong><code>{activeTab.operator}</code></div>
+        <span className="agg-arrow" aria-hidden="true">→</span>
+        <div><span className="agg-step">3</span><strong>Resultado</strong><small>{activeTab.output}</small></div>
       </div>
 
       {/* Feature card */}
@@ -412,6 +421,12 @@ export default function Aggregations() {
               <TableResults data={res} cols={TABLE_COLS[tab]} />
             </div>
           )}
+        </div>
+      )}
+      {!res && (
+        <div className="agg-empty-state">
+          <span>▷</span>
+          <div><strong>Resultado ainda não materializado</strong><small>Execute a pipeline para provar o resultado com dados reais do cluster.</small></div>
         </div>
       )}
     </div>
