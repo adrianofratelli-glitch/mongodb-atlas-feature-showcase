@@ -6,7 +6,7 @@ React 18 + Vite (frontend/, :5174)
    │  EventSource /api/streaming/* (SSE)
    ▼
 FastAPI (backend/main.py, :8002)
-   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.* and pix.*)
+   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* and geo.*)
    ├─ requests ────────────► Atlas Admin API v2      (Online Archive only)
    ├─ requests ────────────► Kafka Connect REST      (:8083, Streaming column 2)
    └─ aiokafka (optional) ─► Redpanda / Kafka broker (:19092, Streaming column 2)
@@ -46,12 +46,13 @@ are reachable from `EventSource`, which cannot send the `X-Demo-Token` header.
 | `/change-streams` | `POST /start`, `POST /trigger`, `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
 | `/transactions` | `GET /status`, `POST /executar`, `POST /reset` |
 | `/streaming` | see below |
+| `/geo` | `GET /status`, `GET /municipios`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
 
 ### `/streaming` (module 07)
 
 One write generator feeds three consumers of the same change. Data lives in
-`pix.transacoes`, `pix.metricas_janela` and `pix.dlq` (`STREAMING_DB` overrides
-the database name).
+`pix.transacoes`, `pix.metricas_janela`, `pix.dlq`, `pix.dlq_audit` and
+`pix.consumer_checkpoints` (`STREAMING_DB` overrides the database name).
 
 **Negócio e operação**
 
@@ -61,38 +62,36 @@ the database name).
 | `GET` | `/streaming/leitura` | Latency of a point lookup by `endToEndId` sampled every 250 ms **while the generator writes**, with p50/p95/p99. Answers the daily operational question the throughput numbers do not. |
 | `GET` | `/streaming/asp/dlq/resumo` | DLQ grouped by rejection reason, with first/last occurrence. |
 | `POST` | `/streaming/asp/dlq/reprocessar` | Fixes the known defect and re-inserts, preserving the original `endToEndId` — running it twice does not duplicate, the unique index blocks it. Idempotency by business key. |
-| `GET` | `/streaming/negocio` | Business translation of the measured metrics: cost per million transactions, reaction window, R$/s in flight, reconciliations avoided, systems to operate. Everything is derived from live measurements; the only premise (list price per hour) is returned separately and labelled. |
+| `GET` | `/streaming/reconciliacao` | Reconciles one finite `run_id`: source documents, unique Change Stream events, unique Kafka messages, ASP aggregates and DLQ/audit. It only reports `reconciliado` after input stops and every path accounts for the same run. |
 
 **Cenário e rede**
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/streaming/cenario` | PIX scale premises (daily volume, Inter's share, peak factor) and the TPS presets derived from them, split into `premissas` and `derivados` so the UI can label them. Nothing here is a measurement. |
+| `GET` | `/streaming/cenario` | Moderate concept presets. Explicitly states that the run is synthetic and not a sizing or product-capacity result. |
 | `GET` | `/streaming/rede` | Median RTT app ↔ cluster, measured with `ping`. Without it the columns' latency reads as change-stream cost when a large part is distance. |
 
 **Generator**
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/streaming/generator/start` | Body `{"tps": 1..20000}`. Starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. Ensures the unique index on `endToEndId` and the TTL index on `ts` (30 min by default, adjusted with `collMod` on whatever TTL index already covers `{ts: 1}`). |
+| `POST` | `/streaming/generator/start` | Body `{"tps": 1..2000}`. Creates a `run_id` and sequence, then starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. The ceiling protects the low-cost demonstration posture; it is not a product limit. |
 | `POST` | `/streaming/generator/stop` | Cancels the task. |
-| `GET` | `/streaming/generator/status` | `running`, `tps_alvo`, **`tps_medido`** (measured over a 5 s sliding window, never the requested value), `inseridos`, `docs_na_colecao`, plus the arithmetic projection `projecao_dia` and `pct_dia_inter` / `pct_dia_brasil`. |
-| `POST` | `/streaming/reset` | Stops the generator, clears the three collections, zeroes all counters and broadcasts a `reset` event. Above `DROP_ACIMA_DE` (300k docs) it drops and recreates `transacoes` instead of deleting document by document — minutes become seconds — stopping and restarting the ASP processor around the drop; the change-stream workers detect the now-invalid resume token and reopen fresh. Returns `via_drop`, `asp_reiniciado` and `restantes`. |
+| `GET` | `/streaming/generator/status` | `run_id`, `running`, `tps_alvo`, **`tps_medido`**, `inseridos` and collection state. TPS describes this run only. |
+| `POST` | `/streaming/reset` | Stops the generator, clears source, windows, DLQ and DLQ audit, resets in-memory evidence and broadcasts `reset`. With `?finalizar=true`, it first waits for ASP to reach `STOPPED`, also removes application checkpoints and does not restart ASP/Kafka. `overview down` follows with a direct scoped cleanup before pausing the cluster. |
 
 **Column 1 — Change Streams**
 
-Consumption is **partitioned**: one `watch()` cursor and one thread per
-partition (`STREAMING_CS_PARTICOES`, default 10), each filtering
-`fullDocument.particao` — a value the generator derives from the payer, the way
-a bank would partition by account. A single cursor saturates around 5,000
-events/s; ten partitions track ~10,000 events/s on the same laptop. Each
-partition carries its own resume token, and the drop/resume button drops them
-all so every partition recovers from its own token.
+The PoV can open multiple `watch()` cursors with disjoint filters. This is a
+demonstration technique, not native partitioning or a sizing recommendation.
+Each cursor persists its resume token in `pix.consumer_checkpoints`. Transient
+errors retain the checkpoint; only a confirmed `ChangeStreamHistoryLost`
+condition discards it.
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/streaming/changestream` | **SSE.** One `collection.watch()` cursor per partition (`[{$match: {operationType: "insert"}}]`, `full_document="updateLookup"`) broadcast to all subscribers. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries the end-to-end `latency_ms` (document `ts` vs receipt), the truncated resume token and the `recuperado` flag. |
-| `POST` | `/streaming/changestream/drop-resume` | Closes the cursor, waits 3 s while the generator keeps writing, reopens with `resume_after(<resume token>)`. Events whose `ts` precedes the reopen are flagged `recuperado` — the proof that nothing was lost. |
+| `GET` | `/streaming/changestream` | **SSE.** One `collection.watch()` cursor per demonstration partition (`[{$match: {operationType: "insert"}}]`) broadcasts to all subscribers. Because the pipeline only accepts inserts, it reads `fullDocument` from the event without `updateLookup`. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries end-to-end `latency_ms`, the truncated resume token and the `recuperado` flag. |
+| `POST` | `/streaming/changestream/drop-resume` | Closes the cursor, waits 3 s while the generator keeps writing, and reopens with `resume_after(<persisted resume token>)`. Events whose `ts` precedes the reopen are marked `recuperado`; the reconciliation endpoint then verifies the accounting instead of inferring “zero loss” from animation alone. |
 | `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, **`duplicados`**, `token`, plus `eventos_s` and the p50/p95/p99 latency percentiles. Delivery is at-least-once, so duplicates are *measured* over a bounded window of recent `endToEndId`s rather than asserted away. |
 
 **Column 2 — MongoDB Kafka Connector**
@@ -102,22 +101,45 @@ all so every partition recovers from its own token.
 | `GET` | `/streaming/kafka` | **SSE** of messages consumed from `atlas.pix.transacoes`, with partition, offset and the Atlas-insert → topic-arrival `latency_ms`. `aiokafka` is imported lazily: without the dependency or the broker, the stream emits `{"type": "status", "estado": "nao_configurado"}` and the UI renders the setup instructions. |
 | `GET` | `/streaming/kafka/status` | Aggregated state of every `atlas-pix-source*` connector, **downgraded by task health**: a connector reporting `RUNNING` with every task `FAILED` is reported as `FAILED` (`DEGRADADO` when only some failed), because the task is what moves data. Plus message count and current offset. |
 | `POST` | `/streaming/kafka/restart` | Restarts connector and tasks. A task killed by a network blip or a cluster restart never recovers on its own while the connector keeps claiming `RUNNING`. |
+| `POST` | `/streaming/kafka/consumer/restart` | Restarts the UI observer with the same `group.id`, demonstrating recovery from committed offsets and exposing re-deliveries to reconciliation. |
 
 **Column 3 — Atlas Stream Processing**
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/streaming/asp` | **SSE** of closed windows and DLQ documents. The backend does not query the SPI: it watches `pix.metricas_janela` and `pix.dlq` with change streams, so the ASP result reaches the screen through the mechanics of column 1. |
-| `GET` | `/streaming/asp/status` | `configurado` / `nao_configurado` — the real processor state read with `listStreamProcessors` on the SPI, not just connectivity — plus window/DLQ counts, the totals the processor has aggregated (`transacoes_agregadas`, `volume_agregado`) and the pipeline as a code block for the slide. |
+| `GET` | `/streaming/asp/status` | Real state plus `getStreamProcessorStats`: input/output/DLQ, oplog lag, watermark, state size, latency and maximum operator memory when available. |
+| `POST` | `/streaming/asp/restart-checkpoint` | Stops the named processor, waits for `STOPPED`, then starts it normally so ASP resumes from its managed checkpoint. It never drops/recreates the processor. |
 | `POST` | `/streaming/asp/inject-invalid` | `?quantidade=N` (up to 5,000) inserts documents violating the expected schema in four different ways, so the DLQ shows distinct reasons; `$validate` routes them to the DLQ instead of failing the processor. Partial failures are tolerated and reported. Returns 409 when ASP is not configured. |
 | `GET` | `/streaming/asp/dlq` | Last DLQ documents. |
 | `GET` | `/streaming/asp/janelas` | Last closed windows straight from the collection the processor writes. |
 
-**Sampling.** At Inter-peak load the columns produce thousands of events per
-second — more than a browser tab can render. The SSE feed is therefore a
+**Sampling.** A browser should not render every streaming event. The SSE feed is therefore a
 *sample* (one frame every 120 ms), labelled as such in the UI, while counters
 and percentiles are computed in the worker over **100% of the events**. A
 recovered event is never sampled out: it is the proof the drop/resume works.
+
+### `/geo` (module 08)
+
+Its own database (`geo`, override with `GEO_DB`), a single collection
+`geo.transacoes`, seeded by `scripts/seed_geo.py`. No other module reads or
+writes it.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/geo/status` | Document count, the index list read from the collection, and whether the Atlas Search index exists. Nothing is hard-coded in the UI. |
+| `GET` | `/geo/municipios` | Municipalities present in the dataset with a representative point, so the UI can centre a query without shipping a coordinate table to the browser. Cached in memory; the list only changes when the seed runs again. |
+| `POST` | `/geo/explain-compare` | The same `$geoWithin` (`$centerSphere`) query explained twice: hinted at `cliente_status_local_idx` (equality fields first, geo last) and at `local_2dsphere_idx`. Returns winning stage, index used, `totalKeysExamined`, `totalDocsExamined`, `nReturned` and `executionTimeMillis` for each. If the measurement contradicts the didactic note, the measurement is what the screen shows. |
+| `GET` | `/geo/impossible-travel` | `$setWindowFields` partitioned by `clienteId`, sorted by `ts`, `$shift` pulling the previous timestamp and coordinates, haversine expressed in `$degreesToRadians`/`$sin`/`$cos`/`$asin`/`$sqrt`. No `$function`, and no document leaves the cluster for the calculation. Returns the executed pipeline alongside the pairs. |
+| `POST` | `/geo/search` | One `$search` with `compound`: `must` fuzzy text on `estabelecimento.nome`, `filter` with `geoWithin` (circle, metres) and an optional category `in`. `$searchMeta` produces the category/UF facets. Distance from the centre is recomputed in the pipeline so the requested radius is verifiable without trusting the operator. Without the index the endpoint returns `estado: "nao_configurado"` rather than empty results. |
+
+The geo checks join `/preflight` but never fail it: the module is optional, the
+same way Kafka and ASP are.
+
+The map is rendered as inline SVG with a hand-written linear projection over the
+Brazilian bounding box — no Leaflet, no Mapbox, no tiles, no new frontend
+dependency. The page renders completely with external network blocked, which is
+the actual constraint in an auditorium.
 
 ### SSE conventions
 
@@ -132,8 +154,17 @@ rather than blocking the producer.
 
 - `src/App.jsx` — shell, sidebar, hash routing (`/#agg`, `/#streams`, `/#tx`, `/#streaming`).
 - `src/pages/` — one component per module; `src/components/` — `DemoFlow`, `QueryBlock`.
-- `src/hooks/useApi.js` — fetch wrapper adding `X-Demo-Token`; SSE uses `EventSource` directly (`useSse` in `pages/Streaming.jsx`).
+- `src/hooks/useApi.js` — fetch wrapper adding `X-Demo-Token`. Expected aborts
+  caused by module unmount are silent; timeouts and real failures still dispatch
+  a global error. `App.jsx` deduplicates identical error toasts for eight
+  seconds. SSE uses `EventSource` directly (`useSse` in
+  `pages/Streaming.jsx`).
 - State lives only in React state — no `localStorage`/`sessionStorage`.
+
+The UI follows a proof-first hierarchy documented in
+`docs/SESSION_HANDOFF.md`: Streaming exposes the three paths in the first
+laptop viewport, Aggregations uses `Source → Pipeline → Result`, and large code
+definitions are progressively disclosed.
 
 ## External infrastructure
 

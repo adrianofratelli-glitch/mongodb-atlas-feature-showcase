@@ -1,6 +1,6 @@
 # MongoDB Atlas Feature Showcase
 
-Seven MongoDB Atlas capabilities, each with a page you can click through while
+Eight MongoDB Atlas capabilities, each with a page you can click through while
 they run against a real cluster. Build an index and watch reads keep flowing.
 Break a change stream and watch it resume from its token. Roll back a
 transaction and see the documents go back to where they were.
@@ -23,8 +23,12 @@ Built with FastAPI and React 18. The UI is in Portuguese (pt-BR).
 | Change Streams | An ordered feed of inserts, updates and deletes, with `fullDocumentBeforeChange` for the previous version and resume tokens to pick up where a consumer left off. |
 | ACID Transactions | Multi-document, multi-collection transactions through the `with_transaction` callback API, stepped through on screen, including a rollback. |
 | Streaming | Three ways to react to a change, side by side on the same writes: Change Streams, the MongoDB Kafka Connector, and Atlas Stream Processing doing windowed aggregation in the cloud. |
+| Geo | `2dsphere` inside a compound index next to business fields, impossible-travel detection with `$setWindowFields` + haversine in pure MQL, and one `$search` combining text relevance, a geo filter and facets. |
 
 Every module is deep-linkable through the URL hash (`/#agg`, `/#streams`, `/#tx`, and so on).
+
+For the current implementation decisions, trade-offs and validation baseline,
+see [`docs/SESSION_HANDOFF.md`](docs/SESSION_HANDOFF.md).
 
 ## The Streaming module
 
@@ -106,22 +110,26 @@ cd mongodb-atlas-feature-showcase
 ### Quick start, once configured
 
 After the setup below has been done once, a whole demo environment is one
-command. `bin/overview` resumes the Atlas cluster, starts the Atlas Stream
-Processing processor, brings up local Kafka, starts the backend and frontend,
-and opens the browser:
+command. `bin/overview` resumes the Atlas cluster, removes residue from a
+previous interrupted run, creates a fresh Atlas Stream Processing processor,
+starts local Kafka, registers the MongoDB source connector, starts the backend
+and frontend, and opens the browser:
 
 ```bash
 ./bin/overview          # up
-./bin/overview down     # pause cluster + stop processor: no compute cost
+./bin/overview down     # stop, clean PIX data/Kafka, then pause the environment
 ./bin/overview status
 ./bin/overview logs     # tail the backend log
 ```
 
 Symlink it for a one-word command: `ln -sf "$(pwd)/bin/overview" /opt/homebrew/bin/overview`.
 
-**Run `overview down` when you are finished.** A running stream processor bills
-per second whether or not anyone is watching. The cloud half of this is
-`scripts/ambiente.sh {up,down,status}`, which reads its credentials from
+**Run `overview down` when you are finished.** It stops the generator and ASP
+before removing `pix.transacoes`, windows, DLQ, audit, application checkpoints,
+the connector, the demo Kafka topic and its consumer group. It then pauses the
+cluster and stops Kafka. A running stream processor bills per second whether or
+not anyone is watching. The cloud half is
+`scripts/ambiente.sh {up,down,status}`, which reads credentials from
 `backend/.env` and can be called on its own.
 
 ### 2. Backend
@@ -254,10 +262,13 @@ screen through the same mechanism as column 1.
 Tear everything down with `./scripts/teardown-streaming.sh` (add `--volumes` to
 drop the cached plugin).
 
-**Cleaning up between runs.** `POST /streaming/reset` (the **Reset** button) is
-the real cleanup: it clears `transacoes`, `metricas_janela` and `dlq` and zeroes
-every counter. Above 300k documents it drops and recreates the collection, so
-half a million documents take about 10 seconds instead of timing out.
+**Cleaning up between runs.** `POST /streaming/reset` (the **Reset** button)
+clears the current source, windows, DLQ and audit while keeping the environment
+ready for another run. `POST /streaming/reset?finalizar=true`, used by
+`overview down`, first stops the processor and also removes application
+checkpoints. `scripts/ambiente.sh down` performs a second direct, scoped cleanup
+before pausing the cluster, so an interrupted API call does not leave demo data
+behind.
 
 The 30-minute TTL index on `ts` (`STREAMING_TTL_SEGUNDOS`) is the safety net for
 when you forget to reset, not the main mechanism. The window is deliberately
@@ -315,6 +326,81 @@ The number to actually trust is the reconciliation described above. Throughput
 varies with your laptop, your region and your tier; whether the events all
 arrived does not.
 
+## Geo — setup
+
+The Geo module runs against its own database (`geo`, override with `GEO_DB`), so
+it never touches the `POC` or `pix` collections. Seed it once:
+
+```bash
+python scripts/seed_geo.py            # 2,000 clients × 75 transactions = 150k docs
+python scripts/seed_geo.py --drop     # recreate from scratch
+```
+
+The generator is seeded with a fixed value, so every `endToEndId` is stable and
+the unique index rejects re-inserts: running the seed twice leaves 150k
+documents, not 300k. Points are gaussian clusters around 40 real Brazilian
+municipalities weighted by population — uniformly random coordinates inside the
+country's bounding box look obviously fake on a projector.
+
+Forty clients get a deliberately impossible pair: two transactions roughly five
+minutes and 700+ km apart. Their IDs are written to
+`backend/data/fraud_seeds.json` so the impossible-travel panel has a guaranteed
+result on stage.
+
+Indexes created by the seed:
+
+| Index | Used by |
+|---|---|
+| `cliente_status_local_idx` — `{clienteId: 1, status: 1, local: "2dsphere"}` | Demo A, the compound plan |
+| `local_2dsphere_idx` — `{local: "2dsphere"}` | Demo A, the geo-only plan it is compared against |
+| `cliente_ts_idx` — `{clienteId: 1, ts: 1}` | Demo B, `$setWindowFields` partition + sort |
+| `categoria_local_idx` — `{"estabelecimento.categoria": 1, local: "2dsphere"}` | category-scoped geo queries |
+| `uf_ts_idx` — `{uf: 1, ts: -1}` | regional slicing |
+| `e2e_unq_idx` — unique `{endToEndId: 1}` | seed idempotency |
+
+### The Atlas Search index
+
+Demo C needs one Atlas Search index. Create it with:
+
+```bash
+./scripts/create_search_index_geo.sh
+```
+
+Until it reports `READY`, the search panel renders a "não configurado" notice
+rather than inventing results. The definition it applies:
+
+```json
+{
+  "mappings": {
+    "dynamic": false,
+    "fields": {
+      "estabelecimento": {
+        "type": "document",
+        "fields": {
+          "nome": { "type": "string", "analyzer": "lucene.portuguese" },
+          "categoria": [{ "type": "token" }, { "type": "stringFacet" }]
+        }
+      },
+      "uf": [{ "type": "token" }, { "type": "stringFacet" }],
+      "local": { "type": "geo" }
+    }
+  }
+}
+```
+
+`categoria` and `uf` are indexed twice on purpose: `token` serves the exact
+filter, `stringFacet` serves the `$searchMeta` facet.
+
+### What the module does not claim
+
+The page says this out loud, and so does this README: MongoDB answers
+geospatial *predicates* — is this inside, does it cross, what is nearby. It has
+no geometry algebra (no buffer, union, intersection or area), only WGS84 with
+no reprojection, and no raster, topology or routing. `$geoNear` must be the
+first pipeline stage, and `$vectorSearch`'s `filter` does not accept geospatial
+operators at all. For heavy GIS analysis, PostGIS is the better tool and the
+demo says so.
+
 ## Security model
 
 Some of these demos genuinely destroy things — they drop indexes, change
@@ -360,9 +446,12 @@ responsibility table. The short version:
 ├── bin/overview                 # One command: cloud env + backend + frontend
 ├── scripts/
 │   ├── ambiente.sh              # Atlas cluster + ASP processor on/off
+│   ├── cleanup-streaming-data.py # Scoped removal of collections generated by PIX
 │   ├── kafka-local.sh           # Native Kafka (KRaft) + Connect + Mongo plugin
-│   ├── setup-kafka-connector.sh # Registers the partitioned source connectors
+│   ├── setup-kafka-connector.sh # Registers the source connector
 │   ├── setup-asp.js             # Creates the stream processor (mongosh)
+│   ├── seed_geo.py              # Geo dataset: 150k georeferenced transactions
+│   ├── create_search_index_geo.sh # Atlas Search index for the Geo module
 │   └── teardown-streaming.sh
 ├── backend/
 │   ├── main.py                  # FastAPI app, CORS, health, /preflight, /stats
@@ -378,7 +467,9 @@ responsibility table. The short version:
 │   │   ├── schema_validation.py # JSON Schema collMod demo
 │   │   ├── change_streams.py    # Change stream watcher
 │   │   ├── transactions.py      # ACID multi-document transactions
-│   │   └── streaming.py         # Generator + Change Streams / Kafka / ASP (SSE)
+│   │   ├── streaming.py         # Generator + Change Streams / Kafka / ASP (SSE)
+│   │   └── geo.py               # explain compare, impossible travel, geo + $search
+│   ├── data/                    # uf-independent module data (fraud_seeds.json)
 │   └── tests/                   # pytest; no live cluster required
 ├── frontend/
 │   ├── src/
@@ -414,7 +505,7 @@ python live_monitor.py
 - Several endpoints are deliberately destructive. Point this at a disposable demo
   cluster only.
 - `backend/.env` is gitignored. Never commit real credentials.
-- Tests: `pip install -r backend/requirements-dev.txt && pytest` (63 tests, all
+- Tests: `pip install -r backend/requirements-dev.txt && pytest` (85 tests, all
   unit — Mongo is stubbed, so no cluster is needed). Lint with `ruff check backend`.
 - GitHub Actions builds both applications, runs tests/lint, and audits dependencies.
 
