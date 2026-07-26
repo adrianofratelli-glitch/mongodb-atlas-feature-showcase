@@ -15,6 +15,7 @@ São testes de unidade: não exigem Atlas nem Kafka.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import time
@@ -114,6 +115,28 @@ def test_reset_counters_zera_inseridos():
     g.reset_counters()
     assert g.inserted == 0
     assert g.measured_tps() == 0.0
+
+
+def test_stop_espera_batches_ja_em_voo():
+    """Reset só pode limpar a coleção depois que os insert_many pendentes terminarem."""
+    concluido = False
+
+    async def scenario():
+        nonlocal concluido
+        g = streaming.Generator()
+
+        async def batch_pendente():
+            nonlocal concluido
+            await asyncio.sleep(0.01)
+            concluido = True
+
+        tarefa = asyncio.create_task(batch_pendente())
+        g._inflight.add(tarefa)
+        tarefa.add_done_callback(g._inflight.discard)
+        await g.stop()
+
+    asyncio.run(scenario())
+    assert concluido
 
 
 # ---------------------------------------------------------------------------
@@ -227,6 +250,64 @@ def test_todo_defeito_marca_o_motivo_no_documento():
     assert vistos == nomes
 
 
+class _CursorFake:
+    def __init__(self, docs):
+        self.docs = list(docs)
+
+    def limit(self, limite):
+        self.docs = self.docs[:limite]
+        return self
+
+    def sort(self, *_args):
+        return self
+
+    def __iter__(self):
+        return iter(self.docs)
+
+
+class _CollectionFake:
+    def __init__(self, docs=(), erro_insert=None):
+        self.docs = list(docs)
+        self.erro_insert = erro_insert
+        self.removidos = []
+        self.filtro_find = None
+
+    def find(self, filtro=None, *_args):
+        self.filtro_find = filtro
+        return _CursorFake(self.docs)
+
+    def insert_one(self, _doc):
+        if self.erro_insert:
+            raise self.erro_insert
+
+    def delete_many(self, filtro):
+        self.removidos.extend(filtro["_id"]["$in"])
+
+
+def test_dlq_preserva_item_quando_insert_falha_transitoriamente(monkeypatch):
+    dlq = _CollectionFake([{"_id": 1, "fullDocument": {"endToEndId": "E1"}}])
+    tx = _CollectionFake(erro_insert=streaming.PyMongoError("eleição em andamento"))
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_DLQ: dlq, streaming.COL_TX: tx})
+
+    resultado = streaming._reprocessa_dlq(10)
+
+    assert resultado["falharam"] == 1
+    assert resultado["removidos_da_dlq"] == 0
+    assert dlq.removidos == []
+
+
+def test_dlq_remove_item_quando_indice_confirma_duplicidade(monkeypatch):
+    dlq = _CollectionFake([{"_id": 7, "fullDocument": {"endToEndId": "E7"}}])
+    tx = _CollectionFake(erro_insert=streaming.DuplicateKeyError("duplicado"))
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_DLQ: dlq, streaming.COL_TX: tx})
+
+    resultado = streaming._reprocessa_dlq(10)
+
+    assert resultado["ja_existiam"] == 1
+    assert resultado["removidos_da_dlq"] == 1
+    assert dlq.removidos == [7]
+
+
 # ---------------------------------------------------------------------------
 # Datas vindas do Kafka
 # ---------------------------------------------------------------------------
@@ -296,3 +377,44 @@ def test_derivados_do_cenario_batem_com_as_premissas():
 def test_ttl_e_maior_que_uma_rajada_de_demo():
     """TTL curto faz o deletor concorrer com o pico e encher o oplog."""
     assert streaming.TTL_SECONDS >= 600
+
+
+def test_pipeline_asp_usa_bordas_oficiais_e_configuracao_dinamica():
+    assert 'stream.window.start' in streaming.ASP_PIPELINE_SNIPPET
+    assert 'stream.window.end' in streaming.ASP_PIPELINE_SNIPPET
+    assert 'fullDocument: "required"' not in streaming.ASP_PIPELINE_SNIPPET
+    assert f'db: "{streaming.STREAM_DB}"' in streaming.ASP_PIPELINE_SNIPPET
+
+
+def test_asp_reachable_nao_aceita_outro_processor_started(monkeypatch):
+    class AdminFake:
+        @staticmethod
+        def command(_command):
+            return {"streamProcessors": [{"name": "outro", "state": "STARTED", "tier": "SP10"}]}
+
+    class ClientFake:
+        admin = AdminFake()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(streaming, "ASP_ENABLED", True)
+    monkeypatch.setattr(streaming, "ASP_CONNECTION_STRING", "mongodb://spi")
+    monkeypatch.setattr("pymongo.MongoClient", lambda *_args, **_kwargs: ClientFake())
+
+    ok, detalhe, tier = streaming._asp_reachable()
+
+    assert not ok
+    assert streaming.ASP_PROCESSOR_NAME in detalhe
+    assert tier is None
+
+
+def test_janelas_asp_filtram_duas_horas_e_ordenam(monkeypatch):
+    windows = _CollectionFake([{"window_end": streaming._now()}])
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_WINDOWS: windows})
+
+    resultado = asyncio.run(streaming.asp_janelas(limit=30))
+
+    assert "window_end" in windows.filtro_find
+    assert "$gte" in windows.filtro_find["window_end"]
+    assert resultado["total"] == 1

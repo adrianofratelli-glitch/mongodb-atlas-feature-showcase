@@ -12,8 +12,17 @@ CONNECT_URL="${CONNECT_URL:-http://localhost:8083}"
 CONNECTOR_NAME="${CONNECT_CONNECTOR_NAME:-atlas-pix-source}"
 STREAMING_DB="${STREAMING_DB:-pix}"
 
-echo "▶ Removendo o connector '$CONNECTOR_NAME' (se existir)..."
-curl -fsS -X DELETE "$CONNECT_URL/connectors/$CONNECTOR_NAME" >/dev/null 2>&1 || true
+echo "▶ Removendo connectors '$CONNECTOR_NAME' e '$CONNECTOR_NAME-*' (se existirem)..."
+curl -fsS "$CONNECT_URL/connectors" 2>/dev/null \
+  | python3 -c 'import json,sys
+base=sys.argv[1]
+for name in json.load(sys.stdin):
+    if name == base or name.startswith(base + "-"):
+        print(name)' "$CONNECTOR_NAME" \
+  | while IFS= read -r connector; do
+      curl -fsS -X DELETE "$CONNECT_URL/connectors/$connector" >/dev/null 2>&1 || true
+      echo "   removido: $connector"
+    done || true
 
 echo "▶ Derrubando os containers..."
 if [[ "${1:-}" == "--volumes" ]]; then

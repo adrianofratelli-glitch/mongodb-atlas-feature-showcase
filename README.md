@@ -238,7 +238,7 @@ cluster.
 
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,
-`ASP_PROCESSOR_NAME`, `STREAMING_CS_PARTICOES` (consumer partitions, default 6),
+`ASP_CONNECTION_NAME`, `ASP_PROCESSOR_NAME`, `STREAMING_CS_PARTICOES` (consumer partitions, default 10),
 `STREAMING_TTL_SEGUNDOS`, `TETO_MEDIDO_TPS` (display only), and
 `CUSTO_CLUSTER_USD_HORA` / `CUSTO_ASP_USD_HORA` to override list prices.
 

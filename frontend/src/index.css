@@ -140,7 +140,7 @@ body::after {
 .row        { display: flex; gap: 16px; flex-wrap: wrap; }
 .col        { flex: 1; min-width: 0; }
 .grid-2     { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
-.grid-3     { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.grid-3     { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .grid-auto  { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
 
 /* ── Stat blocks ─────────────────────────────────────────────────────────── */
@@ -220,6 +220,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 
 @media (max-width: 820px) {
   .app-shell-body { flex-direction: column; overflow: visible !important; }
+  .grid-3 { grid-template-columns: 1fr; }
+  .app-header { padding: 0 12px !important; gap: 8px; }
+  .app-header-brand { min-width: 0; }
+  .app-header-status { flex-shrink: 0; gap: 5px !important; }
+  .app-header-docs { display: none; }
   .app-sidebar {
     width: 100% !important; max-height: 310px; border-right: 0 !important;
     border-bottom: 1px solid var(--border-subtle); flex-shrink: 0;
@@ -405,7 +410,14 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   padding: 2px 4px; border-radius: 6px; opacity: .55; transition: opacity .15s, background .15s; }
 .sb-pin:hover { opacity: 1; background: rgba(255,255,255,.06); }
 .sb-item { width: 100%; padding: 11px 18px; border: none; cursor: pointer; text-align: left;
-  display: flex; flex-direction: column; gap: 3; transition: background .15s; }
+  display: flex; flex-direction: column; gap: 3px; transition: background .15s; }
+
+@media (max-width: 820px) {
+  .app-sidebar { width: 100% !important; }
+  .app-sidebar .sb-so-aberta { display: block; }
+  .app-sidebar:not(.aberta) .sb-item { padding: 11px 18px; align-items: flex-start; }
+  .app-sidebar:not(.aberta) .sb-topo { justify-content: space-between; padding: 0 14px 12px; }
+}
 
 /* Painel "para o negócio" — cartões compactos, derivados de medição */
 .str-neg { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }

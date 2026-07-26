@@ -10,7 +10,7 @@ const SCENARIOS = [
   {
     key: 'simples', title: 'Índice Simples', fields: ['categoria'],
     description: 'Índice em campo único para filtros de categoria — base para a maioria das queries',
-    query: `// Desde o 4.2, todo build é "hybrid":\n// não bloqueia leituras nem escritas\ndb.produtos.createIndex(\n  { categoria: 1 }\n)`,
+    query: `// Desde o 4.2, todo build é "hybrid":\n// leituras e escritas seguem durante a maior parte do build\ndb.produtos.createIndex(\n  { categoria: 1 }\n)`,
   },
   {
     key: 'composto', title: 'Índice Composto', fields: ['categoria', '-preco'],
@@ -104,6 +104,11 @@ export default function Reindexacao() {
           return
         }
       }
+      setResult({
+        phase: 'timeout',
+        name: data.index_name,
+        error: 'O acompanhamento expirou após 120 s. O build pode continuar no cluster; consulte o status novamente.',
+      })
     } finally {
       probeStop = true
       await probeLoop
@@ -129,8 +134,8 @@ export default function Reindexacao() {
         <span>ℹ️</span>
         <div>
           <strong>Index build sem downtime</strong> — desde o MongoDB 4.2, todo build de índice usa o processo
-          otimizado (<em>hybrid build</em>): a coleção continua atendendo <strong>leituras e escritas normalmente</strong> durante
-          toda a construção, sem lock. No Atlas, o build acontece no cluster inteiro sem tirar nenhum nó do ar.
+          otimizado (<em>hybrid build</em>): a coleção continua atendendo <strong>leituras e escritas durante a maior parte
+          da construção</strong>. Locks exclusivos curtos ainda ocorrem no início e no fim; não há bloqueio prolongado.
         </div>
       </div>
 
@@ -158,8 +163,8 @@ export default function Reindexacao() {
 
       {result && result.phase && (
         <div className="card" style={{
-          background: result.phase === 'error' ? 'rgba(255,105,96,.08)' : 'rgba(0,237,100,.08)',
-          borderColor: result.phase === 'error' ? 'rgba(255,105,96,.35)' : 'rgba(0,237,100,.3)',
+          background: ['error', 'timeout'].includes(result.phase) ? 'rgba(255,105,96,.08)' : 'rgba(0,237,100,.08)',
+          borderColor: ['error', 'timeout'].includes(result.phase) ? 'rgba(255,105,96,.35)' : 'rgba(0,237,100,.3)',
         }}>
           {result.phase === 'starting' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><span className="spinner" /> Iniciando build…</div>
@@ -192,6 +197,9 @@ export default function Reindexacao() {
           )}
           {result.phase === 'error' && (
             <div>❌ {result.error}</div>
+          )}
+          {result.phase === 'timeout' && (
+            <div>⚠️ {result.error}</div>
           )}
         </div>
       )}

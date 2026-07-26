@@ -33,7 +33,6 @@ const source = {
     connectionName: CONNECTION,
     db: DB,
     coll: 'transacoes',
-    config: { fullDocument: 'required' },
   },
 };
 
@@ -65,11 +64,6 @@ const window = {
           qtd: { $count: {} },
           volume: { $sum: { $toDouble: '$fullDocument.valor' } },
           ticket: { $avg: { $toDouble: '$fullDocument.valor' } },
-          // _stream_meta NAO e acessivel depois do $tumblingWindow: um
-          // $concat com ele retorna null e todos os grupos colidem num
-          // unico _id. As bordas da janela saem dos proprios dados.
-          window_start: { $min: '$fullDocument.ts' },
-          window_end: { $max: '$fullDocument.ts' },
         },
       },
       {
@@ -81,6 +75,15 @@ const window = {
         },
       },
     ],
+  },
+};
+
+// $meta expõe as bordas oficiais depois do estágio de janela. Diferente de
+// $min/$max do timestamp do evento, elas não mudam quando chega dado atrasado.
+const windowBounds = {
+  $set: {
+    window_start: { $meta: 'stream.window.start' },
+    window_end: { $meta: 'stream.window.end' },
   },
 };
 
@@ -102,7 +105,7 @@ const merge = {
   },
 };
 
-const pipeline = [source, onlyInserts, validate, window, shape, merge];
+const pipeline = [source, onlyInserts, validate, window, windowBounds, shape, merge];
 
 const options = {
   dlq: { connectionName: CONNECTION, db: DB, coll: 'dlq' },

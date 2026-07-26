@@ -14,13 +14,16 @@ _state = {
     "events":     [],
     "started_at": None,
     "thread":     None,
+    "generation": 0,
 }
 _state_lock = threading.RLock()
 logger = logging.getLogger("showcase.change_streams")
 
 
-def _append_event(event: dict):
+def _append_event(event: dict, generation: int | None = None):
     with _state_lock:
+        if generation is not None and generation != _state["generation"]:
+            return
         _state["events"].append(event)
         _state["events"] = _state["events"][-250:]
 
@@ -66,7 +69,7 @@ def _resumo(op: str, doc: dict, prev: dict) -> dict:
     return {"texto": op, "detalhe": "", "alerta": False}
 
 
-def _watch_worker():
+def _watch_worker(generation: int):
     try:
         pipeline = [{"$match": {"operationType": {"$in": ["insert", "update", "delete"]}}}]
         with db["transacoes_cs_demo"].watch(
@@ -78,7 +81,7 @@ def _watch_worker():
             deadline = time.time() + 120
             while time.time() < deadline:
                 with _state_lock:
-                    if not _state["active"]:
+                    if not _state["active"] or generation != _state["generation"]:
                         break
                 change = stream.try_next()
                 if change:
@@ -92,7 +95,7 @@ def _watch_worker():
                         "texto":     info["texto"],
                         "detalhe":   info["detalhe"],
                         "alerta":    info["alerta"],
-                    })
+                    }, generation)
                 else:
                     time.sleep(0.15)
     except Exception as e:
@@ -101,10 +104,11 @@ def _watch_worker():
             "ts": datetime.now().strftime("%H:%M:%S"),
             "operation": "ERROR",
             "texto": "Change Stream indisponível", "detalhe": type(e).__name__, "alerta": False,
-        })
+        }, generation)
     finally:
         with _state_lock:
-            _state["active"] = False
+            if generation == _state["generation"]:
+                _state["active"] = False
 
 
 @router.post("/start")
@@ -115,6 +119,8 @@ def start_watch():
         _state["active"] = True
         _state["events"] = []
         _state["started_at"] = datetime.now(timezone.utc).isoformat()
+        _state["generation"] += 1
+        generation = _state["generation"]
     # Recria a coleção limpa: os docs persistidos correspondem a esta simulação.
     # Pre/post images habilitados para o stream entregar o before-image real
     # (fullDocumentBeforeChange) nos updates — base do audit trail.
@@ -129,7 +135,7 @@ def start_watch():
         with _state_lock:
             _state["active"] = False
         raise
-    t = threading.Thread(target=_watch_worker, daemon=True)
+    t = threading.Thread(target=_watch_worker, args=(generation,), daemon=True)
     with _state_lock:
         _state["thread"] = t
     t.start()
@@ -210,6 +216,7 @@ def stop_watch():
     """Para o watcher mas MANTÉM a coleção, para inspeção no Atlas Data Explorer."""
     with _state_lock:
         _state["active"] = False
+        _state["generation"] += 1
         total = len(_state["events"])
     return {"stopped": True, "total_events": total}
 
@@ -219,6 +226,7 @@ def clear_collection():
     """Remove a coleção de demo (limpeza manual após a apresentação)."""
     with _state_lock:
         _state["active"] = False
+        _state["generation"] += 1
     try:
         db["transacoes_cs_demo"].drop()
     except Exception:

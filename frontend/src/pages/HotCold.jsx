@@ -54,7 +54,7 @@ export default function HotCold() {
       <div className="grid-3">
         {[
           { key: 'dist',   icon: '📊', title: 'Distribuição por Ano',  desc: 'Quando foram criados os documentos — base para a política de arquivo', fn: fetchDistribution },
-          { key: 'sim',    icon: '🧮', title: 'Simulação de Arquivo',  desc: '60% dos documentos seriam arquivados com política de 1 ano', fn: fetchSimulation },
+          { key: 'sim',    icon: '🧮', title: 'Simulação de Arquivo',  desc: 'Calcula nos dados atuais qual percentual seria arquivado com política de 1 ano', fn: fetchSimulation },
           { key: 'transp', icon: '🔗', title: 'Query Federada',        desc: 'Pelo endpoint federado, a mesma query retorna hot + cold — sem mudar o código', fn: fetchTransparent },
         ].map(c => (
           <div key={c.key} className="card" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

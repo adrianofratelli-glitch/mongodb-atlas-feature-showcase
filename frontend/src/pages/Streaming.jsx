@@ -326,7 +326,8 @@ export default function Streaming() {
           O que a demo <strong>mede</strong> é o TPS que este cluster realmente sustenta, no painel abaixo.
         </div>
         <div style={{ marginTop: 6, fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-          🔎 <strong>Nada aqui é sintético:</strong> todo número vem de uma operação real contra o Atlas ou o Kafka.
+          🔎 <strong>Workload sintético, métricas reais:</strong> as transações são geradas pela PoV; cada número operacional
+          vem de uma operação real contra o Atlas ou o Kafka.
           Componente não configurado aparece como <em>“não configurado”</em>, com o passo a passo — nunca com dado inventado.
         </div>
       </div>
@@ -370,8 +371,10 @@ export default function Streaming() {
                 const v = Number(e.target.value)
                 tpsTocado.current = true
                 setTps(v)
-                if (gen?.running) aplicarTps(v)
-              }} />
+              }}
+              onPointerUp={(e) => { if (gen?.running) aplicarTps(Number(e.currentTarget.value)) }}
+              onKeyUp={(e) => { if (gen?.running) aplicarTps(Number(e.currentTarget.value)) }}
+              onBlur={(e) => { if (gen?.running) aplicarTps(Number(e.currentTarget.value)) }} />
             <span className="str-slider-v">{num(tps)}</span>
           </label>
           <div className="str-stats">

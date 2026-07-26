@@ -14,7 +14,8 @@ ATLAS_PUBLIC_KEY  = settings.atlas_public_key
 ATLAS_PRIVATE_KEY = settings.atlas_private_key
 ATLAS_PROJECT_ID  = settings.atlas_project_id
 ATLAS_CLUSTER     = settings.atlas_cluster
-ATLAS_BASE        = "https://cloud.mongodb.com/api/atlas/v1.0"
+ATLAS_BASE        = "https://cloud.mongodb.com/api/atlas/v2"
+ATLAS_ACCEPT      = "application/vnd.atlas.2025-03-12+json"
 
 
 class AtlasUnavailable(Exception):
@@ -51,9 +52,11 @@ def _atlas_request(method: str, url: str, **kwargs) -> dict:
             "(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY, ATLAS_PROJECT_ID)."
         )
     try:
+        headers = {"Accept": ATLAS_ACCEPT}
+        headers.update(kwargs.pop("headers", {}))
         resp = requests.request(
             method, url, auth=HTTPDigestAuth(ATLAS_PUBLIC_KEY, ATLAS_PRIVATE_KEY),
-            timeout=15, **kwargs,
+            timeout=15, headers=headers, **kwargs,
         )
     except requests.RequestException as e:
         raise AtlasUnavailable(_atlas_friendly_error(exc=e))
@@ -129,9 +132,9 @@ def archive_simulation():
     hot_count  = round(total * sampled_hot  / sampled)
     cold_count = round(total * sampled_cold / sampled)
     return {
-        "hot":  {"count": hot_count,  "pct": round(hot_count / total * 100, 1) if total else 0, "tier": "Cluster Atlas (NVMe SSD)", "latency": "< 5ms"},
-        "cold": {"count": cold_count, "pct": round(cold_count / total * 100, 1) if total else 0, "tier": "Online Archive (Object Storage)", "latency": "~ 100-300ms"},
-        "savings_estimate": "Redução de ~60-80% no custo de armazenamento para dados históricos",
+        "hot":  {"count": hot_count,  "pct": round(hot_count / total * 100, 1) if total else 0, "tier": "Cluster Atlas", "latency": "latência depende do tier e da região"},
+        "cold": {"count": cold_count, "pct": round(cold_count / total * 100, 1) if total else 0, "tier": "Online Archive (Object Storage)", "latency": "latência depende da consulta federada"},
+        "savings_estimate": "Potencial de redução de storage: valide com região, retenção, compressão e padrão de leitura",
         "transparencia": "Endpoint federado dedicado — uma única query lê hot + cold, sem mudar o código de leitura",
     }
 

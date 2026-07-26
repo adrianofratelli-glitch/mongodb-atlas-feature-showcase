@@ -120,7 +120,7 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
       {/* ── Top nav (sticky, blurred) ── */}
-      <header style={{
+      <header className="app-header" style={{
         position: 'sticky', top: 0, zIndex: 50,
         background: 'rgba(0,30,43,.92)', backdropFilter: 'blur(16px)',
         padding: '0 28px',
@@ -129,7 +129,7 @@ export default function App() {
         borderBottom: '1px solid var(--border-subtle)',
       }}>
         {/* Logo + title */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="app-header-brand" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <MongoDBLogo size={26} />
           <div style={{ borderLeft: '1px solid rgba(255,255,255,.12)', paddingLeft: 12 }}>
             <div style={{ color: '#fafafa', fontWeight: 700, fontSize: 14.5, lineHeight: 1.15, letterSpacing: '-.01em' }}>MongoDB Atlas</div>
@@ -142,7 +142,7 @@ export default function App() {
         </div>
 
         {/* Right side */}
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="app-header-status" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <span className={`badge ${cluster?.aquecido === false ? 'badge-yellow' : 'badge-green'}`}
             title={cluster?.autoscaling?.ativo
               ? `Auto-scaling ${cluster.autoscaling.min}→${cluster.autoscaling.max}`
@@ -153,7 +153,7 @@ export default function App() {
             title={preflight?.ready ? 'Pré-voo concluído' : 'Verifique o diagnóstico no menu lateral'}>
             {preflight?.ready ? '● Pronto' : '● Verificar'}
           </span>
-          <span className="badge badge-gray">
+          <span className="badge badge-gray app-header-docs">
             {stats ? `${fmtCount(stats.produtos + stats.avaliacoes)} docs · Atlas cluster` : 'Atlas cluster'}
           </span>
         </div>

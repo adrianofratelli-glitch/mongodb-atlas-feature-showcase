@@ -35,7 +35,7 @@ from bson import Decimal128
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from pymongo.errors import BulkWriteError, PyMongoError
+from pymongo.errors import BulkWriteError, DuplicateKeyError, PyMongoError
 
 from database import client
 from settings import settings
@@ -54,6 +54,7 @@ KAFKA_BROKERS = os.getenv("KAFKA_BROKERS", "localhost:19092").strip()
 ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
+ASP_CONNECTION_NAME = os.getenv("ASP_CONNECTION_NAME", "atlasCluster").strip() or "atlasCluster"
 # Só para exibição: o que está provisionado nesta PoV.
 CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
 # Preço de lista do ambiente, US$/hora. Premissa editável: entra na conta de
@@ -98,7 +99,7 @@ TETO_MEDIDO_TPS = int(os.getenv("TETO_MEDIDO_TPS", "9500"))
 TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "1800"))
 PURGE_TIMEOUT_MS = 180_000
 # Partições do consumo do change stream (um cursor + uma thread por partição).
-CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "6")))
+CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "10")))
 # Amostragem do feed SSE (contadores e percentis seguem cobrindo 100%).
 FEED_INTERVALO_S = 0.12
 METRICAS_INTERVALO_S = 0.5
@@ -268,12 +269,13 @@ class Meter:
         self._lock = threading.Lock()
 
     def record(self, latency_ms: float | None) -> None:
-        # Sem lock no caminho quente: cada meter tem um único produtor e
-        # deque.append é atômico. Aos milhares de eventos por segundo, pegar um
-        # lock por evento aparece no perfil. snapshot() continua sob lock.
-        self._marcas.append(time.monotonic())
-        if latency_ms is not None:
-            self._lat.append(latency_ms)
+        # record(), snapshot() e reset() podem vir de threads diferentes. O
+        # mesmo lock evita iterar/ordenar um deque enquanto outro produtor o
+        # altera; o trecho crítico contém apenas dois appends.
+        with self._lock:
+            self._marcas.append(time.monotonic())
+            if latency_ms is not None:
+                self._lat.append(latency_ms)
 
     def reset(self) -> None:
         with self._lock:
@@ -416,6 +418,7 @@ class Generator:
         self._recent: list[tuple[float, int]] = []   # (monotonic, docs) p/ TPS medido
         self._start_mono: float | None = None
         self._lock = threading.Lock()                # _recent/_inserted são tocados pelas threads de insert
+        self._inflight: set[asyncio.Task] = set()
 
     @property
     def running(self) -> bool:
@@ -461,6 +464,11 @@ class Generator:
                 await task
             except asyncio.CancelledError:
                 pass
+        # asyncio.to_thread não interrompe um insert_many já iniciado. Esperar
+        # os batches evita que /reset apague a coleção e um insert atrasado
+        # volte a preenchê-la logo depois.
+        if self._inflight:
+            await asyncio.gather(*list(self._inflight), return_exceptions=True)
         self.tps_alvo = 0
 
     def reset_counters(self) -> None:
@@ -495,22 +503,21 @@ class Generator:
 
     async def _run(self) -> None:
         carry = 0.0
-        inflight: set[asyncio.Task] = set()
         next_tick = time.monotonic()
         while True:
             carry += self.tps_alvo * self.TICK_S
             batch_size = int(carry)
             carry -= batch_size
             if batch_size > 0:
-                if len(inflight) >= self.MAX_INFLIGHT:
+                if len(self._inflight) >= self.MAX_INFLIGHT:
                     # Devolve ao próximo tick, mas com TETO: sem isso o carry
                     # cresce sem limite enquanto o Atlas não acompanha e depois
                     # o gerador dispara uma rajada bem acima do alvo pedido.
                     carry = min(carry + batch_size, self.tps_alvo * self.TICK_S * 2)
                 else:
                     task = asyncio.create_task(self._batch([_new_transacao() for _ in range(batch_size)]))
-                    inflight.add(task)
-                    task.add_done_callback(inflight.discard)
+                    self._inflight.add(task)
+                    task.add_done_callback(self._inflight.discard)
             next_tick += self.TICK_S
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -1694,8 +1701,7 @@ async def kafka_sse(request: Request):
 # COLUNA 3 — Atlas Stream Processing
 # ---------------------------------------------------------------------------
 ASP_PIPELINE_SNIPPET = """[
-  { $source: { connectionName: "atlasCluster", db: "pix", coll: "transacoes",
-               config: { fullDocument: "required" } } },
+  { $source: { connectionName: __CONNECTION__, db: __DB__, coll: "transacoes" } },
   { $match: { operationType: "insert" } },
 
   // documento malformado vai para a DLQ; o processor nao cai
@@ -1711,18 +1717,20 @@ ASP_PIPELINE_SNIPPET = """[
             _id: { uf: "$fullDocument.uf", tipo: "$fullDocument.tipo" },
             qtd:    { $count: {} },
             volume: { $sum: { $toDouble: "$fullDocument.valor" } },
-            ticket: { $avg: { $toDouble: "$fullDocument.valor" } },
-            window_start: { $min: "$fullDocument.ts" },
-            window_end:   { $max: "$fullDocument.ts" } } },
+            ticket: { $avg: { $toDouble: "$fullDocument.valor" } } } },
         { $set: { uf: "$_id.uf", tipo: "$_id.tipo",
                   volume: { $round: ["$volume", 2] },
                   ticket: { $round: ["$ticket", 2] } } } ] } },
 
+  // bordas oficiais da janela, estáveis mesmo com eventos atrasados
+  { $set: { window_start: { $meta: "stream.window.start" },
+            window_end:   { $meta: "stream.window.end" } } },
+
   // _id deterministico por (janela, uf, tipo) => $merge idempotente
   { $set: { _id: { $concat: [ { $toString: "$window_start" }, "|", "$uf", "|", "$tipo" ] } } },
-  { $merge: { into: { connectionName: "atlasCluster", db: "pix", coll: "metricas_janela" },
+  { $merge: { into: { connectionName: __CONNECTION__, db: __DB__, coll: "metricas_janela" },
               whenMatched: "replace", whenNotMatched: "insert" } }
-]"""
+]""".replace("__CONNECTION__", json.dumps(ASP_CONNECTION_NAME)).replace("__DB__", json.dumps(STREAM_DB))
 
 
 def _asp_reachable() -> tuple[bool, str, str | None]:
@@ -1739,17 +1747,18 @@ def _asp_reachable() -> tuple[bool, str, str | None]:
             # Estado REAL do processor, direto da SPI — não basta a conexão abrir.
             resposta = spi.admin.command({"listStreamProcessors": 1})
             processors = resposta.get("streamProcessors", [])
-            ativos = [p for p in processors if p.get("state") == "STARTED"]
             if not processors:
                 return False, "SPI acessível, mas nenhum processor criado (rode scripts/setup-asp.js)", None
-            if not ativos:
-                estados = ", ".join(f"{p.get('name')}={p.get('state')}" for p in processors)
-                return False, f"processor parado: {estados}", None
-            nomes = ", ".join(p.get("name", "?") for p in ativos)
+            processor = next((p for p in processors if p.get("name") == ASP_PROCESSOR_NAME), None)
+            if processor is None:
+                nomes = ", ".join(p.get("name", "?") for p in processors)
+                return False, f"processor {ASP_PROCESSOR_NAME!r} não encontrado (existentes: {nomes})", None
+            if processor.get("state") != "STARTED":
+                return False, f"processor {ASP_PROCESSOR_NAME}={processor.get('state')}", None
             # Tier REAL em execução: o processor mantém o tier com que foi
             # iniciado, que pode diferir do default do workspace.
-            tier = ativos[0].get("effectiveTier") or ativos[0].get("tier")
-            return True, f"processor STARTED: {nomes}", tier
+            tier = processor.get("effectiveTier") or processor.get("tier")
+            return True, f"processor STARTED: {ASP_PROCESSOR_NAME}", tier
         finally:
             spi.close()
     except Exception as exc:  # noqa: BLE001 - SPI ausente é estado esperado da demo
@@ -1768,6 +1777,8 @@ def _asp_atraso_s() -> float | None:
     p50 de 23 s. Com este número a UI diz "drenando backlog" em vez de exibir
     um percentil que não representa nada.
     """
+    if not generator.running:
+        return None
     doc = sdb[COL_WINDOWS].find_one({}, {"window_end": 1}, sort=[("window_end", -1)])
     if not doc or not isinstance(doc.get("window_end"), datetime):
         return None
@@ -1884,7 +1895,7 @@ asp_watcher = AspWatcher()
 async def asp_sse(request: Request):
     asp_watcher.ensure_started(asyncio.get_running_loop())
     ultimas = await asyncio.to_thread(
-        lambda: list(sdb[COL_WINDOWS].find({}, {"_id": 0}).limit(20))
+        lambda: list(sdb[COL_WINDOWS].find({}, {"_id": 0}).sort("window_end", -1).limit(20))
     )
     hello = {
         "type": "hello",
@@ -1994,6 +2005,7 @@ def _reprocessa_dlq(limite: int) -> dict[str, Any]:
     """
     corrigidos = 0
     ja_existiam = 0
+    falharam = 0
     sem_origem = 0
     remover: list[Any] = []
 
@@ -2025,8 +2037,14 @@ def _reprocessa_dlq(limite: int) -> dict[str, Any]:
         try:
             sdb[COL_TX].insert_one(limpo)
             corrigidos += 1
+        except DuplicateKeyError:
+            ja_existiam += 1          # índice único confirma que já foi reprocessado
         except PyMongoError:
-            ja_existiam += 1          # índice único: reprocessar de novo não duplica
+            # Falha transitória não é confirmação de duplicidade: preservar o
+            # item na DLQ evita perda de evento e permite nova tentativa.
+            falharam += 1
+            logger.exception("Falha transitória ao reprocessar item da DLQ")
+            continue
         remover.append(dlq_doc["_id"])
 
     if remover:
@@ -2035,6 +2053,7 @@ def _reprocessa_dlq(limite: int) -> dict[str, Any]:
     return {
         "reprocessados": corrigidos,
         "ja_existiam": ja_existiam,
+        "falharam": falharam,
         "sem_documento_de_origem": sem_origem,
         "removidos_da_dlq": len(remover),
     }
@@ -2059,7 +2078,12 @@ async def asp_janelas(limit: int = 30):
     """Últimas janelas fechadas, direto da coleção que o processor alimenta."""
     corte = _now() - timedelta(hours=2)
     docs = await asyncio.to_thread(
-        lambda: list(sdb[COL_WINDOWS].find({}, {"_id": 0}).limit(max(1, min(limit, 200))))
+        lambda: list(
+            sdb[COL_WINDOWS]
+            .find({"window_end": {"$gte": corte}}, {"_id": 0})
+            .sort("window_end", -1)
+            .limit(max(1, min(limit, 200)))
+        )
     )
     return {
         "colecao": f"{STREAM_DB}.{COL_WINDOWS}",
