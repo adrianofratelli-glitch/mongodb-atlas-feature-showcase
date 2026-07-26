@@ -9,7 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from database import db, readiness
-from routers import aggregations, change_streams, hot_cold, reindexacao, schema_validation, streaming, transactions
+from routers import (
+    aggregations,
+    change_streams,
+    geo,
+    hot_cold,
+    reindexacao,
+    schema_validation,
+    streaming,
+    transactions,
+)
 from security import ApiHardeningMiddleware, MutationGuardMiddleware
 from settings import settings
 
@@ -65,6 +74,7 @@ app.include_router(schema_validation.router)
 app.include_router(change_streams.router)
 app.include_router(transactions.router)
 app.include_router(streaming.router)
+app.include_router(geo.router)
 
 
 @app.get("/")
@@ -106,10 +116,11 @@ def preflight():
                 "message": "disponível" if collection in names else "execute seed_data.py",
             }
         checks.update(streaming.preflight_checks())
+        checks.update(geo.preflight_checks())
 
-    # Kafka e ASP são opcionais: a UI mostra "não configurado" e o resto roda.
-    # Eles aparecem no diagnóstico, mas não reprovam o pré-voo.
-    opcionais = {"atlas_admin_api", "streaming_kafka", "streaming_asp"}
+    # Kafka, ASP e o módulo Geo são opcionais: a UI mostra "não configurado" e o
+    # resto roda. Eles aparecem no diagnóstico, mas não reprovam o pré-voo.
+    opcionais = {"atlas_admin_api", "streaming_kafka", "streaming_asp", "geo_dataset", "geo_search"}
     ready = all(check["ok"] for key, check in checks.items() if key not in opcionais)
     return JSONResponse(status_code=200 if ready else 503, content={"ready": ready, "checks": checks})
 
