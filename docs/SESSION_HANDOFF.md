@@ -156,9 +156,15 @@ plus polling (generator status 1 s, oplog/read-probe/DLQ 4 s, reconciliation and
 ASP 5 s, Kafka 4 s). `/streaming/oplog` alone does a `$natural` sort over
 `local.oplog.rs` every 4 s. Leaving the page open costs cluster.
 
-**Replay mode** (`backend/routers/replay.py`, `scripts/capture_replay.py`) is
-the answer to that: it replays one recorded real run with the cluster paused, so
-the mechanics can be demonstrated at zero compute cost.
+**Replay is now the only mode on the Streaming page** (`backend/routers/replay.py`, `scripts/capture_replay.py`). Live writing was
+removed at the owner's request: it stressed the cluster without adding to the
+demonstration. A single **Play** button replays one recorded real run, so the
+mechanics are shown at zero compute cost — cluster paused, no Kafka, no ASP.
+
+The word "replay" was dropped from the UI, but the disclosure was not. The
+badge is permanent and unconditional, the Change Streams column reads
+"reproduzindo" rather than "ao vivo", and environment-acting buttons stay
+disabled. Renaming the control is cosmetic; removing the badge would not be.
 
 The honesty constraint is part of the design, not decoration. The PoV's whole
 claim is "evidence instead of claims", so a mode that *looks* live while nothing

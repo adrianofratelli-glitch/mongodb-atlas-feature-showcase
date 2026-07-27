@@ -3,16 +3,6 @@ import { useApi } from '../hooks/useApi'
 import QueryBlock from '../components/QueryBlock'
 
 const MAX_FEED = 40
-// Teto do gerador. O backend é a autoridade (TPS_MAX em routers/streaming.py) e
-// manda o valor em /streaming/cenario; este é só o fallback para uma API antiga.
-// Existe para manter a demo reproduzível em M20 sem disparar o auto-scaling.
-const TPS_MAX_PADRAO = 1000
-const TPS_STEP = 10
-const CONCEPT_PRESETS = [
-  { label: 'Passo a passo', tps: 40, detalhe: 'fluxo leve para acompanhar cada mecanismo' },
-  { label: 'Fluxo contínuo', tps: 200, detalhe: 'carga moderada para observar janelas e reconciliação' },
-  { label: 'Rajada controlada', tps: 400, detalhe: 'backlog e recuperação sem pretensão de benchmark' },
-]
 
 // Hook de SSE: EventSource sobre /api/... (proxy do Vite → backend :8002).
 // Só GET, então o mutation guard não exige o X-Demo-Token.
@@ -23,9 +13,9 @@ const CONCEPT_PRESETS = [
 // ele desiste de vez, e as três colunas ficam mudas até alguém dar F5 no meio da
 // apresentação. Aqui a gente fecha e reabre até conseguir.
 const SSE_RETRY_MS = 2000
-// Ações que atuam no ambiente real (restart de connector, DLQ, checkpoint,
-// reset). No replay não existe alvo: ficam desabilitadas em vez de mentir.
-const SEM_ALVO_NO_REPLAY = 'Indisponível no replay: estas ações atuam sobre o ambiente real'
+// Ações que atuavam no ambiente real (restart de connector, DLQ, checkpoint).
+// Numa execução gravada não existe alvo: ficam desabilitadas em vez de mentir.
+const SEM_ALVO_NO_REPLAY = 'Indisponível: esta aba reproduz uma execução gravada, não há ambiente para agir'
 
 function useSse(path, onMessage, enabled = true) {
   const [connected, setConnected] = useState(false)
@@ -135,69 +125,45 @@ function Sparkline({ values }) {
 export default function Streaming() {
   const { call } = useApi()
 
-  // ── Modo: ao vivo × replay ───────────────────────────────────────────────
-  // O replay reproduz UMA execução real gravada (scripts/capture_replay.py) e
-  // não escreve no banco. Existe porque M20/M30 são instâncias burstable e o
-  // auto-scaling do Atlas dispara por CPU RELATIVA: 17,6% absolutos deram 88%
-  // relativos e escalaram o cluster com o gerador já parado, só com esta tela
-  // aberta. Com o replay a demo roda com o cluster pausado.
+  // ── Esta aba roda SEMPRE sobre uma execução gravada ──────────────────────
+  // Não existe modo ao vivo aqui. A escrita ao vivo estressava o cluster sem
+  // necessidade: M20/M30 são instâncias burstable e o auto-scaling do Atlas
+  // dispara por CPU RELATIVA — 17,6% absolutos deram 88% relativos e escalaram
+  // o cluster com o gerador JÁ PARADO, só com esta tela aberta e consumindo.
   //
-  // Os números do replay são medições, não simulação — mas a tela precisa dizer
-  // qual dos dois o operador está vendo, sempre. Ver o selo mais abaixo.
-  const [modo, setModo] = useState('ao_vivo')
+  // O que se reproduz é medição real (scripts/capture_replay.py grava os mesmos
+  // eventos SSE e snapshots que a tela consumia ao vivo); nada é sintetizado.
+  // Mas número medido ontem apresentado sem contexto vira número de hoje na
+  // cabeça de quem assiste — por isso o selo abaixo é permanente e não
+  // condicional. Ele é a única coisa que separa "gravado" de "ao vivo" para a
+  // plateia. Não remover.
+  const replay = true
+  const base = '/replay'
   const [manifest, setManifest] = useState(null)
-  const replay = modo === 'replay'
-  const base = replay ? '/replay' : ''
 
   useEffect(() => {
-    // Sonda de capacidade: responde 200 com `disponivel: false` quando não há
-    // gravação, então o seletor só aparece onde o modo realmente existe.
+    // Responde 200 com `disponivel: false` quando não há gravação — nesse caso
+    // a aba avisa em vez de mostrar painéis vazios sem explicação.
     call('/replay/manifest').then((d) => d && setManifest(d))
   }, [call])
 
   // ── Cenário PIX conceitual ────────────────────────────────────────────────
   const [cenario, setCenario] = useState(null)
   const [rede, setRede] = useState(null)
-  const [tpsMax, setTpsMax] = useState(TPS_MAX_PADRAO)
   useEffect(() => {
-    call(`${base}/streaming/cenario`).then((d) => {
-      if (!d) return
-      if (Number.isFinite(d.tps_max) && d.tps_max > 0) setTpsMax(d.tps_max)
-      // Durante um rollout a UI nova pode conversar por alguns segundos com
-      // uma API antiga. Claims legados de capacidade nunca voltam para a tela:
-      // somente o novo contrato explícito de PoC é aceito.
-      if (d.premissas?.sizing === false) {
-        setCenario(d)
-        return
-      }
-      setCenario({
-        premissas: { workload: 'sintético', sizing: false },
-        presets: CONCEPT_PRESETS,
-        ambiente: {
-          cluster: d.ambiente?.cluster || '—',
-          particoes_consumo: d.ambiente?.particoes_consumo || 1,
-          nota: 'Os números mostram apenas esta execução. Não são capacidade do produto nem sizing.',
-        },
-      })
-    })
+    // O cenário vem da gravação: descreve o ambiente em que a execução foi
+    // medida, não o ambiente de agora.
+    call(`${base}/streaming/cenario`).then((d) => d && setCenario(d))
     call(`${base}/streaming/rede`).then((d) => d && setRede(d))
   }, [call, base])
 
-  // ── Gerador ──────────────────────────────────────────────────────────────
-  const [tps, setTps] = useState(200)
+  // ── Relógio da reprodução ────────────────────────────────────────────────
   const [gen, setGen] = useState(null)
 
-  const tpsTocado = useRef(false)
   const refreshGen = useCallback(async () => {
     const data = await call(`${base}/streaming/generator/status`)
-    if (!data) return
-    setGen(data)
-    // Enquanto o operador não mexeu no slider, ele reflete o que o backend está
-    // de fato rodando (inclusive se outra aba/curl mudou o TPS).
-    if (!tpsTocado.current && data.running && data.tps_alvo) {
-      setTps(Math.min(tpsMax, Math.max(10, data.tps_alvo)))
-    }
-  }, [call, tpsMax, base])
+    if (data) setGen(data)
+  }, [call, base])
 
   useEffect(() => {
     refreshGen()
@@ -205,27 +171,14 @@ export default function Streaming() {
     return () => clearInterval(t)
   }, [refreshGen])
 
-  const aplicarTps = useCallback(async (valor) => {
-    // No replay o "play" move o relógio da gravação; não há TPS a aplicar,
-    // porque não há escrita. O gerador real fica intocado.
-    if (replay) {
-      await call('/replay/play', { method: 'POST' })
-      refreshGen()
-      return
-    }
-    const tpsSeguro = Math.min(tpsMax, Math.max(10, Number(valor) || 10))
-    tpsTocado.current = true
-    setTps(tpsSeguro)
-    await call('/streaming/generator/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tps: tpsSeguro }),
-    })
+  // Play move o relógio da gravação. Nenhuma escrita sai daqui.
+  const play = useCallback(async () => {
+    await call('/replay/play', { method: 'POST' })
     refreshGen()
-  }, [call, refreshGen, tpsMax, replay])
+  }, [call, refreshGen])
 
   const stopGen = async () => {
-    await call(replay ? '/replay/stop' : '/streaming/generator/stop', { method: 'POST' })
+    await call('/replay/stop', { method: 'POST' })
     refreshGen()
   }
 
@@ -355,19 +308,6 @@ export default function Streaming() {
     await call('/streaming/asp/restart-checkpoint', { method: 'POST', timeoutMs: 90_000 })
   }
 
-  // ── Reset global ─────────────────────────────────────────────────────────
-  const resetAll = async () => {
-    const result = await call('/streaming/reset', { method: 'POST', timeoutMs: 210_000 })
-    if (!result) return
-    setCsEvents([]); setCsMetrics(null)
-    setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
-    setKafkaMsgs([]); setKafkaMetrics(null); setJanelas([]); setDlq([]); setAspMetrics(null)
-    refreshGen()
-  }
-
-  const tpsDesvio = gen?.tps_alvo ? Math.round(Math.abs(gen.tps_medido - gen.tps_alvo) / gen.tps_alvo * 100) : null
-  const presets = (cenario?.presets || CONCEPT_PRESETS)
-    .filter((p) => p.tps >= 10 && p.tps <= tpsMax)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -394,32 +334,26 @@ export default function Streaming() {
         </div>
       </div>
 
-      {/* Seletor de modo + selo de origem.
-          O selo é deliberadamente grande e permanente: quem olha a tela precisa
-          saber, sem perguntar, se está vendo escrita ao vivo ou a reprodução de
-          uma execução gravada. Os números do replay são reais (medidos), mas
-          apresentá-los como se estivessem acontecendo agora seria enganoso. */}
-      {manifest?.disponivel && (
-        <div className={`card str-modo${replay ? ' str-modo-replay' : ''}`}>
+      {/* Selo de origem — permanente, não condicional a modo.
+          Os números abaixo foram medidos de verdade contra o Atlas, mas estão
+          sendo reproduzidos. Quem assiste precisa saber disso sem perguntar. */}
+      {manifest?.disponivel ? (
+        <div className="card str-modo str-modo-replay">
           <div className="str-modo-linha">
-            <div className="str-modo-botoes">
-              <button className={`tag${!replay ? ' active' : ''}`}
-                onClick={() => setModo('ao_vivo')}>● Ao vivo</button>
-              <button className={`tag${replay ? ' active' : ''}`}
-                onClick={() => setModo('replay')}>▶ Replay</button>
+            <div className="str-modo-selo">
+              <strong>▶ Execução gravada — nenhuma escrita está sendo feita no Atlas agora.</strong>{' '}
+              Reprodução de <code>{manifest.run_id}</code>, medida em {manifest.gravado_em}{' '}
+              contra o cluster real. Os valores são medições daquela execução, não simulação.
             </div>
-            {replay ? (
-              <div className="str-modo-selo">
-                <strong>▶ REPLAY — nenhuma escrita está sendo feita no Atlas.</strong>{' '}
-                Reprodução da execução <code>{manifest.run_id}</code>, gravada em{' '}
-                {manifest.gravado_em}. Os valores são medições reais dessa execução.
-              </div>
-            ) : (
-              <div className="str-modo-selo">
-                <strong>● AO VIVO</strong> — o gerador escreve de verdade em{' '}
-                <code>pix.transacoes</code> e o cluster processa. Consome compute do Atlas.
-              </div>
-            )}
+          </div>
+        </div>
+      ) : (
+        <div className="card str-modo">
+          <div className="str-modo-linha">
+            <div className="str-modo-selo">
+              <strong>Nenhuma execução gravada.</strong> Rode{' '}
+              <code>python scripts/capture_replay.py</code> com o ambiente ligado para gravar uma.
+            </div>
           </div>
         </div>
       )}
@@ -428,56 +362,29 @@ export default function Streaming() {
       <div className="card str-generator">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
           <div>
-            <div style={{ fontWeight: 700, fontSize: 15 }}>Gerador de transações</div>
+            <div style={{ fontWeight: 700, fontSize: 15 }}>Fluxo PIX da execução</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-              <code>{gen?.colecao || 'pix.transacoes'}</code> · micro-batches a cada 100 ms ·
-              TTL de {gen?.ttl_segundos ? (gen.ttl_segundos >= 60 ? `${Math.round(gen.ttl_segundos / 60)} min` : `${gen.ttl_segundos}s`) : '—'} em <code>ts</code> (rede de segurança; o Reset limpa na hora)
+              Escrita original em <code>{gen?.colecao || 'pix.transacoes'}</code> · micro-batches a
+              cada 100 ms · TTL de {gen?.ttl_segundos ? (gen.ttl_segundos >= 60 ? `${Math.round(gen.ttl_segundos / 60)} min` : `${gen.ttl_segundos}s`) : '—'} em <code>ts</code>.
+              O Play reproduz essa execução; o banco não é tocado.
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
             {gen?.running
               ? <button className="btn btn-danger btn-sm" onClick={stopGen}>■ Parar</button>
-              : <button className="btn btn-primary btn-sm" onClick={() => aplicarTps(tps)}>
-                  {replay ? '▶ Reproduzir execução gravada' : `▶ Iniciar a ${num(tps)} TPS`}
-                </button>}
-            {/* Reset apaga coleções reais — no replay não há o que apagar. */}
-            <button className="btn btn-default btn-sm" onClick={resetAll} disabled={replay}
-              title={replay ? 'Indisponível no replay: nada é escrito no banco' : undefined}>🗑 Reset</button>
+              : <button className="btn btn-primary btn-sm" onClick={play}>▶ Play</button>}
           </div>
         </div>
 
-        {/* Presets do cenário PIX */}
-        {presets.length > 0 && (
-          <div className="str-presets">
-            <span className="str-presets-l">Carga</span>
-            {presets.map((p) => (
-              <button key={p.label} title={p.detalhe}
-                className={`tag${tps === p.tps ? ' active' : ''}`}
-                onClick={() => aplicarTps(p.tps)}>
-                {p.label} · <strong>{num(p.tps)} TPS</strong>
-              </button>
-            ))}
-          </div>
-        )}
-
+        {/* Sem presets nem slider de TPS: o Play reproduz a execução como ela
+            foi medida. Um controle de carga aqui prometeria o que a reprodução
+            não faz — a carga foi decidida na gravação. */}
         <div className="str-gen-row">
-          <label htmlFor="tps" className="str-slider-label">TPS
-            <input id="tps" type="range" min="10" max={tpsMax} step={TPS_STEP} value={tps} className="str-slider"
-              onChange={(e) => {
-                const v = Number(e.target.value)
-                tpsTocado.current = true
-                setTps(v)
-              }}
-              onPointerUp={(e) => { if (gen?.running) aplicarTps(Number(e.currentTarget.value)) }}
-              onKeyUp={(e) => { if (gen?.running) aplicarTps(Number(e.currentTarget.value)) }}
-              onBlur={(e) => { if (gen?.running) aplicarTps(Number(e.currentTarget.value)) }} />
-            <span className="str-slider-v">{num(tps)}</span>
-          </label>
           <div className="str-stats">
-            <Stat label="TPS medido" value={num(gen?.tps_medido ?? 0)}
-              sub={tpsDesvio != null && gen?.running ? `observado nesta execução · alvo ${num(gen.tps_alvo)}` : 'gerador parado'}
+            <Stat label="TPS da execução" value={num(gen?.tps_alvo ?? manifest?.tps_alvo ?? 0)}
+              sub={gen?.running ? 'reproduzindo' : 'medido na gravação'}
               color={gen?.running ? '#00ED64' : undefined} />
-            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub="confirmados pelo Atlas" />
+            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub="confirmados pelo Atlas na gravação" />
             <Stat label="Execução" value={gen?.run_id ? gen.run_id.slice(-6).toUpperCase() : '—'}
               sub="run_id para reconciliação" color={gen?.run_id ? '#00ED64' : undefined} />
             <Stat label="Objetivo" value="Confiabilidade" sub="sem claim de sizing" />
@@ -492,8 +399,10 @@ export default function Streaming() {
         <div className="str-col str-col-cs">
           <div className="str-col-head">
             <span>🍃 Change Streams</span>
+            {/* "ao vivo" aqui contradiria o selo: o stream está conectado, mas
+                o que trafega nele é a gravação sendo reproduzida. */}
             <span className={`badge ${csConnected ? 'badge-green' : 'badge-yellow'}`}>
-              {csConnected ? '● ao vivo' : '○ conectando'}
+              {csConnected ? '● reproduzindo' : '○ conectando'}
             </span>
           </div>
           <div className="str-col-body">

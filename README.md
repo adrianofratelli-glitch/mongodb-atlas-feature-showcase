@@ -295,12 +295,17 @@ in the tens of thousands: it fits in cache, and the deletion rate is far too low
 to compete with the peak or to flood the oplog the resume-token demo depends on.
 The window is still longer than any demo burst.
 
-**Replay mode — demo with the cluster paused.** The Streaming page has an
-**Ao vivo / Replay** switch. Replay serves one *recorded real run* from
-`backend/data/replay_streaming.json` through `/replay/*`, which mirrors the
-`/streaming/*` paths. Nothing is written to MongoDB during a replay, so the demo
+**The Streaming page replays a recorded run — it does not write.** There is no
+live mode on this page: a single **▶ Play** button replays one *recorded real
+run* from `backend/data/replay_streaming.json` through `/replay/*`, which
+mirrors the `/streaming/*` paths. Nothing is written to MongoDB, so the page
 works with the cluster **paused** and with no Kafka or ASP running — only the
-backend and the frontend.
+backend and the frontend. All three columns are in the recording (Change Streams
+456 events, Kafka 531, ASP 80 closed windows), which is what lets the three
+approaches be compared side by side.
+
+Live writing was removed because it stressed the cluster for no demonstrative
+gain — see the relative-CPU note below.
 
 **Open the page before starting the generator.** The Change Stream and Kafka
 consumers start lazily, on the first SSE subscription, and the Kafka observer
@@ -312,10 +317,14 @@ Wait for the Kafka column to report `consumindo`, then start the generator.
 
 ![Replay mode with the run reconciled](docs/screenshots/07c-streaming-replay.png)
 
-The badge above the generator is always present and names the recorded run. In
-that shot the four paths agree at 12,040 with zero duplicates and an empty DLQ —
-figures measured during the recording, replayed here without touching the
-cluster.
+The badge is permanent and names the recorded run and the date it was measured.
+It is not optional decoration: the figures are real measurements, and without
+that line an audience reasonably reads them as happening now. In the shot the
+four paths agree at 12,040 with zero duplicates and an empty DLQ.
+
+Actions that would act on a real environment (connector restart, DLQ injection,
+checkpoint restart) stay visible but disabled — the capability is part of the
+story, but there is nothing to act on during a replay.
 
 Record a run with the environment up:
 
