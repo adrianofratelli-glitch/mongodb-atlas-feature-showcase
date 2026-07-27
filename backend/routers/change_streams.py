@@ -69,7 +69,7 @@ def _resumo(op: str, doc: dict, prev: dict) -> dict:
     return {"texto": op, "detalhe": "", "alerta": False}
 
 
-def _watch_worker(generation: int):
+def _watch_worker(generation: int, ready: threading.Event):
     try:
         pipeline = [{"$match": {"operationType": {"$in": ["insert", "update", "delete"]}}}]
         with db["transacoes_cs_demo"].watch(
@@ -78,6 +78,10 @@ def _watch_worker(generation: int):
             full_document_before_change="whenAvailable",
             max_await_time_ms=400,
         ) as stream:
+            # O endpoint /start só retorna depois que o cursor abriu. Sem esse
+            # handshake, a UI podia disparar o primeiro insert antes do watch()
+            # existir e o evento inicial desaparecia da demonstração.
+            ready.set()
             deadline = time.time() + 120
             while time.time() < deadline:
                 with _state_lock:
@@ -109,6 +113,7 @@ def _watch_worker(generation: int):
         with _state_lock:
             if generation == _state["generation"]:
                 _state["active"] = False
+        ready.set()
 
 
 @router.post("/start")
@@ -135,10 +140,21 @@ def start_watch():
         with _state_lock:
             _state["active"] = False
         raise
-    t = threading.Thread(target=_watch_worker, args=(generation,), daemon=True)
+    ready = threading.Event()
+    t = threading.Thread(target=_watch_worker, args=(generation, ready), daemon=True)
     with _state_lock:
         _state["thread"] = t
     t.start()
+    if not ready.wait(timeout=10):
+        with _state_lock:
+            if generation == _state["generation"]:
+                _state["active"] = False
+                _state["generation"] += 1
+        raise HTTPException(status_code=503, detail="Change stream não abriu em até 10 segundos.")
+    with _state_lock:
+        worker_ready = _state["active"] and generation == _state["generation"]
+    if not worker_ready:
+        raise HTTPException(status_code=503, detail="Change stream falhou durante a abertura.")
     return {"status": "watching", "colecao": "transacoes_cs_demo", "timeout_seconds": 120}
 
 

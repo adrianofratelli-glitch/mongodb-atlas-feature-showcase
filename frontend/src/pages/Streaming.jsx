@@ -185,6 +185,20 @@ export default function Streaming() {
     refreshGen()
   }
 
+  // Reset: volta o relógio ao início E limpa os painéis. O /replay/stop já zera
+  // a posição no backend, mas os feeds/métricas vivem no estado desta tela e só
+  // seriam limpos pelo evento `reset` do SSE, que depende de o laço da gravação
+  // dar a volta. Sem isto, parar deixa a tela congelada no meio da execução.
+  const resetReplay = async () => {
+    await call('/replay/stop', { method: 'POST' })
+    setCsEvents([]); setCsMetrics(null)
+    setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
+    setKafkaMsgs([]); setKafkaMetrics(null)
+    setJanelas([]); setDlq([]); setAspMetrics(null)
+    setReconciliacao(null)
+    refreshGen()
+  }
+
   // ── Coluna 1 — Change Streams ────────────────────────────────────────────
   const [csEvents, setCsEvents] = useState([])
   const [csState, setCsState] = useState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
@@ -275,25 +289,38 @@ export default function Streaming() {
     if (d) setDlqResumo(d)
   }, [call, base]), 4000, Boolean(gen?.running))
 
-  // Reconciliação só enquanto a reprodução anda. Parada, o resultado é o mesmo
-  // a cada consulta — repetir não acrescenta nada.
-  const reconciliadoRef = useRef(false)
+  // Reconciliação só enquanto a reprodução anda. O relógio repete a gravação
+  // com o mesmo run_id; portanto, mesmo depois de chegar a "reconciliado", o
+  // poll precisa continuar enquanto estiver rodando para voltar ao snapshot
+  // inicial no próximo ciclo. Parado, o resultado não muda e não é consultado.
   useEffect(() => {
-    reconciliadoRef.current = false
     if (!gen?.run_id) { setReconciliacao(null); return }
     call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
       .then((d) => d && setReconciliacao(d))
   }, [gen?.run_id, call, base])
   useIntervaloVisivel(useCallback(async () => {
-    if (!gen?.run_id || reconciliadoRef.current) return
+    if (!gen?.run_id) return
     const d = await call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
     if (!d) return
     setReconciliacao(d)
-    // Fechou: para de consultar até a próxima execução mexer no run_id.
-    if (d.final === 'reconciliado' && !d.gerador_ativo) reconciliadoRef.current = true
   }, [call, base, gen?.run_id]), 5000, Boolean(gen?.run_id) && Boolean(gen?.running))
 
   const aspOk = aspStatus?.estado === 'configurado'
+
+  // Tamanho da janela lido das bordas da própria janela ($meta stream.window),
+  // não fixado no código: a gravação atual foi medida com 10 s e o processor
+  // passou a 5 s. Deixar o número escrito na tela faria a legenda mentir para
+  // um dos dois. Sem janela ainda, cai no valor configurado hoje.
+  const janelaSegundos = (() => {
+    const j = janelas[0]
+    if (j?.window_start && j?.window_end) {
+      const dt = (new Date(`${String(j.window_end).replace(' ', 'T')}Z`)
+        - new Date(`${String(j.window_start).replace(' ', 'T')}Z`)) / 1000
+      if (Number.isFinite(dt) && dt > 0) return Math.round(dt)
+    }
+    return 5
+  })()
+
   const injectInvalid = async (quantidade = 1) => {
     await call(`/streaming/asp/inject-invalid?quantidade=${quantidade}`, { method: 'POST' })
   }
@@ -331,21 +358,11 @@ export default function Streaming() {
         </div>
       </div>
 
-      {/* Selo de origem — permanente, não condicional a modo.
-          Os números abaixo foram medidos de verdade contra o Atlas, mas estão
-          sendo reproduzidos. Quem assiste precisa saber disso sem perguntar. */}
-      {manifest?.disponivel ? (
-        // Uma linha só, discreta, mas sempre presente. O `title` guarda o
-        // detalhe para quem passar o mouse ou for perguntado na hora.
-        <div className="str-selo-linha"
-          title={`Reprodução de ${manifest.run_id}, medida em ${manifest.gravado_em} contra o cluster real. `
-            + 'Os valores são medições daquela execução, não simulação. Nada é escrito no banco durante a reprodução.'}>
-          <span className="str-selo-tag">▶ execução gravada</span>
-          <span className="str-selo-txt">
-            {manifest.run_id} · {String(manifest.gravado_em).slice(0, 10)} · nada é escrito no Atlas
-          </span>
-        </div>
-      ) : (
+      {/* Sem selo de origem quando há gravação: a decisão é do apresentador,
+          que declara a origem na fala. A ausência de gravação continua visível —
+          isso é estado de erro, não rótulo de modo. O texto do gerador ("O Play
+          reproduz essa execução; o banco não é tocado") segue no card abaixo. */}
+      {manifest && !manifest.disponivel && (
         <div className="str-selo-linha">
           <span className="str-selo-tag str-selo-tag-alerta">sem gravação</span>
           <span className="str-selo-txt">
@@ -369,6 +386,8 @@ export default function Streaming() {
             {gen?.running
               ? <button className="btn btn-danger btn-sm" onClick={stopGen}>■ Parar</button>
               : <button className="btn btn-primary btn-sm" onClick={play}>▶ Play</button>}
+            <button className="btn btn-sm" onClick={resetReplay}
+              title="Volta ao início e limpa os painéis">↺ Reset</button>
           </div>
         </div>
 
@@ -571,7 +590,7 @@ export default function Streaming() {
               <>
                 <div className="str-stats">
                   <Stat label="Agregadas" value={fmtEscala(aspStatus?.transacoes_agregadas)} color="#a855f7"
-                    sub={`${num(aspStatus?.janelas)} janelas de 10 s`} />
+                    sub={`${num(aspStatus?.janelas)} janelas de ${janelaSegundos} s`} />
                   <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
                   <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="rejeitados" />
                 </div>
@@ -634,7 +653,7 @@ export default function Streaming() {
                           <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.maior_valor)}</td>
                         </tr>
                       ))}
-                      {janelas.length === 0 && <tr><td colSpan={5} className="str-empty">Aguardando a primeira janela fechar (10 s)…</td></tr>}
+                      {janelas.length === 0 && <tr><td colSpan={5} className="str-empty">Aguardando a primeira janela fechar ({janelaSegundos} s)…</td></tr>}
                     </tbody>
                   </table>
                 </div>

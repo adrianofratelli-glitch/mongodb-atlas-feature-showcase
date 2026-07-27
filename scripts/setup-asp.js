@@ -16,7 +16,7 @@
  *   $source     — change stream de pix.transacoes na conexão do cluster
  *   $match      — só inserts
  *   $validate   — documento malformado vai para a DLQ, sem derrubar o processor
- *   $tumblingWindow(10s) — agrega por uf + tipo: qtd, volume somado, ticket médio
+ *   $tumblingWindow(5s) — agrega por uf + tipo: qtd, volume somado, ticket médio
  *   $merge      — grava cada janela fechada em pix.metricas_janela
  *
  * O backend NÃO consulta a SPI para exibir o resultado: ele assiste
@@ -26,7 +26,7 @@
 
 const CONNECTION = process.env.ASP_CONNECTION_NAME || 'atlasCluster';
 const DB = process.env.STREAMING_DB || 'pix';
-const PROCESSOR = process.env.ASP_PROCESSOR_NAME || 'pixJanelas10s';
+const PROCESSOR = process.env.ASP_PROCESSOR_NAME || 'pixJanelas5s';
 const RECREATE = ['1', 'true', 'yes'].includes((process.env.ASP_RECREATE || '').toLowerCase());
 
 const source = {
@@ -59,8 +59,14 @@ const validate = {
 const window = {
   $tumblingWindow: {
     boundary: 'eventTime',
-    interval: { size: 10, unit: 'second' },
-    allowedLateness: { size: 3, unit: 'second' },
+    // 5 s em vez de 10 s: a janela é o que distingue esta coluna das outras
+    // duas, mas com 10 s o painel ficava mudo por 10 s a cada ciclo e quem
+    // assiste 20 s da demo via no máximo duas rajadas. Com 5 s a semântica é a
+    // mesma (tumbling, sem sobreposição) e a coluna se mexe o dobro.
+    // allowedLateness cai junto: 3 s eram 30% da janela antiga e seriam 60% da
+    // nova, atrasando a emissão mais do que a janela dura.
+    interval: { size: 5, unit: 'second' },
+    allowedLateness: { size: 2, unit: 'second' },
     pipeline: [
       {
         $group: {

@@ -66,11 +66,11 @@ class Captura:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
 
-    def post(self, caminho: str, corpo=None):
+    def post(self, caminho: str, corpo=None, timeout: int = 30):
         dados = json.dumps(corpo).encode() if corpo is not None else b""
         req = urllib.request.Request(f"{self.api}{caminho}", data=dados, method="POST",
                                      headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read())
 
     # -- coletores ----------------------------------------------------------
@@ -126,6 +126,20 @@ def main() -> int:
     args = p.parse_args()
 
     cap = Captura(args.api)
+
+    # Zera antes de gravar. Os contadores (`inseridos`, únicos por caminho,
+    # percentis) vivem no processo da API e não são por execução: capturar duas
+    # vezes seguidas sem isto gravava `inseridos` somado das duas (28.360 para
+    # 60 s a 200 TPS) e deixava janelas atrasadas da captura anterior chegando
+    # no t=0 da nova, com latência de minutos poluindo os percentis do ASP.
+    # `/streaming/reset` também limpa as coleções, religa o connector e o
+    # processor, e NÃO derruba o consumidor Kafka — o aquecimento abaixo
+    # continua valendo.
+    print("▶ Reset do ambiente antes de gravar…")
+    try:
+        cap.post("/streaming/reset", {}, timeout=180)
+    except Exception as exc:  # noqa: BLE001
+        print(f"   ⚠️ reset falhou ({type(exc).__name__}); os contadores podem vir somados")
 
     print("▶ Contexto estático (cenário, rede, cluster)…")
     estatico = {}

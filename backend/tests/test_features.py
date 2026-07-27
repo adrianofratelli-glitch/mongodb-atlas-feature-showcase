@@ -13,7 +13,7 @@ sys.path.insert(0, str(BACKEND))
 os.environ.setdefault("MONGO_URI", "mongodb://127.0.0.1:27017")
 
 import settings as settings_module  # noqa: E402
-from routers import hot_cold, reindexacao, schema_validation  # noqa: E402
+from routers import change_streams, hot_cold, reindexacao, schema_validation  # noqa: E402
 
 
 def test_int_env_aplica_limites(monkeypatch):
@@ -109,3 +109,48 @@ def test_indice_equivalente_compara_key_e_opcoes(monkeypatch):
     assert reindexacao._equivalent_index_name(
         [("preco", 1)], False, {"em_estoque": True}
     ) == "preco_parcial_existente"
+
+
+def test_start_change_stream_espera_cursor_abrir(monkeypatch):
+    import threading
+
+    entrou = threading.Event()
+
+    class Stream:
+        def __enter__(self):
+            entrou.set()
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        @staticmethod
+        def try_next():
+            return None
+
+    class Collection:
+        @staticmethod
+        def watch(*_args, **_kwargs):
+            return Stream()
+
+    class Database:
+        @staticmethod
+        def list_collection_names():
+            return []
+
+        @staticmethod
+        def create_collection(*_args, **_kwargs):
+            return None
+
+        @staticmethod
+        def __getitem__(_name):
+            return Collection()
+
+    change_streams.stop_watch()
+    monkeypatch.setattr(change_streams, "db", Database())
+    resposta = change_streams.start_watch()
+    try:
+        assert resposta["status"] == "watching"
+        assert entrou.is_set()
+    finally:
+        change_streams.stop_watch()

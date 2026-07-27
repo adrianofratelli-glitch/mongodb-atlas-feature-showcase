@@ -63,7 +63,7 @@ KAFKA_CONSUMER_GROUP = (
 AO_VIVO = os.getenv("STREAMING_AO_VIVO", "0").strip().lower() in {"1", "true", "yes"}
 ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
-ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
+ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas5s").strip() or "pixJanelas5s"
 ASP_CONNECTION_NAME = os.getenv("ASP_CONNECTION_NAME", "atlasCluster").strip() or "atlasCluster"
 # Só para exibição: o que está provisionado nesta PoV.
 CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M20").strip() or "M20"
@@ -874,12 +874,24 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
     try:
         indices = {i["name"]: i for i in sdb[COL_TX].list_indexes()}
         ttl = next((i for i in indices.values() if dict(i.get("key", {})) == {"ts": 1}), None)
+        ttl_ok = bool(ttl) and ttl.get("expireAfterSeconds") == TTL_SECONDS
+        unique_ok = "endToEndId_unique" in indices
+        run_id_ok = "run_id_reconciliacao" in indices
+        indices_ok = ttl_ok and unique_ok and run_id_ok
+        faltantes = []
+        if not ttl_ok:
+            atual = ttl.get("expireAfterSeconds") if ttl else "ausente"
+            faltantes.append(f"TTL esperado {TTL_SECONDS}s (atual: {atual})")
+        if not unique_ok:
+            faltantes.append("índice único endToEndId")
+        if not run_id_ok:
+            faltantes.append("índice run_id de reconciliação")
         checks["streaming_indices"] = {
-            "ok": bool(ttl) and "endToEndId_unique" in indices,
+            "ok": indices_ok,
             "message": (
-                f"TTL {ttl.get('expireAfterSeconds')}s + índice único"
-                if ttl and "endToEndId_unique" in indices
-                else "faltando; sobem no primeiro start do gerador"
+                f"TTL {TTL_SECONDS}s + endToEndId único + run_id"
+                if indices_ok
+                else f"{'; '.join(faltantes)}; corrigidos no primeiro start do gerador"
             ),
         }
         docs = sdb[COL_TX].estimated_document_count()
@@ -1819,9 +1831,11 @@ ASP_PIPELINE_SNIPPET = """[
 
   // documento malformado vai para a DLQ; o processor nao cai
   { $validate: { validator: { $and: [
+        { "fullDocument.endToEndId": { $type: "string" } },
         { "fullDocument.run_id": { $type: "string" } },
         { "fullDocument.valor": { $type: ["decimal","double","int","long"] } },
-        { "fullDocument.tipo":  { $eq: "PIX" } } ] },
+        { "fullDocument.tipo":  { $eq: "PIX" } },
+        { "fullDocument.uf": { $type: "string" } } ] },
       validationAction: "dlq" } },
 
   { $tumblingWindow: {

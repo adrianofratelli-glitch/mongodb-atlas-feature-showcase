@@ -5,8 +5,10 @@ they run against a real cluster. Build an index and watch reads keep flowing.
 Break a change stream and watch it resume from its token. Roll back a
 transaction and see the documents go back to where they were.
 
-Nothing here is mocked: every screen talks to Atlas, and if something is not
-configured the page says so instead of showing a number it made up.
+Nothing here invents results. Seven modules talk to Atlas directly; Streaming
+replays a recorded real run from a local file so it can be presented with the
+cluster paused. The page permanently identifies that recording, and if
+something is not configured the UI says so instead of fabricating a number.
 
 Built with FastAPI and React 18. The UI is in Portuguese (pt-BR).
 
@@ -36,11 +38,12 @@ A question that comes up a lot: if something changes in MongoDB, how does the
 rest of my system hear about it? There is more than one answer, so this module
 shows three of them running at once on the same data.
 
-One generator writes PIX-shaped transactions into `pix.transacoes`. Three
-consumers read those same writes simultaneously: Change Streams open inside the
-app, the MongoDB Kafka Connector publishing to a real broker, and an Atlas
-Stream Processing job aggregating 10-second windows in the cloud and merging
-them back into a collection.
+In the recorded run, one generator wrote PIX-shaped transactions into
+`pix.transacoes`. Three consumers read those same writes simultaneously: Change
+Streams inside the app, the MongoDB Kafka Connector publishing to a real broker,
+and an Atlas Stream Processing job aggregating 10-second windows in the cloud
+and merging them back into a collection. The default page replays the resulting
+measurements without writing again.
 
 The transactions are synthetic. Everything else — Atlas, the Kafka broker, the
 checkpoints, the dead-letter queue — is real, and if a piece is not configured
@@ -114,10 +117,10 @@ cd mongodb-atlas-feature-showcase
 ### Quick start, once configured
 
 After the setup below has been done once, a whole demo environment is one
-command. `bin/overview` resumes the Atlas cluster, removes residue from a
-previous interrupted run, creates a fresh Atlas Stream Processing processor,
-starts local Kafka, registers the MongoDB source connector, starts the backend
-and frontend, and opens the browser:
+command. `bin/overview` resumes the Atlas cluster, removes scoped residue from a
+previous interrupted run, starts the backend and frontend, and opens the
+browser. Kafka and Atlas Stream Processing are only provisioned by
+`overview --ao-vivo`, when recording a new Streaming run:
 
 ```bash
 ./bin/overview          # up
@@ -199,12 +202,10 @@ environment:
 
 ## Streaming — setup
 
-The Streaming module (`/#streaming`) shows the three ways to react to a change in
-Atlas side by side, all fed by the same live write generator against
-`pix.transacoes`. Column 1 (Change Streams) works with nothing but `MONGO_URI`.
-Columns 2 and 3 need the setup below; without it they render as
-**"não configurado"** with these instructions, and the rest of the module keeps
-working.
+The Streaming module (`/#streaming`) shows the three ways to react to a change
+in Atlas side by side by replaying one recorded real run. The setup below is the
+recording rig used by `overview --ao-vivo` and `scripts/capture_replay.py`; it
+is not required for the default demo.
 
 **1. Start Kafka locally.** Two ways to do it, pick one.
 
@@ -307,13 +308,12 @@ approaches be compared side by side.
 Live writing was removed because it stressed the cluster for no demonstrative
 gain — see the relative-CPU note below.
 
-**Open the page before starting the generator.** The Change Stream and Kafka
-consumers start lazily, on the first SSE subscription, and the Kafka observer
-joins its consumer group with `auto.offset.reset=latest`. If the generator is
-already running when the page opens, the connector will have published thousands
-of messages while the group was still joining, the consumer starts at the tail,
-and the Kafka column reads zero for that run — which also blocks reconciliation.
-Wait for the Kafka column to report `consumindo`, then start the generator.
+**Open the live capture page before starting the generator.** The Change Stream
+and Kafka consumers start lazily on the first SSE subscription. The observer
+uses `auto.offset.reset=earliest`, while the source connector itself uses
+`startup.mode=latest` when it has no stored offset. Waiting for the Kafka column
+to report `consumindo` before writing keeps the capture boundary explicit and
+avoids measuring consumer startup as backlog.
 
 ![Replay mode with the run reconciled](docs/screenshots/07c-streaming-replay.png)
 
@@ -614,7 +614,7 @@ python live_monitor.py
 - Several endpoints are deliberately destructive. Point this at a disposable demo
   cluster only.
 - `backend/.env` is gitignored. Never commit real credentials.
-- Tests: `pip install -r backend/requirements-dev.txt && pytest` (85 tests, all
+- Tests: `pip install -r backend/requirements-dev.txt && pytest` (105 tests, all
   unit — Mongo is stubbed, so no cluster is needed). Lint with `ruff check backend`.
 - GitHub Actions builds both applications, runs tests/lint, and audits dependencies.
 

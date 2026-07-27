@@ -38,6 +38,7 @@ export default function ChangeStreams() {
   const [events,   setEvents]   = useState([])
   const [collection, setCollection] = useState(null)
   const pollRef  = useRef(null)
+  const pollBusyRef = useRef(false)
   const timerRef = useRef([])
   const listRef  = useRef(null)
 
@@ -47,6 +48,7 @@ export default function ChangeStreams() {
 
   useEffect(() => () => {
     clearInterval(pollRef.current)
+    pollBusyRef.current = false
     timerRef.current.forEach(clearTimeout)
   }, [])
 
@@ -60,8 +62,16 @@ export default function ChangeStreams() {
     if (!res) { setPhase('idle'); return }
 
     pollRef.current = setInterval(async () => {
-      const data = await call('/change-streams/events')
-      if (data) setEvents(data.events || [])
+      // A latência Brasil→Atlas pode superar o intervalo. Não deixe polls
+      // assíncronos se sobreporem e criarem uma fila de requests obsoletos.
+      if (pollBusyRef.current) return
+      pollBusyRef.current = true
+      try {
+        const data = await call('/change-streams/events')
+        if (data) setEvents(data.events || [])
+      } finally {
+        pollBusyRef.current = false
+      }
     }, 600)
 
     DEMO_SEQUENCE.forEach(({ op, delay }) => {
@@ -84,6 +94,7 @@ export default function ChangeStreams() {
 
   const reset = async () => {
     clearInterval(pollRef.current)
+    pollBusyRef.current = false
     timerRef.current.forEach(clearTimeout)
     timerRef.current = []
     setPhase('stopping')

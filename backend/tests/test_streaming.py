@@ -467,7 +467,8 @@ def _preflight_com_mongo_stub(monkeypatch):
     class ColecaoFake:
         def list_indexes(self):
             return iter([{"key": {"ts": 1}, "name": "ts_ttl", "expireAfterSeconds": 600},
-                         {"key": {"endToEndId": 1}, "name": "endToEndId_unique"}])
+                         {"key": {"endToEndId": 1}, "name": "endToEndId_unique"},
+                         {"key": {"run_id": 1}, "name": "run_id_reconciliacao"}])
 
         def estimated_document_count(self):
             return 0
@@ -504,7 +505,7 @@ def test_no_modo_ao_vivo_asp_quebrado_volta_a_reprovar(monkeypatch):
     """No modo de gravação o diagnóstico precisa voltar a ser exigente."""
     monkeypatch.setattr(streaming, "AO_VIVO", True)
     monkeypatch.setattr(streaming, "_asp_reachable",
-                        lambda: (False, "processor pixJanelas10s=FAILED", "SP10"))
+                        lambda: (False, "processor pixJanelas5s=FAILED", "SP10"))
     monkeypatch.setattr(streaming, "_asp_atraso_s", lambda: None)
     monkeypatch.setattr(streaming, "_connector_status_sync",
                         lambda: {"estado": "FAILED", "detalhe": "task morta"})
@@ -577,12 +578,39 @@ def test_ensure_indexes_cobre_a_contagem_da_reconciliacao(monkeypatch):
     assert any(chave == "run_id" for chave, _ in criados), criados
 
 
+def test_preflight_reprova_indice_de_reconciliacao_ausente_ou_ttl_divergente(monkeypatch):
+    class ColecaoFake:
+        def list_indexes(self):
+            return iter([
+                {"key": {"ts": 1}, "name": "ts_ttl", "expireAfterSeconds": 1_800},
+                {"key": {"endToEndId": 1}, "name": "endToEndId_unique"},
+            ])
+
+        def estimated_document_count(self):
+            return 0
+
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_TX: ColecaoFake()})
+    monkeypatch.setattr(streaming, "AO_VIVO", False)
+    monkeypatch.setattr(
+        streaming,
+        "_cluster_info_sync",
+        lambda: {"tier": "M20", "autoscaling": None, "escalou": False},
+    )
+
+    check = streaming.preflight_checks()["streaming_indices"]
+    assert check["ok"] is False
+    assert "run_id" in check["message"]
+    assert str(streaming.TTL_SECONDS) in check["message"]
+
+
 def test_pipeline_asp_usa_bordas_oficiais_e_configuracao_dinamica():
     assert 'stream.window.start' in streaming.ASP_PIPELINE_SNIPPET
     assert 'stream.window.end' in streaming.ASP_PIPELINE_SNIPPET
     assert 'boundary: "eventTime"' in streaming.ASP_PIPELINE_SNIPPET
     assert "allowedLateness" in streaming.ASP_PIPELINE_SNIPPET
     assert "fullDocument.run_id" in streaming.ASP_PIPELINE_SNIPPET
+    assert "fullDocument.endToEndId" in streaming.ASP_PIPELINE_SNIPPET
+    assert "fullDocument.uf" in streaming.ASP_PIPELINE_SNIPPET
     assert "alertas_valor_alto" in streaming.ASP_PIPELINE_SNIPPET
     assert 'fullDocument: "required"' not in streaming.ASP_PIPELINE_SNIPPET
     assert f'db: "{streaming.STREAM_DB}"' in streaming.ASP_PIPELINE_SNIPPET

@@ -107,7 +107,8 @@ console message is the pre-existing `favicon.ico` 404.
 One behaviour to know before demoing: the ASP window uses
 `boundary: "eventTime"`, so the **final window closes only when a newer event
 advances the watermark**. Stopping the generator is exactly what stops that from
-happening — the last ~10 s of a run sits as "pending" indefinitely until another
+happening — the last window of a run (~5 s, since the processor moved from a
+10 s to a 5 s tumbling window) sits as "pending" indefinitely until another
 burst arrives. In the run above, the final window closed only after a second
 burst was emitted. A consequence for the frontend: the poll-stop added here
 ("stop polling once the run is final") therefore fires less often than expected,
@@ -176,15 +177,12 @@ permanent badge, actions that touch the real environment are disabled, and a
 test asserts `replay.py` never imports or calls into Mongo. A replay must never
 be presented as a live run.
 
-**Demo gotcha found while recording:** the Change Stream and Kafka consumers
-start lazily, on the first SSE subscription, and the Kafka observer joins its
-group with `auto.offset.reset=latest`. Start the generator *before* the page is
-open and the connector publishes thousands of messages while the group is still
-joining — the consumer then starts at the tail, the Kafka column reads zero, and
-the run never reconciles. Open the Streaming page first, wait for the Kafka
-column to report `consumindo`, then start the generator.
-`scripts/capture_replay.py` encodes exactly that ordering; the first capture
-attempt failed this way (`kafka: unicos=0`, ASP fully accounted at `pend=0`).
+**Capture ordering:** the Change Stream and Kafka consumers start lazily on the
+first SSE subscription. The observer now uses `auto.offset.reset=earliest`; the
+source connector retains `startup.mode=latest` when no connector offset exists.
+Open the live capture page first and wait for the Kafka column to report
+`consumindo` before starting the generator. `scripts/capture_replay.py` encodes
+that ordering so consumer startup is not measured as application backlog.
 
 `scripts/ambiente.sh` and `bin/overview` no longer provision ASP or Kafka by
 default (`STREAMING_AO_VIVO=1` / `overview --ao-vivo` brings them back). They
@@ -300,7 +298,7 @@ language.
 Validated after the current implementation:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 103 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 105 passed
 npm --prefix frontend run build                    # Vite build passed
 git diff --check                                   # passed
 ```
@@ -330,4 +328,3 @@ graphify query "How does the ASP pipeline validate, window and merge PIX events?
 graphify affected "useApi()" --depth 2
 graphify affected "reset()" --depth 2
 ```
-
