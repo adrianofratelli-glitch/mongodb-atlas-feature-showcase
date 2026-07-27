@@ -3,13 +3,15 @@
 ```
 React 18 + Vite (frontend/, :5174)
    │  fetch /api/*        (JSON)
-   │  EventSource /api/streaming/* (SSE)
+   │  EventSource /api/replay/streaming/* (SSE — module 07 replays a recording)
+   │  EventSource /api/streaming/*        (SSE — only while recording one)
    ▼
 FastAPI (backend/main.py, :8002)
    ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* and geo.*)
    ├─ requests ────────────► Atlas Admin API v2      (Online Archive only)
-   ├─ requests ────────────► Kafka Connect REST      (:8083, Streaming column 2)
-   └─ aiokafka (optional) ─► Redpanda / Kafka broker (:19092, Streaming column 2)
+   ├─ requests ────────────► Kafka Connect REST      (:8083, only when recording)
+   ├─ aiokafka (optional) ─► Redpanda / Kafka broker (:19092, only when recording)
+   └─ file ────────────────► backend/data/replay_streaming.json (module 07 playback)
 ```
 
 The Vite dev server proxies `/api` to `http://localhost:8002`, stripping the
@@ -118,6 +120,36 @@ condition discards it.
 *sample* (one frame every 120 ms), labelled as such in the UI, while counters
 and percentiles are computed in the worker over **100% of the events**. A
 recovered event is never sampled out: it is the proof the drop/resume works.
+
+### `/replay` (module 07 playback)
+
+Module 07 does **not** write during a demo. `bin/overview` no longer provisions
+ASP or Kafka, and the Streaming page talks to `/replay/*`, which mirrors the
+`/streaming/*` paths so the frontend only swaps a prefix. Everything is served
+from `backend/data/replay_streaming.json`, recorded by
+`scripts/capture_replay.py` against the real cluster.
+
+This router never touches MongoDB — a test asserts it — so the page works with
+the cluster paused. The reason it exists is cost: M20/M30 are burstable, and
+Atlas compute auto-scaling fires on **relative** CPU
+(`NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75`). Measured here, 17.6% absolute read
+as 88% relative and scaled the cluster with the generator already stopped, on
+dashboard polling alone.
+
+Every payload carries `replay: true`, and the page shows a permanent one-line
+badge naming the recorded `run_id` and its date. The numbers are real
+measurements from that run — presenting them as live would be the one thing
+this mode must not do.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/replay/manifest` | `run_id`, `gravado_em`, duration, event count and the clock state. Answers **200 with `disponivel: false`** when there is no recording — the page probes this on load, and a 5xx would raise a global error toast on every install that never recorded. |
+| `POST` | `/replay/play` | Starts the playback clock at zero (`retomar=true` resumes from the paused position). This is what the single **▶ Play** button calls. |
+| `POST` | `/replay/pause` / `/replay/stop` | Freeze at the current position / rewind and stop. Position is derived from a monotonic clock on read, so a stopped replay costs nothing. |
+| `GET` | `/replay/estado` | `rodando`, `posicao_s`, `duracao_s`, `repetir`. |
+| `GET` | `/replay/streaming/{cenario,rede,cluster}` | Static context captured with the run: it describes the environment the run was *measured* in, not the current one. |
+| `GET` | `/replay/streaming/{generator/status,kafka/status,asp/status,oplog,leitura,asp/dlq/resumo,reconciliacao}` | The recorded snapshot whose timestamp is the last one at or before the current playback position. |
+| `GET` | `/replay/streaming/{changestream,kafka,asp}` | **SSE.** Re-emits the recorded events as the clock advances, plus a `reset` when the recording loops. Sends `: keepalive` every 10 s — without it an idle stream is dropped by the browser and the Vite proxy, the client reconnects, and the server-side generator never learns the client is gone (a generator that never writes never sees the disconnect). Those leaked streams exhaust the browser's ~6-connection-per-host budget and ordinary fetches start timing out at 30 s while the backend answers in milliseconds. |
 
 ### `/geo` (module 08)
 

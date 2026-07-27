@@ -138,6 +138,38 @@ def test_sem_gravacao_os_dados_recusam(tmp_path, monkeypatch):
     assert exc.value.status_code == 503
 
 
+def test_stream_parado_manda_keepalive(gravado, monkeypatch):
+    """
+    Um SSE mudo é derrubado pelo navegador e pelo proxy; o cliente reconecta e o
+    stream antigo fica vivo aqui, porque um gerador que nunca escreve nunca
+    descobre que o outro lado sumiu. As conexões empilham até estourar o limite
+    por host do navegador e os fetches passam a dar timeout — com o backend
+    respondendo em milissegundos. O keepalive é o que revela a desconexão.
+    """
+    import asyncio
+
+    class ReqFake:
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr(gravado, "KEEPALIVE_S", 0.0)
+    gravado.relogio.stop()  # parado: nenhum evento a enviar
+
+    async def coleta():
+        gen = gravado._stream(ReqFake(), "/streaming/changestream")
+        pedacos = []
+        async for c in gen:
+            pedacos.append(c)
+            if len(pedacos) >= 3:
+                await gen.aclose()
+                break
+        return pedacos
+
+    pedacos = asyncio.run(coleta())
+    assert pedacos[0].startswith("data: ")           # hello
+    assert any(c.startswith(": keepalive") for c in pedacos[1:])
+
+
 def test_router_nao_toca_no_mongodb():
     """
     O replay existe para rodar com o cluster PAUSADO. Uma referência a coleção

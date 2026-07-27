@@ -338,23 +338,22 @@ export default function Streaming() {
           Os números abaixo foram medidos de verdade contra o Atlas, mas estão
           sendo reproduzidos. Quem assiste precisa saber disso sem perguntar. */}
       {manifest?.disponivel ? (
-        <div className="card str-modo str-modo-replay">
-          <div className="str-modo-linha">
-            <div className="str-modo-selo">
-              <strong>▶ Execução gravada — nenhuma escrita está sendo feita no Atlas agora.</strong>{' '}
-              Reprodução de <code>{manifest.run_id}</code>, medida em {manifest.gravado_em}{' '}
-              contra o cluster real. Os valores são medições daquela execução, não simulação.
-            </div>
-          </div>
+        // Uma linha só, discreta, mas sempre presente. O `title` guarda o
+        // detalhe para quem passar o mouse ou for perguntado na hora.
+        <div className="str-selo-linha"
+          title={`Reprodução de ${manifest.run_id}, medida em ${manifest.gravado_em} contra o cluster real. `
+            + 'Os valores são medições daquela execução, não simulação. Nada é escrito no banco durante a reprodução.'}>
+          <span className="str-selo-tag">▶ execução gravada</span>
+          <span className="str-selo-txt">
+            {manifest.run_id} · {String(manifest.gravado_em).slice(0, 10)} · nada é escrito no Atlas
+          </span>
         </div>
       ) : (
-        <div className="card str-modo">
-          <div className="str-modo-linha">
-            <div className="str-modo-selo">
-              <strong>Nenhuma execução gravada.</strong> Rode{' '}
-              <code>python scripts/capture_replay.py</code> com o ambiente ligado para gravar uma.
-            </div>
-          </div>
+        <div className="str-selo-linha">
+          <span className="str-selo-tag str-selo-tag-alerta">sem gravação</span>
+          <span className="str-selo-txt">
+            rode <code>python scripts/capture_replay.py</code> com o ambiente ligado
+          </span>
         </div>
       )}
 

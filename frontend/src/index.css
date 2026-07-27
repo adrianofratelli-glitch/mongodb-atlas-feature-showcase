@@ -502,13 +502,14 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .geo-tabela tbody tr:hover { background: rgba(255,255,255,.03); }
 .geo-tabela tbody tr.sel { background: rgba(255,105,96,.09); }
 
-/* ── Modo do módulo Streaming: ao vivo × replay ─────────────────────────────
-   O selo é permanente e de alto contraste de propósito. Quem assiste precisa
-   distinguir escrita real de reprodução gravada sem precisar perguntar. */
-.str-modo { padding: 12px 14px; }
-.str-modo-linha { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-.str-modo-botoes { display: flex; gap: 6px; flex-shrink: 0; }
-.str-modo-selo { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
-.str-modo-selo strong { color: var(--accent); }
-.str-modo-replay { border-color: #f59e0b; background: rgba(245, 158, 11, 0.07); }
-.str-modo-replay .str-modo-selo strong { color: #f59e0b; }
+/* ── Selo de origem do módulo Streaming ────────────────────────────────────
+   Uma linha discreta, mas permanente: a tela mostra contadores e percentis
+   reais, medidos numa execução anterior. Sem essa marca a plateia os lê como
+   se estivessem acontecendo agora. Discreto é aceitável; ausente não. */
+.str-selo-linha { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin: -8px 0 -4px; font-size: 12px; color: var(--text-secondary); }
+.str-selo-tag { flex-shrink: 0; padding: 2px 8px; border-radius: 4px;
+  border: 1px solid #f59e0b; color: #f59e0b; font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; letter-spacing: .02em; text-transform: uppercase; }
+.str-selo-tag-alerta { border-color: #ef4444; color: #ef4444; }
+.str-selo-txt { font-family: 'JetBrains Mono', monospace; font-size: 11px; opacity: .75; }

@@ -298,26 +298,47 @@ def _sse(payload: Any) -> str:
     return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
+# Sem tráfego o navegador e o proxy do Vite derrubam um SSE ocioso. O cliente
+# então reconecta (useSse tenta a cada 2 s) — e o stream antigo continua vivo
+# aqui, porque um gerador que nunca escreve nunca descobre que o outro lado
+# sumiu. Com o replay pausado, ou entre eventos, isso empilha conexões até
+# estourar o limite por host do navegador (~6 no HTTP/1.1); os fetches normais
+# ficam na fila e a tela mostra "tempo limite de 30 s excedido" enquanto o
+# backend responde em milissegundos. O keepalive resolve os dois lados: mantém a
+# conexão viva e é a escrita que revela a desconexão.
+KEEPALIVE_S = 10.0
+
+
 async def _stream(request: Request, canal: str):
     gravacao.carrega()
     yield _sse({"type": "hello", "replay": True, "canal": canal})
     anterior = relogio.posicao()
+    ultimo_envio = time.monotonic()
     try:
         while True:
             if await request.is_disconnected():
                 return
             await asyncio.sleep(0.2)
             atual = relogio.posicao()
-            if not relogio.rodando:
-                anterior = atual
-                continue
-            if atual < anterior:
-                # O laço recomeçou: a tela zera e reproduz de novo.
-                yield _sse({"type": "reset", "replay": True})
-                anterior = 0.0
-            for evento in gravacao.eventos_entre(canal, anterior, atual):
-                yield _sse(_marca(evento.get("dado")))
+            enviou = False
+
+            if relogio.rodando:
+                if atual < anterior:
+                    # O laço recomeçou: a tela zera e reproduz de novo.
+                    yield _sse({"type": "reset", "replay": True})
+                    enviou = True
+                    anterior = 0.0
+                for evento in gravacao.eventos_entre(canal, anterior, atual):
+                    yield _sse(_marca(evento.get("dado")))
+                    enviou = True
             anterior = atual
+
+            agora = time.monotonic()
+            if enviou:
+                ultimo_envio = agora
+            elif agora - ultimo_envio >= KEEPALIVE_S:
+                yield ": keepalive\n\n"
+                ultimo_envio = agora
     except asyncio.CancelledError:  # pragma: no cover - desconexão do cliente
         raise
 

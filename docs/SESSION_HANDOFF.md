@@ -192,6 +192,23 @@ are the recording rig, not the demo rig: the numbers on screen were already
 measured against them. The `down` path still stops both unconditionally, since
 a processor left running from a recording session bills per second.
 
+**Two bugs found while wiring this up, both worth knowing:**
+
+- The replay SSE shipped without a keepalive (the live one has always had one).
+  An idle stream — replay paused, or simply between events — is dropped by the
+  browser and the Vite proxy; `useSse` reconnects every 2 s, and the abandoned
+  server-side generator never notices, because a generator that never writes
+  never sees the disconnect. Those leaked streams exhaust the browser's ~6
+  connections-per-host budget, and ordinary fetches queue until the 30 s
+  timeout while the backend answers in ~2 ms. Fixed with a 10 s keepalive; a
+  test covers it.
+- `porta_ativa()` in `bin/overview` and `scripts/kafka-local.sh` used
+  `lsof -ti:PORT` with no state filter, so ESTABLISHED connections (the Vite
+  proxy, the browser) counted as "service is up". With the backend dead, `up`
+  concluded "já estava de pé" and printed **✅ Pronto with no backend**; `down`
+  used the same list to pick PIDs to kill, so it could kill a client instead of
+  the server. Both now filter `-sTCP:LISTEN`.
+
 Still open: the idle-polling cost itself is untouched. Pausing polls on
 `document.visibilityState !== 'visible'` and when the generator is stopped, plus
 revisiting the `/streaming/oplog` probe, is the remaining work for live mode.
@@ -265,7 +282,7 @@ language.
 Validated after the current implementation:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 99 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 103 passed
 npm --prefix frontend run build                    # Vite build passed
 git diff --check                                   # passed
 ```

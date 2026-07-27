@@ -317,10 +317,11 @@ Wait for the Kafka column to report `consumindo`, then start the generator.
 
 ![Replay mode with the run reconciled](docs/screenshots/07c-streaming-replay.png)
 
-The badge is permanent and names the recorded run and the date it was measured.
-It is not optional decoration: the figures are real measurements, and without
-that line an audience reasonably reads them as happening now. In the shot the
-four paths agree at 12,040 with zero duplicates and an empty DLQ.
+The badge is one discreet line — a `▶ execução gravada` tag, the `run_id` and
+the date, with the full sentence in its `title`. Discreet is fine; absent is
+not. The figures are real measurements, and without that
+line an audience reasonably reads them as happening now. In the shot the four
+paths agree at 12,040 with zero duplicates and an empty DLQ.
 
 Actions that would act on a real environment (connector restart, DLQ injection,
 checkpoint restart) stay visible but disabled — the capability is part of the
