@@ -80,9 +80,13 @@ description of what these pipelines do.
 |---|---|
 | ![Schema Validation](docs/screenshots/04-schema.png) | ![Change Streams](docs/screenshots/05-changestreams.png) |
 
-| ACID Transactions |
-|---|
-| ![Transactions](docs/screenshots/06-transactions.png) |
+| ACID Transactions | Geo |
+|---|---|
+| ![Transactions](docs/screenshots/06-transactions.png) | ![Geo](docs/screenshots/08-geo.png) |
+
+The Geo shot is a live run: the explain comparison reads 62 index keys against
+38,044 for the same `$geoWithin`, the impossible-travel table plots the selected
+trip, and the search panel returns its facets — all from one cluster.
 
 ## Stack
 
@@ -305,6 +309,13 @@ already running when the page opens, the connector will have published thousands
 of messages while the group was still joining, the consumer starts at the tail,
 and the Kafka column reads zero for that run — which also blocks reconciliation.
 Wait for the Kafka column to report `consumindo`, then start the generator.
+
+![Replay mode with the run reconciled](docs/screenshots/07c-streaming-replay.png)
+
+The badge above the generator is always present and names the recorded run. In
+that shot the four paths agree at 12,040 with zero duplicates and an empty DLQ —
+figures measured during the recording, replayed here without touching the
+cluster.
 
 Record a run with the environment up:
 
