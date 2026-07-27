@@ -462,6 +462,58 @@ def test_ttl_cobre_uma_demo_sem_estourar_o_cache_do_m20():
     assert vivos <= 250_000, f"conjunto vivo estimado de {vivos} documentos"
 
 
+def _preflight_com_mongo_stub(monkeypatch):
+    """Roda preflight_checks() sem cluster: só o que interessa a ASP/Kafka."""
+    class ColecaoFake:
+        def list_indexes(self):
+            return iter([{"key": {"ts": 1}, "name": "ts_ttl", "expireAfterSeconds": 600},
+                         {"key": {"endToEndId": 1}, "name": "endToEndId_unique"}])
+
+        def estimated_document_count(self):
+            return 0
+
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_TX: ColecaoFake()})
+    monkeypatch.setattr(streaming, "_cluster_info_sync",
+                        lambda: {"tier": "M20", "autoscaling": {"ativo": True, "min": "M20",
+                                                                "max": "M30"}, "escalou": False})
+    return streaming.preflight_checks()
+
+
+def test_fora_do_modo_ao_vivo_asp_e_kafka_nao_reprovam(monkeypatch):
+    """
+    ASP e Kafka são o equipamento de GRAVAÇÃO, não o de demonstração: a aba 07
+    reproduz uma execução já medida contra eles. Desligados são o estado
+    correto — pintá-los de vermelho faria o pré-voo parecer quebrado justamente
+    quando está como deveria, e o operador tentaria consertar o que está bom.
+    """
+    monkeypatch.setattr(streaming, "AO_VIVO", False)
+
+    def nao_consulte(*a, **k):
+        raise AssertionError("não deve consultar ASP/Kafka fora do modo ao vivo")
+
+    monkeypatch.setattr(streaming, "_asp_reachable", nao_consulte)
+    monkeypatch.setattr(streaming, "_connector_status_sync", nao_consulte)
+
+    checks = _preflight_com_mongo_stub(monkeypatch)
+    assert checks["streaming_asp"]["ok"] is True
+    assert checks["streaming_kafka"]["ok"] is True
+    assert "não provisionado" in checks["streaming_asp"]["message"]
+
+
+def test_no_modo_ao_vivo_asp_quebrado_volta_a_reprovar(monkeypatch):
+    """No modo de gravação o diagnóstico precisa voltar a ser exigente."""
+    monkeypatch.setattr(streaming, "AO_VIVO", True)
+    monkeypatch.setattr(streaming, "_asp_reachable",
+                        lambda: (False, "processor pixJanelas10s=FAILED", "SP10"))
+    monkeypatch.setattr(streaming, "_asp_atraso_s", lambda: None)
+    monkeypatch.setattr(streaming, "_connector_status_sync",
+                        lambda: {"estado": "FAILED", "detalhe": "task morta"})
+
+    checks = _preflight_com_mongo_stub(monkeypatch)
+    assert checks["streaming_asp"]["ok"] is False
+    assert checks["streaming_kafka"]["ok"] is False
+
+
 def _cluster_atlas(monkeypatch, tier, minimo="M20", maximo="M30"):
     """Responde a Admin API com um cluster no tier pedido."""
     class RespostaFake:

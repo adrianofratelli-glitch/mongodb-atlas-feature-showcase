@@ -37,6 +37,18 @@ STREAM_DB="${STREAM_DB:-pix}"
 # o scale-up segue disponível para quando for necessário. O que normalizamos é o
 # tier corrente (para a PoV não herdar o tier de uma execução anterior) e o piso
 # (para o cluster poder descer mais quando ocioso).
+# ASP e Kafka só sobem sob demanda. A aba de Streaming reproduz uma execução
+# gravada (backend/data/replay_streaming.json), então os números que ela mostra
+# já foram medidos com ASP e Kafka reais — provisioná-los a cada demonstração
+# custaria por segundo sem acrescentar nada à tela.
+#
+# Eles continuam aqui porque são o que GRAVA uma execução nova: com
+# STREAMING_AO_VIVO=1 o `up` volta a montar o ambiente completo, que é o
+# pré-requisito de `scripts/capture_replay.py`.
+AO_VIVO="${STREAMING_AO_VIVO:-$(le_env STREAMING_AO_VIVO)}"
+AO_VIVO="${AO_VIVO:-0}"
+[[ "$AO_VIVO" == "1" || "$AO_VIVO" == "true" ]] && AO_VIVO=1 || AO_VIVO=0
+
 TIER_INICIAL="${ATLAS_TIER_INICIAL:-$(le_env ATLAS_TIER_INICIAL)}"
 TIER_INICIAL="${TIER_INICIAL:-M20}"
 # Piso do auto-scaling. VAZIO por padrão = não mexe. Descer o piso parece grátis
@@ -258,15 +270,24 @@ case "${1:-status}" in
     tier_inicial
     estado_cluster
     # Um ciclo de apresentação começa sem documentos, offsets de aplicação ou
-    # estado de janela da rodada anterior.
+    # estado de janela da rodada anterior. O processor é parado mesmo no modo
+    # padrão: se sobrou ligado de uma gravação anterior, ele estaria cobrando.
     processor stop || true
     limpa_dados_pix
-    recria_processor
-    if "$BASE/scripts/kafka-local.sh" up; then
-      "$BASE/scripts/setup-kafka-connector.sh" ||
-        echo "   (connector falhou — a coluna Kafka mostra o diagnóstico)"
+
+    if [[ "$AO_VIVO" == "1" ]]; then
+      echo "▶ STREAMING_AO_VIVO=1 — montando ASP e Kafka para gravar uma execução."
+      recria_processor
+      if "$BASE/scripts/kafka-local.sh" up; then
+        "$BASE/scripts/setup-kafka-connector.sh" ||
+          echo "   (connector falhou — a coluna Kafka mostra o diagnóstico)"
+      else
+        echo "   (Kafka opcional falhou — a coluna 2 renderiza 'não configurado')"
+      fi
     else
-      echo "   (Kafka opcional falhou — a coluna 2 renderiza 'não configurado')"
+      echo "   ASP e Kafka não subiram: a aba de Streaming reproduz uma execução"
+      echo "   gravada e não precisa deles. Para gravar uma nova, use"
+      echo "   STREAMING_AO_VIVO=1 ./scripts/ambiente.sh up"
     fi
     echo "✅ Ambiente pronto."
     ;;

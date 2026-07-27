@@ -57,6 +57,10 @@ KAFKA_CONSUMER_GROUP = (
     os.getenv("KAFKA_CONSUMER_GROUP", "showcase-pix-observer").strip()
     or "showcase-pix-observer"
 )
+# Modo ao vivo = ambiente de GRAVAÇÃO (ASP + Kafka provisionados). Fora dele, a
+# aba 07 reproduz uma execução já gravada e esses serviços ficam desligados de
+# propósito — ver `scripts/ambiente.sh` e `bin/overview --ao-vivo`.
+AO_VIVO = os.getenv("STREAMING_AO_VIVO", "0").strip().lower() in {"1", "true", "yes"}
 ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true", "yes"}
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
@@ -897,6 +901,21 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
         }
     else:
         checks["cluster_tier"] = {"ok": True, "message": f"cluster em {info['tier']}"}
+
+    # ASP e Kafka são o equipamento de GRAVAÇÃO, não o de demonstração: a aba 07
+    # reproduz uma execução já medida contra eles. Fora do modo ao vivo, estarem
+    # desligados é o estado correto — reportá-los em vermelho faria o pré-voo
+    # parecer quebrado justamente quando está como deveria.
+    if not AO_VIVO:
+        checks["streaming_asp"] = {
+            "ok": True,
+            "message": "não provisionado — a aba 07 reproduz uma execução gravada",
+        }
+        checks["streaming_kafka"] = {
+            "ok": True,
+            "message": "não provisionado — a aba 07 reproduz uma execução gravada",
+        }
+        return checks
 
     ok_asp, detalhe_asp, tier = _asp_reachable()
     atraso = _asp_atraso_s() if ok_asp else None

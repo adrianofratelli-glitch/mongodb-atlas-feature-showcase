@@ -27,7 +27,9 @@ TOPIC="atlas.$STREAMING_DB.$STREAMING_COLLECTION"
 CONSUMER_GROUP="${KAFKA_CONSUMER_GROUP:-showcase-pix-observer}"
 
 fail() { echo "❌ $1" >&2; exit 1; }
-porta_ativa() { lsof -ti:"$1" >/dev/null 2>&1; }
+# Só LISTEN: sem o filtro, uma conexão ESTABLISHED para a porta faz o script
+# achar que o serviço está de pé quando não está.
+porta_ativa() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
 subir() {
   command -v brew >/dev/null || fail "Homebrew não encontrado."

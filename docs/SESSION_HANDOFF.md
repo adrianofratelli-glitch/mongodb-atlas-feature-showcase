@@ -186,6 +186,12 @@ column to report `consumindo`, then start the generator.
 `scripts/capture_replay.py` encodes exactly that ordering; the first capture
 attempt failed this way (`kafka: unicos=0`, ASP fully accounted at `pend=0`).
 
+`scripts/ambiente.sh` and `bin/overview` no longer provision ASP or Kafka by
+default (`STREAMING_AO_VIVO=1` / `overview --ao-vivo` brings them back). They
+are the recording rig, not the demo rig: the numbers on screen were already
+measured against them. The `down` path still stops both unconditionally, since
+a processor left running from a recording session bills per second.
+
 Still open: the idle-polling cost itself is untouched. Pausing polls on
 `document.visibilityState !== 'visible'` and when the generator is stopped, plus
 revisiting the `/streaming/oplog` probe, is the remaining work for live mode.

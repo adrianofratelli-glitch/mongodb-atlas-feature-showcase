@@ -326,6 +326,19 @@ Actions that would act on a real environment (connector restart, DLQ injection,
 checkpoint restart) stay visible but disabled — the capability is part of the
 story, but there is nothing to act on during a replay.
 
+**ASP and Kafka are no longer provisioned by default.** `overview` brings up the
+cluster, the backend and the frontend — nothing else. The Streaming page replays
+a recording whose numbers were already measured against a real ASP processor and
+a real Kafka connector, so standing them up again on every demo costs money (the
+processor bills per second) without changing anything on screen.
+
+They are still one flag away, because they are what *records* a run:
+
+```bash
+overview --ao-vivo            # cluster + ASP + Kafka + backend + frontend
+python scripts/capture_replay.py
+```
+
 Record a run with the environment up:
 
 ```bash
