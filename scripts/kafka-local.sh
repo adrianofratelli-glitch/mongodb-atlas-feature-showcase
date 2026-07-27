@@ -114,13 +114,34 @@ estado() {
 derrubar() {
   echo "▶ Removendo connector e dados Kafka da PoV..."
   if porta_ativa "$CONNECT_PORT"; then
-    curl -fsS "http://localhost:$CONNECT_PORT/connectors" 2>/dev/null |
-      python3 -c 'import json,sys
-base=sys.argv[1]
-for name in json.load(sys.stdin):
-    if name == base or name.startswith(base + "-"):
+    # O corpo é lido para uma variável antes de ser interpretado: num teardown o
+    # Connect pode estar encerrando e devolver algo que não é a lista JSON
+    # esperada. Antes isso virava um traceback do json.load no meio da saída do
+    # `down` — feio e, pior, indistinguível de uma falha real de limpeza. Agora
+    # avisa em uma linha e mostra o começo do corpo, que é o que se precisa para
+    # diagnosticar da próxima vez.
+    local corpo
+    corpo="$(curl -fsS --max-time 5 "http://localhost:$CONNECT_PORT/connectors" 2>/dev/null || true)"
+    CONNECT_BODY="$corpo" python3 -c 'import json, os, sys
+corpo = os.environ.get("CONNECT_BODY", "").strip()
+if not corpo:
+    sys.exit(0)
+try:
+    nomes = json.loads(corpo)
+    if not isinstance(nomes, list):
+        raise ValueError(f"esperava uma lista, veio {type(nomes).__name__}")
+except Exception as exc:
+    print(f"   (lista de connectors ilegível: {exc}; corpo: {corpo[:200]!r})", file=sys.stderr)
+    sys.exit(0)
+base = sys.argv[1]
+for name in nomes:
+    if name == base or (isinstance(name, str) and name.startswith(base + "-")):
         print(name)' "$CONNECTOR_NAME" |
       while IFS= read -r connector; do
+        # Apagar o connector não apaga o offset dele; zerar aqui evita que o
+        # próximo `up` retome de um resume token que já saiu do oplog.
+        curl -fsS -X PUT "http://localhost:$CONNECT_PORT/connectors/$connector/stop" >/dev/null 2>&1 || true
+        curl -fsS -X DELETE "http://localhost:$CONNECT_PORT/connectors/$connector/offsets" >/dev/null 2>&1 || true
         curl -fsS -X DELETE "http://localhost:$CONNECT_PORT/connectors/$connector" >/dev/null 2>&1 || true
       done || true
   fi
