@@ -291,6 +291,44 @@ in the tens of thousands: it fits in cache, and the deletion rate is far too low
 to compete with the peak or to flood the oplog the resume-token demo depends on.
 The window is still longer than any demo burst.
 
+**Replay mode — demo with the cluster paused.** The Streaming page has an
+**Ao vivo / Replay** switch. Replay serves one *recorded real run* from
+`backend/data/replay_streaming.json` through `/replay/*`, which mirrors the
+`/streaming/*` paths. Nothing is written to MongoDB during a replay, so the demo
+works with the cluster **paused** and with no Kafka or ASP running — only the
+backend and the frontend.
+
+**Open the page before starting the generator.** The Change Stream and Kafka
+consumers start lazily, on the first SSE subscription, and the Kafka observer
+joins its consumer group with `auto.offset.reset=latest`. If the generator is
+already running when the page opens, the connector will have published thousands
+of messages while the group was still joining, the consumer starts at the tail,
+and the Kafka column reads zero for that run — which also blocks reconciliation.
+Wait for the Kafka column to report `consumindo`, then start the generator.
+
+Record a run with the environment up:
+
+```bash
+python scripts/capture_replay.py                    # 60 s of real writes at 200 TPS
+python scripts/capture_replay.py --segundos 90 --tps 200
+```
+
+The capture subscribes to the same SSE streams and polls the same endpoints the
+page consumes live, storing each payload with its timestamp. **The replayed
+numbers are measurements, not simulation** — the recorder does not synthesise
+anything. Because that distinction only holds if the audience can see it, the
+page shows a permanent badge naming the recorded `run_id` and its date, every
+replay payload carries `replay: true`, and actions that act on the real
+environment (connector restart, DLQ injection, checkpoint restart, Reset) are
+disabled. Do not present a replay as a live run.
+
+Why it exists: M20/M30 are burstable instances, and Atlas compute auto-scaling
+fires on **relative** CPU (`NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75`), not
+absolute. Measured on this project, 17.6% absolute CPU registered as 88%
+relative and scaled the cluster to M30 — with the generator already stopped, on
+dashboard polling alone. Replay removes that cost entirely for the parts of the
+demo that only need to show the mechanics.
+
 **Staying on M20.** The module is calibrated so the whole PoV runs on the entry
 tier without the cluster scaling up:
 

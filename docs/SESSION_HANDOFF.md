@@ -82,9 +82,14 @@ index keys, and a collection scan reads none — the pair of metrics together is
 what identifies the plan change.
 
 The cluster stayed on M20 throughout, peaking at 16.4% CPU and 2.27 GB of 4 GB.
-Two honest limits on this evidence: 25 minutes is far too short to trigger Atlas
-compute auto-scaling (which needs sustained utilisation over roughly an hour),
-so "it did not scale" proves less than the headroom does; and phase B is a
+**Do not read that 16.4% as headroom** — see "Auto-scaling fires on RELATIVE
+CPU" below, which corrects it. The threshold is relative to a burstable
+instance's baseline, and ~17% absolute is ~88% relative. The cluster scaled to
+M30 later the same day.
+
+Two further limits on this evidence: 25 minutes is far too short to trigger
+Atlas compute auto-scaling, which averages over roughly an hour, so "it did not
+scale" proves little on its own; and phase B is a
 *weakened* reproduction — it reverted the index and the poll interval but kept
 TTL at 600 s and 200 TPS, so its live set was ~131k documents against the
 ~900k the original 1800 s / 500 TPS configuration produced.
@@ -123,6 +128,61 @@ encoded in the script:
 - Each tier has a maximum disk size. This cluster has 150 GB, and M10 tops out
   at 128 GB, so an M10 floor is rejected. `ATLAS_MIN_TIER` defaults to empty
   (leave the floor alone) for that reason.
+
+### Auto-scaling fires on RELATIVE CPU — and replay mode
+
+The fixes above were not enough. The cluster scaled to M30 again the same day,
+at 15:36Z, **with the generator stopped** since 14:45Z. The Atlas event payload
+is unambiguous:
+
+```
+computeAutoScalingTriggers: "CPU_ABOVE"
+threshold: NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75  (mode: AVERAGE)
+absoluteCpuMetric: 0.176   cpuThresholdType: "RELATIVE"   relativeCpuMetric: 0.881
+```
+
+M20/M30 are burstable instances. The threshold applies to CPU **relative** to
+the instance's baseline entitlement, not absolute CPU. 17.6% absolute registered
+as 88% relative. An earlier scale event (2026-07-26, before the fixes) shows
+27.0% absolute at 100% relative — so the fixes did cut CPU by about a third, but
+not below the line.
+
+This corrects an earlier conclusion recorded here: "16.4% CPU is far below the
+75% threshold" compared the right metric against the wrong ruler.
+
+The consequence that matters operationally: with the generator stopped, what
+sustained that CPU was **the dashboard itself** — three change-stream cursors
+plus polling (generator status 1 s, oplog/read-probe/DLQ 4 s, reconciliation and
+ASP 5 s, Kafka 4 s). `/streaming/oplog` alone does a `$natural` sort over
+`local.oplog.rs` every 4 s. Leaving the page open costs cluster.
+
+**Replay mode** (`backend/routers/replay.py`, `scripts/capture_replay.py`) is
+the answer to that: it replays one recorded real run with the cluster paused, so
+the mechanics can be demonstrated at zero compute cost.
+
+The honesty constraint is part of the design, not decoration. The PoV's whole
+claim is "evidence instead of claims", so a mode that *looks* live while nothing
+happens would invert it — and what would become fake is exactly what the module
+sells (change streams, Kafka fan-out, ASP windows). Therefore: the recorder
+synthesises nothing, every replayed payload carries `replay: true`,
+`/replay/manifest` states the origin and the recorded `run_id`, the page shows a
+permanent badge, actions that touch the real environment are disabled, and a
+test asserts `replay.py` never imports or calls into Mongo. A replay must never
+be presented as a live run.
+
+**Demo gotcha found while recording:** the Change Stream and Kafka consumers
+start lazily, on the first SSE subscription, and the Kafka observer joins its
+group with `auto.offset.reset=latest`. Start the generator *before* the page is
+open and the connector publishes thousands of messages while the group is still
+joining — the consumer then starts at the tail, the Kafka column reads zero, and
+the run never reconciles. Open the Streaming page first, wait for the Kafka
+column to report `consumindo`, then start the generator.
+`scripts/capture_replay.py` encodes exactly that ordering; the first capture
+attempt failed this way (`kafka: unicos=0`, ASP fully accounted at `pend=0`).
+
+Still open: the idle-polling cost itself is untouched. Pausing polls on
+`document.visibilityState !== 'visible'` and when the generator is stopped, plus
+revisiting the `/streaming/oplog` probe, is the remaining work for live mode.
 
 ### Environment lifecycle: one command, clean boundaries
 
@@ -193,7 +253,7 @@ language.
 Validated after the current implementation:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 91 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 99 passed
 npm --prefix frontend run build                    # Vite build passed
 git diff --check                                   # passed
 ```

@@ -15,6 +15,7 @@ from routers import (
     geo,
     hot_cold,
     reindexacao,
+    replay,
     schema_validation,
     streaming,
     transactions,
@@ -75,6 +76,7 @@ app.include_router(change_streams.router)
 app.include_router(transactions.router)
 app.include_router(streaming.router)
 app.include_router(geo.router)
+app.include_router(replay.router)
 
 
 @app.get("/")

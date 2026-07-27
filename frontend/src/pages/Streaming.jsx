@@ -23,6 +23,9 @@ const CONCEPT_PRESETS = [
 // ele desiste de vez, e as três colunas ficam mudas até alguém dar F5 no meio da
 // apresentação. Aqui a gente fecha e reabre até conseguir.
 const SSE_RETRY_MS = 2000
+// Ações que atuam no ambiente real (restart de connector, DLQ, checkpoint,
+// reset). No replay não existe alvo: ficam desabilitadas em vez de mentir.
+const SEM_ALVO_NO_REPLAY = 'Indisponível no replay: estas ações atuam sobre o ambiente real'
 
 function useSse(path, onMessage, enabled = true) {
   const [connected, setConnected] = useState(false)
@@ -132,12 +135,32 @@ function Sparkline({ values }) {
 export default function Streaming() {
   const { call } = useApi()
 
+  // ── Modo: ao vivo × replay ───────────────────────────────────────────────
+  // O replay reproduz UMA execução real gravada (scripts/capture_replay.py) e
+  // não escreve no banco. Existe porque M20/M30 são instâncias burstable e o
+  // auto-scaling do Atlas dispara por CPU RELATIVA: 17,6% absolutos deram 88%
+  // relativos e escalaram o cluster com o gerador já parado, só com esta tela
+  // aberta. Com o replay a demo roda com o cluster pausado.
+  //
+  // Os números do replay são medições, não simulação — mas a tela precisa dizer
+  // qual dos dois o operador está vendo, sempre. Ver o selo mais abaixo.
+  const [modo, setModo] = useState('ao_vivo')
+  const [manifest, setManifest] = useState(null)
+  const replay = modo === 'replay'
+  const base = replay ? '/replay' : ''
+
+  useEffect(() => {
+    // Sonda de capacidade: responde 200 com `disponivel: false` quando não há
+    // gravação, então o seletor só aparece onde o modo realmente existe.
+    call('/replay/manifest').then((d) => d && setManifest(d))
+  }, [call])
+
   // ── Cenário PIX conceitual ────────────────────────────────────────────────
   const [cenario, setCenario] = useState(null)
   const [rede, setRede] = useState(null)
   const [tpsMax, setTpsMax] = useState(TPS_MAX_PADRAO)
   useEffect(() => {
-    call('/streaming/cenario').then((d) => {
+    call(`${base}/streaming/cenario`).then((d) => {
       if (!d) return
       if (Number.isFinite(d.tps_max) && d.tps_max > 0) setTpsMax(d.tps_max)
       // Durante um rollout a UI nova pode conversar por alguns segundos com
@@ -157,8 +180,8 @@ export default function Streaming() {
         },
       })
     })
-    call('/streaming/rede').then((d) => d && setRede(d))
-  }, [call])
+    call(`${base}/streaming/rede`).then((d) => d && setRede(d))
+  }, [call, base])
 
   // ── Gerador ──────────────────────────────────────────────────────────────
   const [tps, setTps] = useState(200)
@@ -166,7 +189,7 @@ export default function Streaming() {
 
   const tpsTocado = useRef(false)
   const refreshGen = useCallback(async () => {
-    const data = await call('/streaming/generator/status')
+    const data = await call(`${base}/streaming/generator/status`)
     if (!data) return
     setGen(data)
     // Enquanto o operador não mexeu no slider, ele reflete o que o backend está
@@ -174,7 +197,7 @@ export default function Streaming() {
     if (!tpsTocado.current && data.running && data.tps_alvo) {
       setTps(Math.min(tpsMax, Math.max(10, data.tps_alvo)))
     }
-  }, [call, tpsMax])
+  }, [call, tpsMax, base])
 
   useEffect(() => {
     refreshGen()
@@ -183,6 +206,13 @@ export default function Streaming() {
   }, [refreshGen])
 
   const aplicarTps = useCallback(async (valor) => {
+    // No replay o "play" move o relógio da gravação; não há TPS a aplicar,
+    // porque não há escrita. O gerador real fica intocado.
+    if (replay) {
+      await call('/replay/play', { method: 'POST' })
+      refreshGen()
+      return
+    }
     const tpsSeguro = Math.min(tpsMax, Math.max(10, Number(valor) || 10))
     tpsTocado.current = true
     setTps(tpsSeguro)
@@ -192,16 +222,19 @@ export default function Streaming() {
       body: JSON.stringify({ tps: tpsSeguro }),
     })
     refreshGen()
-  }, [call, refreshGen, tpsMax])
+  }, [call, refreshGen, tpsMax, replay])
 
-  const stopGen = async () => { await call('/streaming/generator/stop', { method: 'POST' }); refreshGen() }
+  const stopGen = async () => {
+    await call(replay ? '/replay/stop' : '/streaming/generator/stop', { method: 'POST' })
+    refreshGen()
+  }
 
   // ── Coluna 1 — Change Streams ────────────────────────────────────────────
   const [csEvents, setCsEvents] = useState([])
   const [csState, setCsState] = useState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
   const [csMetrics, setCsMetrics] = useState(null)
 
-  const csConnected = useSse('/streaming/changestream', (msg) => {
+  const csConnected = useSse(`${base}/streaming/changestream`, (msg) => {
     if (msg.type === 'evento') {
       setCsEvents((prev) => push(prev, msg))
     } else if (msg.type === 'metricas') {
@@ -226,25 +259,25 @@ export default function Streaming() {
   const [kafkaMetrics, setKafkaMetrics] = useState(null)
   const [kafkaStatus, setKafkaStatus] = useState(null)
 
-  useSse('/streaming/kafka', (msg) => {
+  useSse(`${base}/streaming/kafka`, (msg) => {
     if (msg.type === 'mensagem') setKafkaMsgs((prev) => push(prev, msg))
     else if (msg.type === 'metricas') setKafkaMetrics(msg)
     else if (msg.type === 'reset') { setKafkaMsgs([]); setKafkaMetrics(null) }
   })
 
   useEffect(() => {
-    const tick = async () => { const d = await call('/streaming/kafka/status'); if (d) setKafkaStatus(d) }
+    const tick = async () => { const d = await call(`${base}/streaming/kafka/status`); if (d) setKafkaStatus(d) }
     tick()
     const t = setInterval(tick, 4000)
     return () => clearInterval(t)
-  }, [call])
+  }, [call, base])
 
   const connectorState = kafkaStatus?.connector?.estado
   const kafkaOk = connectorState === 'RUNNING'
   const kafkaQuebrado = ['FAILED', 'DEGRADADO', 'SEM_TASK'].includes(connectorState)
   const reiniciarKafka = async () => {
     await call('/streaming/kafka/restart', { method: 'POST' })
-    const d = await call('/streaming/kafka/status')
+    const d = await call(`${base}/streaming/kafka/status`)
     if (d) setKafkaStatus(d)
   }
   const reiniciarConsumidorKafka = async () => {
@@ -257,18 +290,18 @@ export default function Streaming() {
   const [aspMetrics, setAspMetrics] = useState(null)
   const [aspStatus, setAspStatus] = useState(null)
 
-  useSse('/streaming/asp', (msg) => {
+  useSse(`${base}/streaming/asp`, (msg) => {
     if (msg.type === 'janela') { setJanelas((prev) => push(prev, msg)); setAspMetrics(msg) }
     else if (msg.type === 'dlq') setDlq((prev) => push(prev, msg))
     else if (msg.type === 'reset') { setJanelas([]); setDlq([]); setAspMetrics(null) }
   })
 
   useEffect(() => {
-    const tick = async () => { const d = await call('/streaming/asp/status'); if (d) setAspStatus(d) }
+    const tick = async () => { const d = await call(`${base}/streaming/asp/status`); if (d) setAspStatus(d) }
     tick()
     const t = setInterval(tick, 5000)
     return () => clearInterval(t)
-  }, [call])
+  }, [call, base])
 
   // ── Evidências de confiabilidade ─────────────────────────────────────────
   const [oplog, setOplog] = useState(null)
@@ -278,7 +311,7 @@ export default function Streaming() {
   useEffect(() => {
     const tick = async () => {
       const [o, l, d] = await Promise.all([
-        call('/streaming/oplog'), call('/streaming/leitura'), call('/streaming/asp/dlq/resumo'),
+        call(`${base}/streaming/oplog`), call(`${base}/streaming/leitura`), call(`${base}/streaming/asp/dlq/resumo`),
       ])
       if (o) setOplog(o)
       if (l) setLeitura(l)
@@ -287,7 +320,7 @@ export default function Streaming() {
     tick()
     const t = setInterval(tick, 4000)
     return () => clearInterval(t)
-  }, [call])
+  }, [call, base])
   useEffect(() => {
     if (!gen?.run_id) {
       setReconciliacao(null)
@@ -300,7 +333,7 @@ export default function Streaming() {
     let t = null
     const parar = () => { if (t) { clearInterval(t); t = null } }
     const tick = async () => {
-      const d = await call(`/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
+      const d = await call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
       if (!d) return
       setReconciliacao(d)
       if (d.final === 'reconciliado' && !d.gerador_ativo) parar()
@@ -308,7 +341,7 @@ export default function Streaming() {
     tick()
     t = setInterval(tick, 5000)
     return parar
-  }, [call, gen?.run_id])
+  }, [call, gen?.run_id, base])
 
   const aspOk = aspStatus?.estado === 'configurado'
   const injectInvalid = async (quantidade = 1) => {
@@ -316,7 +349,7 @@ export default function Streaming() {
   }
   const reprocessarDlq = async () => {
     const r = await call('/streaming/asp/dlq/reprocessar?limite=1000', { method: 'POST', timeoutMs: 120_000 })
-    if (r) { const d = await call('/streaming/asp/dlq/resumo'); if (d) setDlqResumo(d) }
+    if (r) { const d = await call(`${base}/streaming/asp/dlq/resumo`); if (d) setDlqResumo(d) }
   }
   const reiniciarAspCheckpoint = async () => {
     await call('/streaming/asp/restart-checkpoint', { method: 'POST', timeoutMs: 90_000 })
@@ -361,6 +394,36 @@ export default function Streaming() {
         </div>
       </div>
 
+      {/* Seletor de modo + selo de origem.
+          O selo é deliberadamente grande e permanente: quem olha a tela precisa
+          saber, sem perguntar, se está vendo escrita ao vivo ou a reprodução de
+          uma execução gravada. Os números do replay são reais (medidos), mas
+          apresentá-los como se estivessem acontecendo agora seria enganoso. */}
+      {manifest?.disponivel && (
+        <div className={`card str-modo${replay ? ' str-modo-replay' : ''}`}>
+          <div className="str-modo-linha">
+            <div className="str-modo-botoes">
+              <button className={`tag${!replay ? ' active' : ''}`}
+                onClick={() => setModo('ao_vivo')}>● Ao vivo</button>
+              <button className={`tag${replay ? ' active' : ''}`}
+                onClick={() => setModo('replay')}>▶ Replay</button>
+            </div>
+            {replay ? (
+              <div className="str-modo-selo">
+                <strong>▶ REPLAY — nenhuma escrita está sendo feita no Atlas.</strong>{' '}
+                Reprodução da execução <code>{manifest.run_id}</code>, gravada em{' '}
+                {manifest.gravado_em}. Os valores são medições reais dessa execução.
+              </div>
+            ) : (
+              <div className="str-modo-selo">
+                <strong>● AO VIVO</strong> — o gerador escreve de verdade em{' '}
+                <code>pix.transacoes</code> e o cluster processa. Consome compute do Atlas.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Gerador */}
       <div className="card str-generator">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -374,8 +437,12 @@ export default function Streaming() {
           <div style={{ display: 'flex', gap: 8 }}>
             {gen?.running
               ? <button className="btn btn-danger btn-sm" onClick={stopGen}>■ Parar</button>
-              : <button className="btn btn-primary btn-sm" onClick={() => aplicarTps(tps)}>▶ Iniciar a {num(tps)} TPS</button>}
-            <button className="btn btn-default btn-sm" onClick={resetAll}>🗑 Reset</button>
+              : <button className="btn btn-primary btn-sm" onClick={() => aplicarTps(tps)}>
+                  {replay ? '▶ Reproduzir execução gravada' : `▶ Iniciar a ${num(tps)} TPS`}
+                </button>}
+            {/* Reset apaga coleções reais — no replay não há o que apagar. */}
+            <button className="btn btn-default btn-sm" onClick={resetAll} disabled={replay}
+              title={replay ? 'Indisponível no replay: nada é escrito no banco' : undefined}>🗑 Reset</button>
           </div>
         </div>
 
@@ -451,7 +518,8 @@ export default function Streaming() {
               <div className="str-alert">Cursor derrubado — o gerador continua escrevendo. Reabrindo em 3 s com <code>resume_after</code>…</div>
             )}
             <button className="btn btn-default btn-sm" style={{ width: '100%' }}
-              onClick={dropResume} disabled={csState.fase === 'derrubado'}>
+              onClick={dropResume} disabled={replay || csState.fase === 'derrubado'}
+              title={replay ? SEM_ALVO_NO_REPLAY : undefined}>
               ⚡ Derrubar e retomar
             </button>
             <div className="str-feed">
@@ -509,7 +577,8 @@ export default function Streaming() {
                 {kafkaStatus.connector?.tasks?.filter(t => t.trace).map(t => (
                   <div key={t.id} className="str-trace">task {t.id}: {t.trace}</div>
                 ))}
-                <button className="btn btn-default btn-sm" style={{ width: '100%', marginTop: 10 }} onClick={reiniciarKafka}>
+                <button className="btn btn-default btn-sm" style={{ width: '100%', marginTop: 10 }} onClick={reiniciarKafka} disabled={replay}
+                  title={replay ? SEM_ALVO_NO_REPLAY : undefined}>
                   ↻ Reiniciar connector
                 </button>
               </div>
@@ -542,7 +611,8 @@ export default function Streaming() {
                   <span className="str-token-l">connectors</span>
                   <code>{kafkaStatus?.connector?.connectors ?? '—'} × 1 task · {kafkaStatus?.particoes_consumo ?? '—'} partições</code>
                 </div>
-                <button className="btn btn-default btn-sm" style={{ width: '100%' }} onClick={reiniciarConsumidorKafka}>
+                <button className="btn btn-default btn-sm" style={{ width: '100%' }} onClick={reiniciarConsumidorKafka} disabled={replay}
+                  title={replay ? SEM_ALVO_NO_REPLAY : undefined}>
                   ↻ Reiniciar consumidor pelo offset
                 </button>
                 <div className="str-feed">
@@ -620,12 +690,16 @@ export default function Streaming() {
                 )}
                 <Sparkline values={janelas.slice(0, 24).map(j => j.qtd || 0).reverse()} />
                 <div className="str-dlq-acoes">
-                  <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1)}>🧪 1 inválido</button>
-                  <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1000)}>🧪 1.000</button>
-                  <button className="btn btn-default btn-xs" onClick={reprocessarDlq} disabled={!dlqResumo?.total}>
+                  <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1)} disabled={replay}
+                    title={replay ? SEM_ALVO_NO_REPLAY : undefined}>🧪 1 inválido</button>
+                  <button className="btn btn-default btn-xs" onClick={() => injectInvalid(1000)} disabled={replay}
+                    title={replay ? SEM_ALVO_NO_REPLAY : undefined}>🧪 1.000</button>
+                  <button className="btn btn-default btn-xs" onClick={reprocessarDlq} disabled={replay || !dlqResumo?.total}
+                    title={replay ? SEM_ALVO_NO_REPLAY : undefined}>
                     ♻️ Reprocessar
                   </button>
-                  <button className="btn btn-default btn-xs" onClick={reiniciarAspCheckpoint}>
+                  <button className="btn btn-default btn-xs" onClick={reiniciarAspCheckpoint} disabled={replay}
+                    title={replay ? SEM_ALVO_NO_REPLAY : undefined}>
                     ↻ Restart por checkpoint
                   </button>
                 </div>

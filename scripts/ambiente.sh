@@ -68,9 +68,38 @@ estado_cluster() {
     python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('stateName','?'), '| paused:', d.get('paused'), '|', [rc['electableSpecs']['instanceSize'] for s in d.get('replicationSpecs',[]) for rc in s['regionConfigs']])"
 }
 
+# Pausar/retomar. A falha NÃO pode ser silenciosa: o Atlas recusa pausar um
+# cluster retomado há menos de 60 minutos (CANNOT_PAUSE_RECENTLY_RESUMED_CLUSTER),
+# e a versão anterior descartava o corpo do erro e seguia imprimindo "sem custo
+# de compute" com o cluster rodando — exatamente a informação errada, já que é
+# ela que decide se a fatura continua correndo.
 pausa_cluster() { # true|false
-  atlas PATCH "/groups/$PROJ/clusters/$CLUSTER" "{\"paused\": $1}" >/dev/null
-  echo "   cluster paused=$1 solicitado"
+  local corpo codigo
+  corpo="$(curl -sS --digest -u "$PUB:$PRIV" -X PATCH -H "$ACCEPT" \
+    -H "Content-Type: $ATLAS_MEDIA_TYPE" --data "{\"paused\": $1}" \
+    -w '\n%{http_code}' "$API/groups/$PROJ/clusters/$CLUSTER" 2>/dev/null)"
+  codigo="$(printf '%s' "$corpo" | tail -n1)"
+
+  if [[ "$codigo" == 2* ]]; then
+    echo "   cluster paused=$1 solicitado"
+    return 0
+  fi
+
+  local detalhe
+  detalhe="$(printf '%s' "$corpo" | sed '$d' | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print(d.get("errorCode", ""), "-", d.get("detail", ""))
+except Exception:
+    print(sys.stdin.read()[:200] if not sys.stdin.closed else "")
+' 2>/dev/null)"
+  echo "❌ Falha ao definir paused=$1 (HTTP $codigo): $detalhe" >&2
+  if [[ "$detalhe" == *CANNOT_PAUSE_RECENTLY_RESUMED_CLUSTER* ]]; then
+    echo "   O Atlas exige 60 min rodando após um resume. O cluster CONTINUA" >&2
+    echo "   consumindo compute até lá — pause pela console quando liberar." >&2
+  fi
+  return 1
 }
 
 aguarda_idle() {
@@ -250,12 +279,18 @@ case "${1:-status}" in
       echo "❌ A limpeza direta dos dados PIX falhou." >&2
     }
     "$BASE/scripts/kafka-local.sh" down || falhou=1
-    pausa_cluster true || falhou=1
+    pausou=1
+    pausa_cluster true || { falhou=1; pausou=0; }
     if [[ "$falhou" == "0" ]]; then
       echo "✅ Sem custo de compute: cluster pausado e processor parado."
       echo "   (armazenamento do cluster continua sendo cobrado)"
     else
-      echo "⚠️ O desligamento foi solicitado, mas houve falha parcial; confira o status." >&2
+      echo "⚠️ Desligamento parcial; confira o status." >&2
+      # A distinção que importa é de custo: processor parado é uma economia,
+      # cluster não pausado é fatura correndo. Não misturar as duas.
+      if [[ "$pausou" == "0" ]]; then
+        echo "⚠️ O CLUSTER NÃO FOI PAUSADO e segue consumindo compute." >&2
+      fi
       exit 1
     fi
     ;;
