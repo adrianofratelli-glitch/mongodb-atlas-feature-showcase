@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react'
+import React, { useCallback, useState, useEffect } from 'react'
+import { useIntervaloVisivel } from './hooks/usePolling'
 import Reindexacao from './pages/Reindexacao'
 import HotCold from './pages/HotCold'
 import Aggregations from './pages/Aggregations'
@@ -112,16 +113,19 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash)
   }, [])
 
-  // Contagens reais do cluster (nada hard-coded na UI)
+  // Contagens reais do cluster (nada hard-coded na UI). Uma vez ao montar.
   useEffect(() => {
     fetch('/api/stats').then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d) }).catch(() => {})
     fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
-    const lerCluster = () => fetch('/api/streaming/cluster').then(r => r.ok ? r.json() : null)
-      .then(d => { if (d) setCluster(d) }).catch(() => {})
-    lerCluster()
-    const t = setInterval(lerCluster, 30000)
-    return () => clearInterval(t)
   }, [])
+
+  // Tier do cluster: a Admin API é control plane, não consome CPU do banco, mas
+  // uma aba esquecida não precisa perguntar de 30 em 30 segundos para sempre.
+  // Só enquanto visível, e mais espaçado — tier muda em minutos, não segundos.
+  useIntervaloVisivel(useCallback(() => {
+    fetch('/api/streaming/cluster').then(r => r.ok ? r.json() : null)
+      .then(d => { if (d) setCluster(d) }).catch(() => {})
+  }, []), 120000)
 
   const mod = MODULES.find(m => m.key === active)
   const Component = mod.component

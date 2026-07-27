@@ -209,7 +209,25 @@ a processor left running from a recording session bills per second.
   used the same list to pick PIDs to kill, so it could kill a client instead of
   the server. Both now filter `-sTCP:LISTEN`.
 
-Still open: the idle-polling cost itself is untouched. Pausing polls on
+**Idle polling is now gone.** `frontend/src/hooks/usePolling.js` adds
+`useVisivel()` and `useIntervaloVisivel()`; every interval on the Streaming page
+and the shell's cluster poll go through it, and `useSse` closes its
+EventSource when the tab is hidden. Two rules: nothing polls while the tab is
+hidden, and nothing polls for data that cannot change — the recorded snapshots
+only move while the playback clock runs.
+
+Measured in the browser, replay stopped: **48 requests per 20 s → 1**. Tab
+hidden: **0 requests in 15 s**, resuming immediately on return. While playing it
+is back to the normal cadence, which is the point.
+
+Worth stating plainly, because an earlier note here implied otherwise: this is
+*not* what stopped the auto-scaling. The Atlas-facing load disappeared when
+module 07 became a replay (its polls now read a file, ~2 ms, no Mongo) and when
+ASP and Kafka stopped being provisioned, which removed three change-stream
+cursors. The only recurring remote call left is `/streaming/cluster`, and that
+is the Admin API — control plane, not cluster CPU. Killing the idle polling buys
+laptop and backend CPU, and it removes the held connections that caused the
+30 s fetch timeouts; it does not change the tier. Pausing polls on
 `document.visibilityState !== 'visible'` and when the generator is stopped, plus
 revisiting the `/streaming/oplog` probe, is the remaining work for live mode.
 

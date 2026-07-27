@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
+import { useIntervaloVisivel, useVisivel } from '../hooks/usePolling'
 import QueryBlock from '../components/QueryBlock'
 
 const MAX_FEED = 40
@@ -19,11 +20,15 @@ const SEM_ALVO_NO_REPLAY = 'Indisponível: esta aba reproduz uma execução grav
 
 function useSse(path, onMessage, enabled = true) {
   const [connected, setConnected] = useState(false)
+  const visivel = useVisivel()
   const handler = useRef(onMessage)
   handler.current = onMessage
 
   useEffect(() => {
-    if (!enabled) return undefined
+    // Aba escondida: fecha. Cada EventSource segura uma das ~6 conexões por
+    // host do HTTP/1.1, e três colunas em abas esquecidas esgotam o pool —
+    // foi assim que fetches comuns passaram a estourar 30 s de timeout.
+    if (!enabled || !visivel) return undefined
     let es = null
     let timer = null
     let vivo = true
@@ -44,7 +49,7 @@ function useSse(path, onMessage, enabled = true) {
     abrir()
 
     return () => { vivo = false; clearTimeout(timer); if (es) es.close(); setConnected(false) }
-  }, [path, enabled])
+  }, [path, enabled, visivel])
 
   return connected
 }
@@ -165,11 +170,9 @@ export default function Streaming() {
     if (data) setGen(data)
   }, [call, base])
 
-  useEffect(() => {
-    refreshGen()
-    const t = setInterval(refreshGen, 1000)
-    return () => clearInterval(t)
-  }, [refreshGen])
+  // Enquanto o relógio anda, 1 s. Parado, um heartbeat lento só para notar um
+  // play disparado de outra aba — a posição não muda sozinha.
+  useIntervaloVisivel(refreshGen, gen?.running ? 1000 : 15000)
 
   // Play move o relógio da gravação. Nenhuma escrita sai daqui.
   const play = useCallback(async () => {
@@ -218,12 +221,14 @@ export default function Streaming() {
     else if (msg.type === 'reset') { setKafkaMsgs([]); setKafkaMetrics(null) }
   })
 
-  useEffect(() => {
-    const tick = async () => { const d = await call(`${base}/streaming/kafka/status`); if (d) setKafkaStatus(d) }
-    tick()
-    const t = setInterval(tick, 4000)
-    return () => clearInterval(t)
+  // Snapshot gravado: só muda com o relógio andando. Uma carga inicial para o
+  // painel não nascer vazio, e poll apenas durante a reprodução.
+  const lerKafkaStatus = useCallback(async () => {
+    const d = await call(`${base}/streaming/kafka/status`)
+    if (d) setKafkaStatus(d)
   }, [call, base])
+  useEffect(() => { lerKafkaStatus() }, [lerKafkaStatus])
+  useIntervaloVisivel(lerKafkaStatus, 4000, Boolean(gen?.running))
 
   const connectorState = kafkaStatus?.connector?.estado
   const kafkaOk = connectorState === 'RUNNING'
@@ -249,52 +254,44 @@ export default function Streaming() {
     else if (msg.type === 'reset') { setJanelas([]); setDlq([]); setAspMetrics(null) }
   })
 
-  useEffect(() => {
-    const tick = async () => { const d = await call(`${base}/streaming/asp/status`); if (d) setAspStatus(d) }
-    tick()
-    const t = setInterval(tick, 5000)
-    return () => clearInterval(t)
+  const lerAspStatus = useCallback(async () => {
+    const d = await call(`${base}/streaming/asp/status`)
+    if (d) setAspStatus(d)
   }, [call, base])
+  useEffect(() => { lerAspStatus() }, [lerAspStatus])
+  useIntervaloVisivel(lerAspStatus, 5000, Boolean(gen?.running))
 
   // ── Evidências de confiabilidade ─────────────────────────────────────────
   const [oplog, setOplog] = useState(null)
   const [leitura, setLeitura] = useState(null)
   const [dlqResumo, setDlqResumo] = useState(null)
   const [reconciliacao, setReconciliacao] = useState(null)
+  useIntervaloVisivel(useCallback(async () => {
+    const [o, l, d] = await Promise.all([
+      call(`${base}/streaming/oplog`), call(`${base}/streaming/leitura`), call(`${base}/streaming/asp/dlq/resumo`),
+    ])
+    if (o) setOplog(o)
+    if (l) setLeitura(l)
+    if (d) setDlqResumo(d)
+  }, [call, base]), 4000, Boolean(gen?.running))
+
+  // Reconciliação só enquanto a reprodução anda. Parada, o resultado é o mesmo
+  // a cada consulta — repetir não acrescenta nada.
+  const reconciliadoRef = useRef(false)
   useEffect(() => {
-    const tick = async () => {
-      const [o, l, d] = await Promise.all([
-        call(`${base}/streaming/oplog`), call(`${base}/streaming/leitura`), call(`${base}/streaming/asp/dlq/resumo`),
-      ])
-      if (o) setOplog(o)
-      if (l) setLeitura(l)
-      if (d) setDlqResumo(d)
-    }
-    tick()
-    const t = setInterval(tick, 4000)
-    return () => clearInterval(t)
-  }, [call, base])
-  useEffect(() => {
-    if (!gen?.run_id) {
-      setReconciliacao(null)
-      return undefined
-    }
-    // 5 s, e o laço PARA quando a execução fecha. A reconciliação é a chamada
-    // mais cara da tela (conta a fonte no Atlas); mantê-la em laço depois que o
-    // resultado já é final só gastava CPU do cluster com uma resposta que não
-    // muda mais — e era o que sustentava a pressão que subia o tier.
-    let t = null
-    const parar = () => { if (t) { clearInterval(t); t = null } }
-    const tick = async () => {
-      const d = await call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
-      if (!d) return
-      setReconciliacao(d)
-      if (d.final === 'reconciliado' && !d.gerador_ativo) parar()
-    }
-    tick()
-    t = setInterval(tick, 5000)
-    return parar
-  }, [call, gen?.run_id, base])
+    reconciliadoRef.current = false
+    if (!gen?.run_id) { setReconciliacao(null); return }
+    call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
+      .then((d) => d && setReconciliacao(d))
+  }, [gen?.run_id, call, base])
+  useIntervaloVisivel(useCallback(async () => {
+    if (!gen?.run_id || reconciliadoRef.current) return
+    const d = await call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
+    if (!d) return
+    setReconciliacao(d)
+    // Fechou: para de consultar até a próxima execução mexer no run_id.
+    if (d.final === 'reconciliado' && !d.gerador_ativo) reconciliadoRef.current = true
+  }, [call, base, gen?.run_id]), 5000, Boolean(gen?.run_id) && Boolean(gen?.running))
 
   const aspOk = aspStatus?.estado === 'configurado'
   const injectInvalid = async (quantidade = 1) => {
