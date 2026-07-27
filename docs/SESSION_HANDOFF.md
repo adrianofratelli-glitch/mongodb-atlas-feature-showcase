@@ -1,6 +1,6 @@
 # Current implementation handoff
 
-Last reviewed: 2026-07-26
+Last reviewed: 2026-07-27
 
 This is the shortest reliable entry point for a new coding session. It records
 the decisions behind the current PoV; use `ARCHITECTURE.md` for endpoint detail
@@ -42,6 +42,86 @@ Primary files: `backend/routers/streaming.py`,
 | DLQ summary, injection and idempotent reprocessing preserve the business key. | Error handling becomes a demonstrable recovery path rather than a dead-end counter. |
 | Oplog window, network RTT and point-read latency are measured separately. | Resume-token retention, network distance and operational reads answer different questions and must not be conflated. |
 | Moderate presets and a laptop-safe generator ceiling replaced “impressive” capacity claims. | The PoV proves mechanics on a low-cost environment; cluster sizing is explicitly out of scope. |
+
+### Streaming cost posture: the PoV must fit on M20
+
+Primary files: `backend/routers/streaming.py`, `scripts/ambiente.sh`,
+`frontend/src/pages/Streaming.jsx`.
+
+The cluster was auto-scaling to M30 during every streaming demo. The dominant
+cause was not the write load: `/streaming/reconciliacao` counted the source with
+`count_documents({"run_id": ...})` against a collection that had no `run_id`
+index, and the UI polled it every 2 s. That collection scan pulled the whole
+live set through the WiredTiger cache in a loop.
+
+| Change | Why |
+|---|---|
+| `_ensure_indexes()` creates a `run_id` index. | Turns the reconciliation count from a repeated COLLSCAN into an index scan. Largest single win. |
+| Reconciliation poll 2 s → 5 s, and the loop stops once the run is final. | It kept querying Atlas after the answer could no longer change. |
+| `TPS_MAX` = 1,000; `STREAMING_CONCEPT_TPS` default 500 → 200. | Sustained write rate is a real but secondary contributor; the ceiling is now a stated cost decision. |
+| `STREAMING_TTL_SEGUNDOS` 1800 → 600. | The window sets the live-set size, not the delete rate. At 1800 s the live set exceeded an M20's cache on its own. |
+| `scripts/ambiente.sh up` normalizes the current tier to `ATLAS_TIER_INICIAL` (default `M20`). The auto-scaling ceiling is **not** touched. | A run that scaled up yesterday must not start today on the larger tier. Scale-up stays available for genuine need; staying on M20 is the job of the four fixes above. |
+| `/preflight`'s `cluster_tier` check was inverted. It used to fail on M20 and tell the operator to "run load for a few minutes to scale up before the demo"; it now passes on the entry tier and fails when the cluster has scaled **above** it. `_cluster_info_sync()` exposes `escalou` in place of `aquecido`, and the header badge turns yellow on scale-up. | Scaling up was encoded in the product as a demo prerequisite. That assumption is what made M30 feel normal; the check now states the opposite expectation. |
+| `scripts/setup-kafka-connector.sh` stops each stale connector, deletes its offsets, then deletes the connector. | Deleting a connector does not delete its offsets — Connect keeps the resume token in `connect-offsets` under the connector name, and `startup.mode: latest` only applies when no offset is stored. Since `up` drops `pix.transacoes`, the stored token pointed at a vanished oplog position and the task died with `ChangeStreamHistoryLost`, leaving the connector `RUNNING` with its only task `FAILED`. |
+
+**Measured against the live M20 cluster (2026-07-27).** A 25-minute run at 200
+TPS, generator writing continuously, one Change Stream connector and the ASP
+processor active. Phase A ran the fixed code; phase B reverted only the `run_id`
+index and set the poll back to 2 s, reproducing the regression in place.
+Per-minute figures from the Atlas Admin API, primary node:
+
+| Metric | A — indexed, 5 s poll | B — COLLSCAN, 2 s poll |
+|---|---|---|
+| `QUERY_EXECUTOR_SCANNED_OBJECTS` (docs/s) | 751 | 50,176 (**67×**) |
+| `QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED` | 1.68 | 89.23 (**53×**) |
+| `PROCESS_CPU_USER` (avg) | 8.24% | 12.55% |
+
+`QUERY_EXECUTOR_SCANNED` moves the *other* way (8,785 → 3,035) because it counts
+index keys, and a collection scan reads none — the pair of metrics together is
+what identifies the plan change.
+
+The cluster stayed on M20 throughout, peaking at 16.4% CPU and 2.27 GB of 4 GB.
+Two honest limits on this evidence: 25 minutes is far too short to trigger Atlas
+compute auto-scaling (which needs sustained utilisation over roughly an hour),
+so "it did not scale" proves less than the headroom does; and phase B is a
+*weakened* reproduction — it reverted the index and the poll interval but kept
+TTL at 600 s and 200 TPS, so its live set was ~131k documents against the
+~900k the original 1800 s / 500 TPS configuration produced.
+
+Client-side latency barely separated the phases (p50 579 ms vs 613 ms) because
+it is dominated by laptop-to-Atlas round trip; only the server-side metrics
+resolve the difference.
+
+**End-to-end UI run (browser, same day).** Generator started from the page at
+200 TPS and stopped from the page: source 14,420 = Change Streams 14,420 =
+Kafka 14,420 = ASP 14,420, zero duplicates, DLQ 0, `final: reconciliado`.
+Reconciliation poll measured at the browser: 5.0 s average interval. Only
+console message is the pre-existing `favicon.ico` 404.
+
+One behaviour to know before demoing: the ASP window uses
+`boundary: "eventTime"`, so the **final window closes only when a newer event
+advances the watermark**. Stopping the generator is exactly what stops that from
+happening — the last ~10 s of a run sits as "pending" indefinitely until another
+burst arrives. In the run above, the final window closed only after a second
+burst was emitted. A consequence for the frontend: the poll-stop added here
+("stop polling once the run is final") therefore fires less often than expected,
+because the run the page displays is always the newest one and its last window
+is still open. The 5 s interval and the indexed count carry the cost saving; the
+poll-stop is a bonus, not the mechanism.
+
+Normalization runs only after the cluster reaches `IDLE` — Atlas rejects spec
+changes on a paused or transitioning cluster. A rejected PATCH warns and
+continues rather than blocking the demo.
+
+Two Atlas constraints were found the hard way, both HTTP 400, and both are now
+encoded in the script:
+
+- `minInstanceSize` must be **strictly** less than `maxInstanceSize` when
+  compute auto-scaling is enabled. "Pin the cluster to M20 with auto-scaling on"
+  is therefore inexpressible: the range would collapse to one tier.
+- Each tier has a maximum disk size. This cluster has 150 GB, and M10 tops out
+  at 128 GB, so an M10 floor is rejected. `ATLAS_MIN_TIER` defaults to empty
+  (leave the floor alone) for that reason.
 
 ### Environment lifecycle: one command, clean boundaries
 
@@ -112,7 +192,7 @@ language.
 Validated after the current implementation:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 71 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 91 passed
 npm --prefix frontend run build                    # Vite build passed
 git diff --check                                   # passed
 ```

@@ -20,8 +20,10 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
@@ -430,12 +432,97 @@ def test_connector_pausado_fica_degradado():
 # Cenário PIX — prova conceitual, não sizing
 # ---------------------------------------------------------------------------
 def test_carga_conceitual_cabe_no_limite_da_api():
-    assert 10 <= streaming.CONCEPT_TPS <= 20_000
+    assert 10 <= streaming.CONCEPT_TPS <= streaming.TPS_MAX
 
 
-def test_ttl_e_maior_que_uma_rajada_de_demo():
-    """TTL curto faz o deletor concorrer com o pico e encher o oplog."""
-    assert streaming.TTL_SECONDS >= 600
+def test_teto_de_tps_mantem_a_pov_reproduzivel_em_m20():
+    """
+    O teto é uma decisão de custo: acima disso a escrita sustentada dispara o
+    auto-scaling do Atlas e a PoV deixa de rodar inteira no tier de entrada.
+    """
+    assert streaming.TPS_MAX <= 1_000
+    body = streaming.GeneratorStart(tps=streaming.TPS_MAX)
+    assert body.tps == streaming.TPS_MAX
+    with pytest.raises(ValidationError):
+        streaming.GeneratorStart(tps=streaming.TPS_MAX + 1)
+
+
+def test_presets_do_cenario_respeitam_o_teto():
+    assert min(streaming.TPS_MAX, streaming.CONCEPT_TPS * 2) <= streaming.TPS_MAX
+
+
+def test_ttl_cobre_uma_demo_sem_estourar_o_cache_do_m20():
+    """
+    Curto demais, o deletor concorre com o pico e enche o oplog do resume token.
+    Longo demais, o conjunto vivo passa do cache do WiredTiger de um M20 e a
+    pressão de memória sozinha sobe o tier.
+    """
+    assert 600 <= streaming.TTL_SECONDS <= 900
+    vivos = streaming.TTL_SECONDS * streaming.CONCEPT_TPS
+    assert vivos <= 250_000, f"conjunto vivo estimado de {vivos} documentos"
+
+
+def _cluster_atlas(monkeypatch, tier, minimo="M20", maximo="M30"):
+    """Responde a Admin API com um cluster no tier pedido."""
+    class RespostaFake:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"stateName": "IDLE", "replicationSpecs": [{"regionConfigs": [{
+                "electableSpecs": {"instanceSize": tier},
+                "autoScaling": {"compute": {
+                    "enabled": True, "minInstanceSize": minimo, "maxInstanceSize": maximo}},
+            }]}]}
+
+    import requests
+
+    # dados=None invalida o cache de 60 s para o teste enxergar a resposta nova.
+    streaming._cluster_cache.update(ts=0.0, dados=None)
+    # settings é uma dataclass congelada: troca-se o objeto inteiro, não o campo.
+    monkeypatch.setattr(streaming, "settings", SimpleNamespace(
+        atlas_configured=True, atlas_project_id="p", atlas_cluster="c",
+        atlas_public_key="k", atlas_private_key="s"))
+    monkeypatch.setattr(requests, "get", lambda *a, **k: RespostaFake())
+    return streaming._cluster_info_sync()
+
+
+def test_tier_de_entrada_nao_e_tratado_como_pendencia(monkeypatch):
+    """
+    O preflight antigo reprovava M20 e mandava 'rodar carga para subir antes da
+    demo' — escalar estava codificado como pré-requisito. A PoV é calibrada para
+    o tier de entrada, então estar nele é o estado correto.
+    """
+    info = _cluster_atlas(monkeypatch, "M20")
+    assert info["tier"] == "M20"
+    assert info["escalou"] is False
+
+
+def test_cluster_acima_do_tier_de_entrada_e_sinalizado(monkeypatch):
+    info = _cluster_atlas(monkeypatch, "M30")
+    assert info["escalou"] is True
+
+
+def test_ensure_indexes_cobre_a_contagem_da_reconciliacao(monkeypatch):
+    """
+    /streaming/reconciliacao conta a fonte por run_id em laço durante a demo.
+    Sem índice esse count_documents é COLLSCAN e puxa a coleção viva inteira
+    pelo cache a cada poll — foi o que fazia o cluster sair do M20.
+    """
+    criados: list[tuple] = []
+
+    class ColecaoFake:
+        def create_index(self, chave, **kwargs):
+            criados.append((chave, kwargs))
+
+        def list_indexes(self):
+            return iter([{"key": {"ts": 1}, "name": streaming.TTL_INDEX_NAME,
+                          "expireAfterSeconds": streaming.TTL_SECONDS}])
+
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_TX: ColecaoFake()})
+    streaming._ensure_indexes()
+
+    assert any(chave == "run_id" for chave, _ in criados), criados
 
 
 def test_pipeline_asp_usa_bordas_oficiais_e_configuracao_dinamica():

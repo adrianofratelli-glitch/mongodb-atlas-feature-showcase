@@ -39,7 +39,7 @@ def main() -> int:
     env = read_env(env_file)
     uri = env.get("MONGO_URI", "")
     database = env.get("STREAMING_DB", "pix") or "pix"
-    ttl_seconds = int(env.get("STREAMING_TTL_SEGUNDOS", "1800") or "1800")
+    ttl_seconds = int(env.get("STREAMING_TTL_SEGUNDOS", "600") or "600")
     if not uri:
         print("❌ MONGO_URI ausente em backend/.env.", file=sys.stderr)
         return 1

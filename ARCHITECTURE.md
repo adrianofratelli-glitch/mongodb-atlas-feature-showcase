@@ -62,7 +62,7 @@ One write generator feeds three consumers of the same change. Data lives in
 | `GET` | `/streaming/leitura` | Latency of a point lookup by `endToEndId` sampled every 250 ms **while the generator writes**, with p50/p95/p99. Answers the daily operational question the throughput numbers do not. |
 | `GET` | `/streaming/asp/dlq/resumo` | DLQ grouped by rejection reason, with first/last occurrence. |
 | `POST` | `/streaming/asp/dlq/reprocessar` | Fixes the known defect and re-inserts, preserving the original `endToEndId` — running it twice does not duplicate, the unique index blocks it. Idempotency by business key. |
-| `GET` | `/streaming/reconciliacao` | Reconciles one finite `run_id`: source documents, unique Change Stream events, unique Kafka messages, ASP aggregates and DLQ/audit. It only reports `reconciliado` after input stops and every path accounts for the same run. |
+| `GET` | `/streaming/reconciliacao` | Reconciles one finite `run_id`: source documents, unique Change Stream events, unique Kafka messages, ASP aggregates and DLQ/audit. It only reports `reconciliado` after input stops and every path accounts for the same run. The source count relies on the `run_id` index created by `_ensure_indexes()`; the UI polls this every 5 s and stops once the result is final. |
 
 **Cenário e rede**
 
@@ -75,7 +75,7 @@ One write generator feeds three consumers of the same change. Data lives in
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/streaming/generator/start` | Body `{"tps": 1..2000}`. Creates a `run_id` and sequence, then starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. The ceiling protects the low-cost demonstration posture; it is not a product limit. |
+| `POST` | `/streaming/generator/start` | Body `{"tps": 1..TPS_MAX}` (`TPS_MAX` = 1,000). Creates a `run_id` and sequence, then starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. The ceiling keeps the PoV reproducible on an M20 without triggering auto-scaling; it is not a product limit. |
 | `POST` | `/streaming/generator/stop` | Cancels the task. |
 | `GET` | `/streaming/generator/status` | `run_id`, `running`, `tps_alvo`, **`tps_medido`**, `inseridos` and collection state. TPS describes this run only. |
 | `POST` | `/streaming/reset` | Stops the generator, clears source, windows, DLQ and DLQ audit, resets in-memory evidence and broadcasts `reset`. With `?finalizar=true`, it first waits for ASP to reach `STOPPED`, also removes application checkpoints and does not restart ASP/Kafka. `overview down` follows with a direct scoped cleanup before pausing the cluster. |

@@ -3,12 +3,15 @@ import { useApi } from '../hooks/useApi'
 import QueryBlock from '../components/QueryBlock'
 
 const MAX_FEED = 40
-const TPS_MAX = 2000
+// Teto do gerador. O backend é a autoridade (TPS_MAX em routers/streaming.py) e
+// manda o valor em /streaming/cenario; este é só o fallback para uma API antiga.
+// Existe para manter a demo reproduzível em M20 sem disparar o auto-scaling.
+const TPS_MAX_PADRAO = 1000
 const TPS_STEP = 10
 const CONCEPT_PRESETS = [
-  { label: 'Passo a passo', tps: 100, detalhe: 'fluxo leve para acompanhar cada mecanismo' },
-  { label: 'Fluxo contínuo', tps: 500, detalhe: 'carga moderada para observar janelas e reconciliação' },
-  { label: 'Rajada controlada', tps: 1000, detalhe: 'backlog e recuperação sem pretensão de benchmark' },
+  { label: 'Passo a passo', tps: 40, detalhe: 'fluxo leve para acompanhar cada mecanismo' },
+  { label: 'Fluxo contínuo', tps: 200, detalhe: 'carga moderada para observar janelas e reconciliação' },
+  { label: 'Rajada controlada', tps: 400, detalhe: 'backlog e recuperação sem pretensão de benchmark' },
 ]
 
 // Hook de SSE: EventSource sobre /api/... (proxy do Vite → backend :8002).
@@ -132,9 +135,11 @@ export default function Streaming() {
   // ── Cenário PIX conceitual ────────────────────────────────────────────────
   const [cenario, setCenario] = useState(null)
   const [rede, setRede] = useState(null)
+  const [tpsMax, setTpsMax] = useState(TPS_MAX_PADRAO)
   useEffect(() => {
     call('/streaming/cenario').then((d) => {
       if (!d) return
+      if (Number.isFinite(d.tps_max) && d.tps_max > 0) setTpsMax(d.tps_max)
       // Durante um rollout a UI nova pode conversar por alguns segundos com
       // uma API antiga. Claims legados de capacidade nunca voltam para a tela:
       // somente o novo contrato explícito de PoC é aceito.
@@ -156,7 +161,7 @@ export default function Streaming() {
   }, [call])
 
   // ── Gerador ──────────────────────────────────────────────────────────────
-  const [tps, setTps] = useState(500)
+  const [tps, setTps] = useState(200)
   const [gen, setGen] = useState(null)
 
   const tpsTocado = useRef(false)
@@ -167,9 +172,9 @@ export default function Streaming() {
     // Enquanto o operador não mexeu no slider, ele reflete o que o backend está
     // de fato rodando (inclusive se outra aba/curl mudou o TPS).
     if (!tpsTocado.current && data.running && data.tps_alvo) {
-      setTps(Math.min(TPS_MAX, Math.max(10, data.tps_alvo)))
+      setTps(Math.min(tpsMax, Math.max(10, data.tps_alvo)))
     }
-  }, [call])
+  }, [call, tpsMax])
 
   useEffect(() => {
     refreshGen()
@@ -178,7 +183,7 @@ export default function Streaming() {
   }, [refreshGen])
 
   const aplicarTps = useCallback(async (valor) => {
-    const tpsSeguro = Math.min(TPS_MAX, Math.max(10, Number(valor) || 10))
+    const tpsSeguro = Math.min(tpsMax, Math.max(10, Number(valor) || 10))
     tpsTocado.current = true
     setTps(tpsSeguro)
     await call('/streaming/generator/start', {
@@ -187,7 +192,7 @@ export default function Streaming() {
       body: JSON.stringify({ tps: tpsSeguro }),
     })
     refreshGen()
-  }, [call, refreshGen])
+  }, [call, refreshGen, tpsMax])
 
   const stopGen = async () => { await call('/streaming/generator/stop', { method: 'POST' }); refreshGen() }
 
@@ -288,13 +293,21 @@ export default function Streaming() {
       setReconciliacao(null)
       return undefined
     }
+    // 5 s, e o laço PARA quando a execução fecha. A reconciliação é a chamada
+    // mais cara da tela (conta a fonte no Atlas); mantê-la em laço depois que o
+    // resultado já é final só gastava CPU do cluster com uma resposta que não
+    // muda mais — e era o que sustentava a pressão que subia o tier.
+    let t = null
+    const parar = () => { if (t) { clearInterval(t); t = null } }
     const tick = async () => {
       const d = await call(`/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
-      if (d) setReconciliacao(d)
+      if (!d) return
+      setReconciliacao(d)
+      if (d.final === 'reconciliado' && !d.gerador_ativo) parar()
     }
     tick()
-    const t = setInterval(tick, 2000)
-    return () => clearInterval(t)
+    t = setInterval(tick, 5000)
+    return parar
   }, [call, gen?.run_id])
 
   const aspOk = aspStatus?.estado === 'configurado'
@@ -321,7 +334,7 @@ export default function Streaming() {
 
   const tpsDesvio = gen?.tps_alvo ? Math.round(Math.abs(gen.tps_medido - gen.tps_alvo) / gen.tps_alvo * 100) : null
   const presets = (cenario?.presets || CONCEPT_PRESETS)
-    .filter((p) => p.tps >= 10 && p.tps <= TPS_MAX)
+    .filter((p) => p.tps >= 10 && p.tps <= tpsMax)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -382,7 +395,7 @@ export default function Streaming() {
 
         <div className="str-gen-row">
           <label htmlFor="tps" className="str-slider-label">TPS
-            <input id="tps" type="range" min="10" max={TPS_MAX} step={TPS_STEP} value={tps} className="str-slider"
+            <input id="tps" type="range" min="10" max={tpsMax} step={TPS_STEP} value={tps} className="str-slider"
               onChange={(e) => {
                 const v = Number(e.target.value)
                 tpsTocado.current = true

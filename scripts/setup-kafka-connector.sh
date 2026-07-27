@@ -48,6 +48,17 @@ curl -fsS "$CONNECT_URL/connector-plugins" | grep -q "MongoSourceConnector" ||
   fail "Plugin mongodb-kafka-connect ausente no Connect. Veja os logs do Connect."
 
 # Remove connectors de execuções anteriores (o layout pode ter mudado).
+#
+# Apagar o connector NÃO apaga o offset dele: o Connect guarda o resume token no
+# tópico connect-offsets, indexado pelo nome. Recriado com o mesmo nome, ele
+# retoma do token antigo — e `startup.mode: latest` só vale quando não existe
+# offset guardado. Como o `up` dropa pix.transacoes, esse token aponta para um
+# ponto do oplog que não existe mais e a task morre com ChangeStreamHistoryLost,
+# deixando o connector RUNNING com a única task FAILED.
+#
+# Por isso a ordem é stop -> apaga offset -> delete. O endpoint de offsets exige
+# o connector parado e existe a partir do Kafka Connect 3.6; se não existir, o
+# `|| true` só nos devolve o comportamento antigo.
 existentes="$(curl -fsS "$CONNECT_URL/connectors" || echo '[]')"
 printf '%s' "$existentes" | python3 -c 'import json,sys
 base=sys.argv[1]
@@ -55,6 +66,14 @@ for name in json.load(sys.stdin):
     if name == base or name.startswith(base + "-"):
         print(name)' "$CONNECTOR_NAME" |
   while IFS= read -r antigo; do
+    curl -fsS -X PUT "$CONNECT_URL/connectors/$antigo/stop" >/dev/null 2>&1 || true
+    for _ in $(seq 1 15); do
+      curl -fsS "$CONNECT_URL/connectors/$antigo/status" 2>/dev/null |
+        grep -q '"state":"STOPPED"' && break
+      sleep 1
+    done
+    curl -fsS -X DELETE "$CONNECT_URL/connectors/$antigo/offsets" >/dev/null 2>&1 ||
+      echo "   (não foi possível zerar o offset de $antigo — Connect < 3.6?)"
     curl -fsS -X DELETE "$CONNECT_URL/connectors/$antigo" >/dev/null 2>&1 || true
   done
 sleep 2

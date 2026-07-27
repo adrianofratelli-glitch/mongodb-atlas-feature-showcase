@@ -62,22 +62,32 @@ ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas10s").strip() or "pixJanelas10s"
 ASP_CONNECTION_NAME = os.getenv("ASP_CONNECTION_NAME", "atlasCluster").strip() or "atlasCluster"
 # Só para exibição: o que está provisionado nesta PoV.
-CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M30").strip() or "M30"
+CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M20").strip() or "M20"
 # Cargas deliberadamente moderadas: a PoV prova conceitos sem induzir sizing
 # nem exigir tiers maiores só para produzir um número de palco.
-CONCEPT_TPS = min(2_000, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "500"))))
+#
+# O teto existe para manter a demo reproduzível em M20 sem disparar o
+# auto-scaling do Atlas (que sobe por CPU/memória sustentadas e vira custo).
+# `scripts/ambiente.sh` fecha o mesmo contrato do outro lado, limitando
+# `autoScaling.compute.maxInstanceSize`. Subir daqui sem subir o tier lá só
+# transfere o problema para a fatura.
+TPS_MAX = 1_000
+CONCEPT_TPS = min(TPS_MAX, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "200"))))
 
 # TTL = rede de segurança, não a limpeza principal (essa é o botão Reset, que
 # dropa a coleção na hora).
 #
-# A janela é deliberadamente MAIOR que a rajada mais longa de uma demo. Em
-# regime o deletor do TTL remove na mesma taxa em que se insere — 10 mil/s
-# inserindo é 10 mil/s deletando, com TTL de 2 min ou de 30. O que a janela
-# decide é QUANDO isso acontece: curta demais, a deleção concorre com o pico
-# enquanto a squad olha os números e ainda enche o oplog de que o resume token
-# depende; longa o bastante, a limpeza cai depois da apresentação, com o
-# cluster ocioso.
-TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "1800"))
+# Em regime o deletor do TTL remove na mesma taxa em que se insere, qualquer que
+# seja a janela; o que a janela decide é o TAMANHO do conjunto vivo. A 1800 s a
+# coleção estabilizava perto de um milhão de documentos — dados e índices
+# maiores que o cache do WiredTiger de um M20, o que sozinho sustentava a
+# pressão de memória que dispara o auto-scaling.
+#
+# A 600 s e no TPS moderado atual o conjunto vivo fica na casa das dezenas de
+# milhares: cabe no cache, e a taxa de deleção é baixa demais para concorrer com
+# o pico ou para inflar o oplog de que o resume token depende. A janela continua
+# maior que a rajada de uma demo.
+TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "600"))
 PURGE_TIMEOUT_MS = 180_000
 # Partições do consumo do change stream (um cursor + uma thread por partição).
 CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "1")))
@@ -342,7 +352,14 @@ TTL_INDEX_NAME = "ts_ttl"
 
 def _ensure_indexes() -> None:
     """
-    Garante o índice único de endToEndId e o TTL em `ts` com a janela atual.
+    Garante o índice único de endToEndId, o índice de reconciliação em `run_id`
+    e o TTL em `ts` com a janela atual.
+
+    `run_id` existe por causa de /streaming/reconciliacao: a tela conta a fonte
+    a cada poucos segundos, e sem índice esse count_documents é um COLLSCAN da
+    coleção inteira. Repetido em laço durante a demo, ele puxava todos os
+    documentos vivos pelo cache do WiredTiger — era o maior consumidor de CPU e
+    de memória do cluster, e o que fazia o auto-scaling sair do M20.
 
     O TTL é ajustado por collMod no índice que JÁ existe (procurado pela chave,
     não pelo nome): create_index recusa um segundo índice sobre {ts: 1} com
@@ -350,6 +367,7 @@ def _ensure_indexes() -> None:
     índice com outro nome.
     """
     sdb[COL_TX].create_index("endToEndId", unique=True, name="endToEndId_unique")
+    sdb[COL_TX].create_index("run_id", name="run_id_reconciliacao")
 
     existente = None
     for indice in sdb[COL_TX].list_indexes():
@@ -538,7 +556,7 @@ generator = Generator()
 
 
 class GeneratorStart(BaseModel):
-    tps: int = Field(default=CONCEPT_TPS, ge=1, le=2_000)
+    tps: int = Field(default=CONCEPT_TPS, ge=1, le=TPS_MAX)
 
 
 @router.post("/generator/start")
@@ -586,13 +604,16 @@ def _cluster_info_sync() -> dict[str, Any]:
     O cluster desta PoV tem auto-scaling M20↔M30 com scale-down: parado, ele
     volta sozinho para M20. Exibir um tier fixo do .env faria a tela anunciar
     M30 rodando em M20 — e a demo pode começar no tier menor e escalar no meio.
+
+    A PoV é calibrada para rodar inteira no tier de entrada; `escalou` marca
+    quando ela saiu dele, que é sinal de custo a investigar.
     """
     agora = time.monotonic()
     if _cluster_cache["dados"] and agora - _cluster_cache["ts"] < 60:
         return _cluster_cache["dados"]
 
     if not settings.atlas_configured:
-        return {"tier": CLUSTER_TIER, "fonte": "env", "autoscaling": None, "aquecido": None}
+        return {"tier": CLUSTER_TIER, "fonte": "env", "autoscaling": None, "escalou": None}
 
     import requests
     from requests.auth import HTTPDigestAuth
@@ -611,21 +632,28 @@ def _cluster_info_sync() -> dict[str, Any]:
         tier = rc["electableSpecs"]["instanceSize"]
         auto = (rc.get("autoScaling") or {}).get("compute") or {}
         maximo = auto.get("maxInstanceSize")
+        minimo = auto.get("minInstanceSize")
         dados = {
             "tier": tier,
             "fonte": "atlas",
             "estado": corpo.get("stateName"),
             "autoscaling": {
                 "ativo": bool(auto.get("enabled")),
-                "min": auto.get("minInstanceSize"),
+                "min": minimo,
                 "max": maximo,
             } if auto else None,
-            # "aquecido" = já está no maior tier que o auto-scaling permite.
-            "aquecido": (tier == maximo) if (auto.get("enabled") and maximo) else True,
+            # "escalou" = o cluster saiu do tier de entrada do auto-scaling.
+            #
+            # Versões anteriores expunham o inverso ("aquecido": já está no tier
+            # máximo) e o preflight tratava isso como pré-requisito da demo —
+            # mandava rodar carga até subir de tier. A PoV é calibrada para
+            # rodar inteira no tier de entrada; subir virou sinal de alerta, não
+            # de prontidão.
+            "escalou": (tier != minimo) if (auto.get("enabled") and minimo) else False,
         }
     except Exception as exc:  # noqa: BLE001 - Admin API é opcional
         dados = {"tier": CLUSTER_TIER, "fonte": f"env ({type(exc).__name__})",
-                 "autoscaling": None, "aquecido": None}
+                 "autoscaling": None, "escalou": None}
 
     _cluster_cache.update(ts=agora, dados=dados)
     return dados
@@ -860,11 +888,12 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
 
     info = _cluster_info_sync()
     auto = info.get("autoscaling") or {}
-    if auto.get("ativo") and info.get("aquecido") is False:
+    if auto.get("ativo") and info.get("escalou"):
         checks["cluster_tier"] = {
             "ok": False,
-            "message": f"cluster em {info['tier']} (auto-scaling {auto.get('min')}→{auto.get('max')}); "
-                       "rode carga por alguns minutos para subir antes da demo",
+            "message": f"cluster em {info['tier']}, acima do tier de entrada {auto.get('min')} "
+                       f"(auto-scaling {auto.get('min')}→{auto.get('max')}); "
+                       "a PoV é calibrada para rodar no tier de entrada",
         }
     else:
         checks["cluster_tier"] = {"ok": True, "message": f"cluster em {info['tier']}"}
@@ -903,9 +932,10 @@ async def cenario():
              "detalhe": "fluxo leve para acompanhar cada mecanismo"},
             {"label": "Fluxo contínuo", "tps": CONCEPT_TPS,
              "detalhe": "carga moderada para observar janelas e reconciliação"},
-            {"label": "Rajada controlada", "tps": min(2_000, CONCEPT_TPS * 2),
+            {"label": "Rajada controlada", "tps": min(TPS_MAX, CONCEPT_TPS * 2),
              "detalhe": "demonstra backlog e recuperação sem pretensão de benchmark"},
         ],
+        "tps_max": TPS_MAX,
         "ambiente": {
             "cluster": (await asyncio.to_thread(_cluster_info_sync))["tier"],
             "particoes_consumo": CS_PARTICOES,

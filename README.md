@@ -238,6 +238,16 @@ It PUTs a `MongoSourceConnector` config on the Connect REST API
 On the Docker path a console at http://localhost:8085 lets you inspect the topic
 live; the native path has no UI, so use `./scripts/kafka-local.sh status`.
 
+Before registering, the script stops each stale connector, deletes its offsets
+and only then deletes the connector. Deleting a connector does **not** delete
+its offsets — Connect keeps the resume token in `connect-offsets` keyed by
+connector name, and `startup.mode=latest` applies only when no offset is stored.
+Because `overview up` drops `pix.transacoes`, that stored token points at an
+oplog position that no longer exists, and the task fails with
+`ChangeStreamHistoryLost` while the connector still reports `RUNNING`. If you
+ever see `RUNNING · FAILED`, that is the cause; the offsets endpoint needs
+Kafka Connect 3.6+.
+
 **3. Create the Stream Processing Instance** (Atlas UI → Stream Processing):
 create an SPI in the same region as the cluster. The processor reads the
 cluster's change stream, so keeping them together saves a cross-region hop on
@@ -270,20 +280,47 @@ checkpoints. `scripts/ambiente.sh down` performs a second direct, scoped cleanup
 before pausing the cluster, so an interrupted API call does not leave demo data
 behind.
 
-The 30-minute TTL index on `ts` (`STREAMING_TTL_SEGUNDOS`) is the safety net for
-when you forget to reset, not the main mechanism. The window is deliberately
-longer than any demo burst. In steady state the TTL deleter removes at the same
-rate you insert: 10k/s in is 10k/s deleted, whether the TTL is 2 minutes or 30.
-A short window only guarantees that deletion competes with your peak while the
-audience is watching, and it floods the oplog that the resume-token demo depends
-on. A long window pushes the cleanup to after the presentation, on an idle
-cluster.
+The 10-minute TTL index on `ts` (`STREAMING_TTL_SEGUNDOS`) is the safety net for
+when you forget to reset, not the main mechanism. In steady state the TTL
+deleter removes at the same rate you insert, whatever the window; what the
+window actually decides is the size of the **live set**. At 1800 s the
+collection settled near a million documents — data plus indexes larger than an
+M20's WiredTiger cache, which on its own sustained the memory pressure that
+triggers auto-scaling. At 600 s and the current moderate TPS the live set stays
+in the tens of thousands: it fits in cache, and the deletion rate is far too low
+to compete with the peak or to flood the oplog the resume-token demo depends on.
+The window is still longer than any demo burst.
+
+**Staying on M20.** The module is calibrated so the whole PoV runs on the entry
+tier without the cluster scaling up:
+
+- `run_id` is indexed. The reconciliation panel counts the source every few
+  seconds; without that index the count is a full collection scan repeated in a
+  loop, and it was by far the largest consumer of cluster CPU and cache.
+- The reconciliation poll runs every 5 s and **stops** once the run is final —
+  it no longer re-queries Atlas for an answer that cannot change.
+- The generator is capped at 1,000 TPS (`TPS_MAX`) and defaults to 200.
+- `/preflight`'s `cluster_tier` check now **passes** on the entry tier and fails
+  when the cluster has scaled above it. It previously did the opposite: it
+  failed on M20 and told the operator to run load until the cluster scaled up,
+  which encoded "scale up before demoing" as a prerequisite.
+- `scripts/ambiente.sh up` normalizes the cluster to `ATLAS_TIER_INICIAL`
+  (default `M20`) so a run that scaled up yesterday does not start today on the
+  larger tier. The auto-scaling **ceiling is deliberately left alone** —
+  scale-up stays available for when it is genuinely needed. Staying on M20 is
+  the job of the four fixes above, not of a ceiling.
+
+Two Atlas rules are worth knowing before touching this, because both fail with
+HTTP 400: compute auto-scaling requires `minInstanceSize` **strictly** less than
+`maxInstanceSize` — so "pin the cluster to M20 while keeping auto-scaling on" is
+not expressible — and every tier has a maximum disk size, so a 150 GB cluster
+cannot take an M10 floor (M10 tops out at 128 GB).
 
 Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,
 `ASP_CONNECTION_NAME`, `ASP_PROCESSOR_NAME`, `STREAMING_CS_PARTICOES` (demonstration cursors, default 1),
-`STREAMING_TTL_SEGUNDOS`, `STREAMING_CONCEPT_TPS` (capped at 2,000 by the API)
-and `KAFKA_CONSUMER_GROUP`.
+`STREAMING_TTL_SEGUNDOS`, `STREAMING_CONCEPT_TPS` (capped at 1,000 by the API),
+`ATLAS_TIER_INICIAL`, `ATLAS_MIN_TIER` and `KAFKA_CONSUMER_GROUP`.
 
 ### Transaction values
 

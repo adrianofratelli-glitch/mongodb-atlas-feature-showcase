@@ -33,6 +33,18 @@ ASP_CONNECTION="${ASP_CONNECTION_NAME:-$(le_env ASP_CONNECTION_NAME)}"
 ASP_CONNECTION="${ASP_CONNECTION:-atlasCluster}"
 STREAM_DB="${STREAMING_DB:-$(le_env STREAMING_DB)}"
 STREAM_DB="${STREAM_DB:-pix}"
+# Ponto de partida de compute de cada demo. O TETO do auto-scaling não é tocado:
+# o scale-up segue disponível para quando for necessário. O que normalizamos é o
+# tier corrente (para a PoV não herdar o tier de uma execução anterior) e o piso
+# (para o cluster poder descer mais quando ocioso).
+TIER_INICIAL="${ATLAS_TIER_INICIAL:-$(le_env ATLAS_TIER_INICIAL)}"
+TIER_INICIAL="${TIER_INICIAL:-M20}"
+# Piso do auto-scaling. VAZIO por padrão = não mexe. Descer o piso parece grátis
+# mas esbarra em duas regras do Atlas: min tem que ser estritamente menor que
+# max, e cada tier tem um disco máximo (M10 vai até 128 GB — um cluster com 150
+# GB não pode ter piso M10). Preencher isto sem checar as duas coisas faz o
+# `up` falhar num PATCH 400.
+MIN_TIER="${ATLAS_MIN_TIER:-$(le_env ATLAS_MIN_TIER)}"
 API="https://cloud.mongodb.com/api/atlas/v2"
 ATLAS_MEDIA_TYPE="application/vnd.atlas.2025-03-12+json"
 ACCEPT="Accept: $ATLAS_MEDIA_TYPE"
@@ -59,6 +71,77 @@ estado_cluster() {
 pausa_cluster() { # true|false
   atlas PATCH "/groups/$PROJ/clusters/$CLUSTER" "{\"paused\": $1}" >/dev/null
   echo "   cluster paused=$1 solicitado"
+}
+
+aguarda_idle() {
+  echo "   aguardando o cluster ficar IDLE (pode levar alguns minutos)..."
+  for _ in $(seq 1 90); do
+    if atlas GET "/groups/$PROJ/clusters/$CLUSTER" | grep -q '"stateName":"IDLE"'; then
+      return 0
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+# Normaliza o ponto de partida de compute do cluster antes de cada demo:
+# tier corrente = TIER_INICIAL, piso do auto-scaling = MIN_TIER. O TETO NÃO é
+# tocado — o scale-up continua disponível para quando for realmente necessário.
+#
+# O que isso resolve é herança: sem normalizar, uma demo que escalou ontem
+# começa hoje no tier grande e a PoV deixa de ser reproduzível no tier de
+# entrada. O custo em regime depende das correções do módulo Streaming
+# (índice de run_id, poll da reconciliação, TPS e TTL), não de um limite.
+#
+# Atlas exige minInstanceSize ESTRITAMENTE menor que maxInstanceSize quando o
+# auto-scaling de compute está ligado — por isso o piso não pode ser igual ao
+# teto, e é o que torna "travar em M20 com auto-scaling" inexprimível.
+tier_inicial() {
+  local corpo
+  corpo="$(atlas GET "/groups/$PROJ/clusters/$CLUSTER" |
+    TIER_INICIAL="$TIER_INICIAL" MIN_TIER="$MIN_TIER" python3 -c '
+import json, os, sys
+
+ordem = ["M10", "M20", "M30", "M40", "M50", "M60", "M80", "M140", "M200", "M300"]
+inicial, piso = os.environ["TIER_INICIAL"], os.environ.get("MIN_TIER", "")
+if inicial not in ordem or (piso and (piso not in ordem or ordem.index(piso) > ordem.index(inicial))):
+    print("", end="")
+    sys.exit(0)
+
+specs = json.load(sys.stdin).get("replicationSpecs", [])
+mudou = False
+for spec in specs:
+    for rc in spec.get("regionConfigs", []):
+        # effective*Specs são campos derivados pela API; devolvê-los num PATCH
+        # é ruído e pode conflitar com o que estamos pedindo.
+        for chave in [k for k in rc if k.startswith("effective")]:
+            rc.pop(chave)
+        for chave in ("electableSpecs", "readOnlySpecs", "analyticsSpecs"):
+            alvo = rc.get(chave) or {}
+            if alvo.get("nodeCount") and alvo.get("instanceSize") != inicial:
+                alvo["instanceSize"] = inicial
+                mudou = True
+        compute = ((rc.get("autoScaling") or {}).get("compute")) or {}
+        teto = compute.get("maxInstanceSize")
+        # Piso só desce, e só até um tier abaixo do teto — a API recusa min == max.
+        if (piso and compute.get("enabled") and compute.get("minInstanceSize") != piso
+                and teto in ordem and ordem.index(piso) < ordem.index(teto)):
+            compute["minInstanceSize"] = piso
+            mudou = True
+print(json.dumps({"replicationSpecs": specs}) if mudou else "", end="")
+')"
+
+  if [[ -z "$corpo" ]]; then
+    echo "   compute já em $TIER_INICIAL — nada a ajustar"
+    return 0
+  fi
+
+  echo "▶ Normalizando o compute para $TIER_INICIAL${MIN_TIER:+ (piso $MIN_TIER)}; teto inalterado..."
+  if ! atlas PATCH "/groups/$PROJ/clusters/$CLUSTER" "$corpo" >/dev/null; then
+    echo "⚠️ Não foi possível normalizar o compute — ajuste na console do Atlas." >&2
+    return 0
+  fi
+  aguarda_idle || echo "⚠️ Cluster ainda redimensionando; a mudança foi aceita." >&2
 }
 
 processor() { # stop|start
@@ -140,16 +223,10 @@ case "${1:-status}" in
   up)
     echo "▶ Ligando o ambiente..."
     pausa_cluster false
-    echo "   aguardando o cluster ficar IDLE (pode levar alguns minutos)..."
-    pronto=0
-    for _ in $(seq 1 90); do
-      if atlas GET "/groups/$PROJ/clusters/$CLUSTER" | grep -q '"stateName":"IDLE"'; then
-        pronto=1
-        break
-      fi
-      sleep 10
-    done
-    [[ "$pronto" == "1" ]] || { echo "❌ Cluster não chegou a IDLE no prazo." >&2; exit 1; }
+    aguarda_idle || { echo "❌ Cluster não chegou a IDLE no prazo." >&2; exit 1; }
+    # Só depois de IDLE: o Atlas não aceita mudança de spec em cluster pausado
+    # ou em transição.
+    tier_inicial
     estado_cluster
     # Um ciclo de apresentação começa sem documentos, offsets de aplicação ou
     # estado de janela da rodada anterior.

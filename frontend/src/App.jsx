@@ -152,11 +152,14 @@ export default function App() {
 
         {/* Right side */}
         <div className="app-header-status" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span className={`badge ${cluster?.aquecido === false ? 'badge-yellow' : 'badge-green'}`}
+          {/* Amarelo quando o cluster ESCALOU acima do tier de entrada: a PoV é
+              calibrada para rodar no tier de entrada, então subir é alerta de
+              custo, não sinal de prontidão. */}
+          <span className={`badge ${cluster?.escalou ? 'badge-yellow' : 'badge-green'}`}
             title={cluster?.autoscaling?.ativo
               ? `Auto-scaling ${cluster.autoscaling.min}→${cluster.autoscaling.max}`
               : 'Tier do cluster'}>
-            Atlas {cluster?.tier || '…'}{cluster?.aquecido === false ? ' ↑' : ''}
+            Atlas {cluster?.tier || '…'}{cluster?.escalou ? ' ↑' : ''}
           </span>
           <span className={`badge ${preflight?.ready ? 'badge-green' : 'badge-yellow'}`}
             title={preflight?.ready ? 'Pré-voo concluído' : 'Verifique o diagnóstico no menu lateral'}>
