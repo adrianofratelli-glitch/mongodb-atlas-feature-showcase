@@ -18,10 +18,3 @@ frontend/.vite/
 # OS
 .DS_Store
 Thumbs.db
-
-# Local tooling
-.claude/
-
-# graphify knowledge-graph output (local tooling artifact, not app code)
-graphify-out/
-CLAUDE.md

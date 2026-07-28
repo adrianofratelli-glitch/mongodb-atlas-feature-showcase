@@ -2,9 +2,9 @@
 
 Last reviewed: 2026-07-27
 
-This is the shortest reliable entry point for a new coding session. It records
-the decisions behind the current PoV; use `ARCHITECTURE.md` for endpoint detail
-and the Graphify commands at the end for targeted code traversal.
+This is the shortest reliable entry point when picking the project back up. It
+records the decisions behind the current PoV; use `ARCHITECTURE.md` for endpoint
+detail.
 
 ## Product position
 
@@ -308,23 +308,9 @@ capability columns above the fold, the revised Aggregations/Reindexing screens
 rendered correctly, Schema code was collapsed by default, and rapid module
 navigation produced zero API-error toasts and zero console errors.
 
-## Fast reading order for a new session
+## Fast reading order
 
 1. Read this file.
-2. Read `CLAUDE.md` for commands, environment variables and repository rules.
-3. Read only the relevant section of `ARCHITECTURE.md`.
-4. Query Graphify before opening a large implementation file.
-5. For Streaming implementation work, inspect
-   `backend/routers/streaming.py`, its matching tests and the relevant frontend
-   column together.
-
-Useful targeted graph queries:
-
-```bash
-graphify query "How does one PIX run reconcile source, Change Streams, Kafka, ASP and DLQ?" --budget 1600
-graphify query "How do overview up and down create and clean the streaming environment?" --budget 1400
-graphify query "How are Change Stream resume tokens persisted and invalidated?" --budget 1200
-graphify query "How does the ASP pipeline validate, window and merge PIX events?" --budget 1400
-graphify affected "useApi()" --depth 2
-graphify affected "reset()" --depth 2
-```
+2. Read only the relevant section of `ARCHITECTURE.md`.
+3. For Streaming work, inspect `backend/routers/streaming.py`, its matching
+   tests and the relevant frontend column together.
