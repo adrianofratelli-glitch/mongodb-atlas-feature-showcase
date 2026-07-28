@@ -122,6 +122,9 @@ def main() -> int:
     p.add_argument("--tps", type=int, default=200)
     p.add_argument("--cauda", type=int, default=150,
                    help="segundos extras de gravação após parar o gerador")
+    p.add_argument("--pos-fecho", type=int, default=25,
+                   help="segundos gravados depois de reconciliar, para o resultado "
+                        "ficar legível na tela antes do laço reiniciar")
     p.add_argument("--saida", default=str(DESTINO))
     args = p.parse_args()
 
@@ -212,6 +215,13 @@ def main() -> int:
         if rec.get("final") == "reconciliado":
             fecho_em = cap.agora()
             print(f"   reconciliado em t={fecho_em}s")
+            # Continua gravando depois de reconciliar. Parar aqui deixava o
+            # estado RECONCILIADO existindo só nos ~5 s finais de um laço de
+            # ~106 s: quem assiste espera a execução inteira e o clímax some no
+            # rewind. Com a cauda, o resultado fica parado na tela o suficiente
+            # para ser lido e comentado antes do laço recomeçar.
+            print(f"   gravando mais {args.pos_fecho}s com o resultado na tela…")
+            time.sleep(args.pos_fecho)
             break
         if not disparou_fecho and cap.agora() - t_parada > 25:
             print("   emitindo rajada curta para avançar a watermark do ASP…")

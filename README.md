@@ -268,7 +268,7 @@ replace the definition intentionally, run it once with `ASP_RECREATE=true`;
 that destructive choice is printed explicitly.
 
 The processor reads the change stream of `pix.transacoes`, sends malformed
-documents to a DLQ, aggregates 10-second event-time windows by `run_id`, `uf`
+documents to a DLQ, aggregates 5-second event-time windows by `run_id`, `uf`
 and `tipo` (count, volume, ticket and a simple high-value signal), and `$merge`s each closed window into
 `pix.metricas_janela`. The backend surfaces those windows by watching that
 collection with a change stream, so the stream processing result reaches the
@@ -302,8 +302,15 @@ run* from `backend/data/replay_streaming.json` through `/replay/*`, which
 mirrors the `/streaming/*` paths. Nothing is written to MongoDB, so the page
 works with the cluster **paused** and with no Kafka or ASP running — only the
 backend and the frontend. All three columns are in the recording (Change Streams
-456 events, Kafka 531, ASP 80 closed windows), which is what lets the three
+426 events, Kafka 524, ASP 150 closed windows), which is what lets the three
 approaches be compared side by side.
+
+The window moved from 10 s to 5 s. The semantics are unchanged — tumbling, no
+overlap — but at 10 s column 3 went mute for ten seconds at a time, and an
+audience watching twenty seconds of the demo saw at most two bursts. The
+recording also keeps rolling for 25 s after the run reconciles: stopping at the
+moment of reconciliation left the final green state alive for only the last few
+seconds of a ~106 s loop, so the payoff vanished into the rewind.
 
 Live writing was removed because it stressed the cluster for no demonstrative
 gain — see the relative-CPU note below.
@@ -317,11 +324,13 @@ avoids measuring consumer startup as backlog.
 
 ![Replay mode with the run reconciled](docs/screenshots/07c-streaming-replay.png)
 
-The badge is one discreet line — a `▶ execução gravada` tag, the `run_id` and
-the date, with the full sentence in its `title`. Discreet is fine; absent is
-not. The figures are real measurements, and without that
-line an audience reasonably reads them as happening now. In the shot the four
-paths agree at 12,040 with zero duplicates and an empty DLQ.
+The on-screen origin badge was removed at the presenter's request: declaring
+that this is a recording is now part of the spoken narration, not a permanent
+line on the page. The generator card still says the run is being replayed and
+that the database is not touched, and the "no recording" warning still appears
+when `backend/data/replay_streaming.json` is missing — that one is an error
+state, not a mode label. The figures are real measurements; say so out loud. In
+the shot the four paths agree at 12,200 with zero duplicates and an empty DLQ.
 
 Actions that would act on a real environment (connector restart, DLQ injection,
 checkpoint restart) stay visible but disabled — the capability is part of the
