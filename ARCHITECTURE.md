@@ -3,14 +3,14 @@
 ```
 React 18 + Vite (frontend/, :5174)
    │  fetch /api/*        (JSON)
-   │  EventSource /api/replay/streaming/* (SSE — module 07 replays a recording)
-   │  EventSource /api/streaming/*        (SSE — only while recording one)
+   │  EventSource /api/streaming/*        (SSE — live session, primary mode)
+   │  EventSource /api/replay/streaming/* (SSE — recorded fallback)
    ▼
 FastAPI (backend/main.py, :8002)
    ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* and geo.*)
    ├─ requests ────────────► Atlas Admin API v2      (Online Archive only)
-   ├─ requests ────────────► Kafka Connect REST      (:8083, only when recording)
-   ├─ aiokafka (optional) ─► Redpanda / Kafka broker (:19092, only when recording)
+   ├─ requests ────────────► Kafka Connect REST      (:8083, live mode)
+   ├─ aiokafka (optional) ─► Redpanda / Kafka broker (:19092, live mode)
    └─ file ────────────────► backend/data/replay_streaming.json (module 07 playback)
 ```
 
@@ -45,7 +45,7 @@ are reachable from `EventSource`, which cannot send the `X-Demo-Token` header.
 | `/hot-cold` | `GET /distribution`, `GET /archive-simulation`, `GET /query-transparent`, `GET /online-archive/list`, `POST /online-archive/create`, `DELETE /online-archive/{archive_id}` |
 | `/aggregations` | `GET /lookup`, `GET /facet`, `GET /union-with`, `GET /group-advanced`, `GET /window-functions`, `GET /bucket-auto` |
 | `/schema` | `GET /status`, `POST /step1-create-collection`, `POST /step2-insert-without-schema`, `POST /step3-activate-schema`, `POST /step4-insert-invalid`, `POST /insert-valid`, `GET /documents`, `DELETE /reset` |
-| `/change-streams` | `POST /start`, `POST /trigger`, `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
+| `/change-streams` | `POST /start`, `POST /trigger`, `GET /feed` (SSE), `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
 | `/transactions` | `GET /status`, `POST /executar`, `POST /reset` |
 | `/streaming` | see below |
 | `/geo` | `GET /status`, `GET /municipios`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
@@ -70,17 +70,17 @@ One write generator feeds three consumers of the same change. Data lives in
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/streaming/cenario` | Moderate concept presets. Explicitly states that the run is synthetic and not a sizing or product-capacity result. |
+| `GET` | `/streaming/cenario` | Returns presets for the active write mode. The default individual path exposes 1,000 TPS as the customer reference, 2,000 TPS as the sustained stage target, and 12,000 TPS in batch mode as tier headroom. The endpoint also returns `modo_escrita`, `default_tps` and the individual ceiling. These are comparison and stage evidence, not sizing or certified capacity. |
 | `GET` | `/streaming/rede` | Median RTT app ↔ cluster, measured with `ping`. Without it the columns' latency reads as change-stream cost when a large part is distance. |
 
 **Generator**
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/streaming/generator/start` | Body `{"tps": 1..TPS_MAX}` (`TPS_MAX` = 1,000). Creates a `run_id` and sequence, then starts (or retunes) an asyncio task inserting micro-batches every 100 ms with `insert_many`. The ceiling keeps the PoV reproducible on an M20 without triggering auto-scaling; it is not a product limit. |
-| `POST` | `/streaming/generator/stop` | Cancels the task. |
-| `GET` | `/streaming/generator/status` | `run_id`, `running`, `tps_alvo`, **`tps_medido`**, `inseridos` and collection state. TPS describes this run only. |
-| `POST` | `/streaming/reset` | Stops the generator, clears source, windows, DLQ and DLQ audit, resets in-memory evidence and broadcasts `reset`. With `?finalizar=true`, it first waits for ASP to reach `STOPPED`, also removes application checkpoints and does not restart ASP/Kafka. `overview down` follows with a direct scoped cleanup before pausing the cluster. |
+| `POST` | `/streaming/generator/start` | Body `{"tps": 1..TPS_MAX, "duration_s": 10..120, "modo": "individual|lote"}` (`TPS_MAX` = 15,000; defaults to individual mode at 2,000 TPS/30 s). Individual mode uses the async driver and one acknowledged `insert_one` per PIX; batch mode uses `insert_many` micro-batches for the higher-volume story. Creates a `run_id` and sequence and stops automatically. The ceiling is a guardrail, not an M20 guarantee or product limit. |
+| `POST` | `/streaming/generator/stop` | Cancels the task, waits 7.2 s (5 s window + 2 s lateness) and writes one technical marker under a reserved `run_id` to advance the event-time watermark. The marker is outside the demonstrated run's reconciliation and lets its final window close. |
+| `GET` | `/streaming/generator/status` | `run_id`, `running`, `stopping`, `duration_s`, `ends_at`, `tps_alvo`, **`tps_medido`**, `inseridos`, write mode, `write_ack` p50/p95/p99 and collection state. In individual mode `write_ack` is the end-to-end ACK for one PIX; in batch mode it describes one acknowledged micro-batch. The three consumer columns measure post-commit propagation. |
+| `POST` | `/streaming/reset` | Stops the generator, ensures the unique business-key, TTL and `run_id_reconciliacao` indexes, then clears source, windows, DLQ and audit concurrently using the application's connected MongoDB topology. Above `STREAMING_DROP_ACIMA_DE` (25k by default), it stops ASP, drops/recreates the dedicated source and indexes, then recovers ASP and Kafka; a routine delete does not restart Kafka. Residual data returns 503 instead of starting a mixed run. With `?finalizar=true`, it also removes application checkpoints and leaves ASP/Kafka stopped. |
 
 **Column 1 — Change Streams**
 
@@ -123,9 +123,9 @@ recovered event is never sampled out: it is the proof the drop/resume works.
 
 ### `/replay` (module 07 playback)
 
-Module 07 does **not** write during a demo. `bin/overview` no longer provisions
-ASP or Kafka, and the Streaming page talks to `/replay/*`, which mirrors the
-`/streaming/*` paths so the frontend only swaps a prefix. Everything is served
+Replay is the no-write contingency, selected explicitly in the page or with
+`bin/overview --replay`. It does not provision ASP or Kafka and talks to
+`/replay/*`, which mirrors the `/streaming/*` paths. Everything is served
 from `backend/data/replay_streaming.json`, recorded by
 `scripts/capture_replay.py` against the real cluster.
 
@@ -162,8 +162,8 @@ writes it.
 | `GET` | `/geo/status` | Document count, the index list read from the collection, and whether the Atlas Search index exists. Nothing is hard-coded in the UI. |
 | `GET` | `/geo/municipios` | Municipalities present in the dataset with a representative point, so the UI can centre a query without shipping a coordinate table to the browser. Cached in memory; the list only changes when the seed runs again. |
 | `POST` | `/geo/explain-compare` | The same `$geoWithin` (`$centerSphere`) query explained twice: hinted at `cliente_status_local_idx` (equality fields first, geo last) and at `local_2dsphere_idx`. Returns winning stage, index used, `totalKeysExamined`, `totalDocsExamined`, `nReturned` and `executionTimeMillis` for each. If the measurement contradicts the didactic note, the measurement is what the screen shows. |
-| `GET` | `/geo/impossible-travel` | `$setWindowFields` partitioned by `clienteId`, sorted by `ts`, `$shift` pulling the previous timestamp and coordinates, haversine expressed in `$degreesToRadians`/`$sin`/`$cos`/`$asin`/`$sqrt`. No `$function`, and no document leaves the cluster for the calculation. Returns the executed pipeline alongside the pairs. |
-| `POST` | `/geo/search` | One `$search` with `compound`: `must` fuzzy text on `estabelecimento.nome`, `filter` with `geoWithin` (circle, metres) and an optional category `in`. `$searchMeta` produces the category/UF facets. Distance from the centre is recomputed in the pipeline so the requested radius is verifiable without trusting the operator. Without the index the endpoint returns `estado: "nao_configurado"` rather than empty results. |
+| `GET` | `/geo/impossible-travel` | Retrospective risk signal: `$setWindowFields` partitioned by `clienteId`, sorted by `ts`, `$shift` pulling the previous timestamp, coordinates, device and location provenance, then haversine in pure MQL. It explicitly returns `decisao_fraude: false`; no document leaves the cluster for the calculation. |
+| `POST` | `/geo/search` | Contextual receiver/merchant discovery: one `$search` with fuzzy text, `geoWithin`, optional category filter and `$searchMeta` facets. It is not part of PIX settlement or cadastral validation. Without the index the endpoint returns `estado: "nao_configurado"` rather than empty results. |
 
 The geo checks join `/preflight` but never fail it: the module is optional, the
 same way Kafka and ASP are.
