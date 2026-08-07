@@ -17,7 +17,7 @@ const MODULES = [
   { key: 'streams', num: '05', title: 'Change Streams',       subtitle: 'Eventos em tempo real — insert, update, delete', color: '#14b8a6', component: ChangeStreams },
   { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#eab308', component: Transactions },
   { key: 'streaming', num: '07', title: 'Streaming',            subtitle: 'Change Streams × Kafka Connector × Atlas Stream Processing', color: '#e11d48', component: Streaming },
-  { key: 'geo',     num: '08', title: 'Geo',                 subtitle: '2dsphere composto, impossible travel e geo + Atlas Search', color: '#38bdf8', component: Geo },
+  { key: 'geo',     num: '08', title: 'Risco geográfico',    subtitle: 'impossible travel, contexto do estabelecimento e geo no mesmo cluster', color: '#38bdf8', component: Geo },
 ]
 
 // MongoDB leaf logo SVG (official mark)
@@ -94,10 +94,18 @@ export default function App() {
   const [preflight, setPreflight] = useState(null)
   // O cluster tem auto-scaling: anunciar um tier fixo faria a tela mentir.
   const [cluster, setCluster] = useState(null)
-  // Barra recolhida por padrão: expande no hover ou quando fixada no alfinete.
+  // Barra fixa aberta por padrão; o alfinete solta e a escolha persiste.
   const [sidebarHover, setSidebarHover] = useState(false)
-  const [sidebarFixa, setSidebarFixa] = useState(false)
+  const [sidebarFixa, setSidebarFixa] = useState(() => {
+    try { return localStorage.getItem('sidebarFixa') !== 'false' } catch { return true }
+  })
   const sidebarAberta = sidebarHover || sidebarFixa
+  useEffect(() => {
+    try { localStorage.setItem('sidebarFixa', String(sidebarFixa)) } catch { /* modo privado */ }
+  }, [sidebarFixa])
+  const refreshPreflight = useCallback(() => {
+    fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
+  }, [])
 
   useEffect(() => {
     window.history.replaceState(null, '', `#${active}`)
@@ -116,8 +124,10 @@ export default function App() {
   // Contagens reais do cluster (nada hard-coded na UI). Uma vez ao montar.
   useEffect(() => {
     fetch('/api/stats').then(r => r.ok ? r.json() : null).then(d => { if (d) setStats(d) }).catch(() => {})
-    fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
-  }, [])
+    refreshPreflight()
+    window.addEventListener('preflight-refresh', refreshPreflight)
+    return () => window.removeEventListener('preflight-refresh', refreshPreflight)
+  }, [refreshPreflight])
 
   // Tier do cluster: a Admin API é control plane, não consome CPU do banco, mas
   // uma aba esquecida não precisa perguntar de 30 em 30 segundos para sempre.
@@ -156,18 +166,18 @@ export default function App() {
 
         {/* Right side */}
         <div className="app-header-status" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {/* Amarelo quando o cluster ESCALOU acima do tier de entrada: a PoV é
-              calibrada para rodar no tier de entrada, então subir é alerta de
-              custo, não sinal de prontidão. */}
-          <span className={`badge ${cluster?.escalou ? 'badge-yellow' : 'badge-green'}`}
+          {/* M20 e M30 são estados válidos dentro do auto-scaling configurado.
+              O tier real continua visível, sem transformar uma escala legítima
+              em falha de pré-voo. */}
+          <span className="badge badge-green"
             title={cluster?.autoscaling?.ativo
               ? `Auto-scaling ${cluster.autoscaling.min}→${cluster.autoscaling.max}`
               : 'Tier do cluster'}>
-            Atlas {cluster?.tier || '…'}{cluster?.escalou ? ' ↑' : ''}
+            Atlas {cluster?.tier || '…'}{cluster?.autoscaling?.ativo ? ' · auto' : ''}
           </span>
           <span className={`badge ${preflight?.ready ? 'badge-green' : 'badge-yellow'}`}
-            title={preflight?.ready ? 'Pré-voo concluído' : 'Verifique o diagnóstico no menu lateral'}>
-            {preflight?.ready ? '● Pronto' : '● Verificar'}
+            title={preflight?.ready ? 'Pré-voo concluído' : 'Preparação incompleta — veja o diagnóstico no menu lateral'}>
+            {preflight?.ready ? '● Pronto' : '● Pré-voo pendente'}
           </span>
           <span className="badge badge-gray app-header-docs">
             {stats ? `${fmtCount(stats.produtos + stats.avaliacoes)} docs · Atlas cluster` : 'Atlas cluster'}
@@ -176,9 +186,9 @@ export default function App() {
       </header>
 
       <div className="app-shell-body" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* ── Sidebar: recolhida por padrão, expande no hover ──
-            O módulo Streaming tem três colunas lado a lado e precisa da
-            largura; a navegação só aparece inteira quando o mouse chega nela. */}
+        {/* ── Sidebar: fixa aberta por padrão (preferência em localStorage) ──
+            O alfinete solta a barra para o modo retrátil: o módulo Streaming
+            tem três colunas lado a lado e às vezes precisa dessa largura. */}
         <aside
           className={`app-sidebar${sidebarAberta ? ' aberta' : ''}`}
           aria-label="Módulos da demonstração"
