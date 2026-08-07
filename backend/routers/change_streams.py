@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from database import db
 from datetime import datetime, timezone
+import asyncio
+import json
 import threading
 import time
 import uuid
@@ -12,6 +15,11 @@ router = APIRouter(prefix="/change-streams", tags=["Change Streams"])
 _state = {
     "active":     False,
     "events":     [],
+    # Sequência absoluta do primeiro evento ainda retido em `events`. A lista é
+    # truncada nos últimos 250; sem esta base o índice da lista deixaria de ser
+    # um identificador estável e o `Last-Event-ID` do SSE reconectaria no ponto
+    # errado, pulando ou repetindo eventos.
+    "seq_base":   0,
     "started_at": None,
     "thread":     None,
     "generation": 0,
@@ -25,7 +33,10 @@ def _append_event(event: dict, generation: int | None = None):
         if generation is not None and generation != _state["generation"]:
             return
         _state["events"].append(event)
-        _state["events"] = _state["events"][-250:]
+        excedente = len(_state["events"]) - 250
+        if excedente > 0:
+            del _state["events"][:excedente]
+            _state["seq_base"] += excedente
 
 # Dados financeiros realistas para a demo
 _PAGADORES   = ["João Silva", "Maria Oliveira", "Carlos Santos", "Ana Lima",
@@ -123,6 +134,7 @@ def start_watch():
             return {"status": "already_watching", "events_so_far": len(_state["events"])}
         _state["active"] = True
         _state["events"] = []
+        _state["seq_base"] = 0
         _state["started_at"] = datetime.now(timezone.utc).isoformat()
         _state["generation"] += 1
         generation = _state["generation"]
@@ -203,6 +215,53 @@ def get_events():
         "total": len(events),
         "events": events,
     }
+
+
+@router.get("/feed")
+async def stream_events(request: Request):
+    """Entrega o feed da demo por SSE; a aplicação não faz polling no MongoDB.
+
+    ``Last-Event-ID`` evita duplicar linhas se o navegador reconectar: o ``id``
+    é a sequência ABSOLUTA do evento, não a posição na lista retida — o buffer é
+    truncado nos últimos 250 e um índice de lista mudaria de significado a cada
+    descarte. O endpoint ``/events`` continua existindo para diagnóstico e
+    compatibilidade, mas a UI usa este stream.
+    """
+    try:
+        cursor = max(int(request.headers.get("last-event-id", "-1")) + 1, 0)
+    except ValueError:
+        cursor = 0
+
+    async def frames():
+        nonlocal cursor
+        ultimo_keepalive = time.monotonic()
+        while not await request.is_disconnected():
+            with _state_lock:
+                eventos = list(_state["events"])
+                base = int(_state["seq_base"])
+                ativo = bool(_state["active"])
+
+            # Cliente atrasado além do buffer: retoma no evento mais antigo
+            # ainda retido em vez de indexar fora da lista.
+            cursor = max(cursor, base)
+            while cursor < base + len(eventos):
+                payload = json.dumps(eventos[cursor - base], ensure_ascii=False, default=str)
+                yield f"id: {cursor}\ndata: {payload}\n\n"
+                cursor += 1
+                ultimo_keepalive = time.monotonic()
+
+            if not ativo:
+                break
+            if time.monotonic() - ultimo_keepalive >= 10:
+                yield ": keepalive\n\n"
+                ultimo_keepalive = time.monotonic()
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(
+        frames(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/collection")

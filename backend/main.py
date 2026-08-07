@@ -79,6 +79,13 @@ app.include_router(geo.router)
 app.include_router(replay.router)
 
 
+@app.on_event("shutdown")
+async def _encerrar_cliente_async():
+    """O gerador do módulo 07 abre um cliente assíncrono próprio para escrever
+    PIX individuais; ele precisa ser fechado com o event loop ainda vivo."""
+    await streaming.fechar_cliente_async()
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "poc": "MongoDB Atlas Feature Showcase", "version": app.version}

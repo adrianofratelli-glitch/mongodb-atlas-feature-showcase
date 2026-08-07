@@ -31,6 +31,12 @@ command -v npm >/dev/null || fail "npm não encontrado."
 [[ -x "$BASE/backend/venv/bin/uvicorn" ]] || fail "Virtualenv ausente. Siga a seção Backend do README."
 [[ -d "$BASE/frontend/node_modules" ]] || fail "Dependências frontend ausentes. Execute npm install em frontend/."
 
+for port in 8002 5174; do
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    fail "Porta $port já está ocupada; o processo existente foi preservado."
+  fi
+done
+
 echo "🍃 MongoDB Atlas Feature Showcase"
 echo "=================================="
 

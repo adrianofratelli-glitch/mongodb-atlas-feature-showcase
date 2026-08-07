@@ -37,8 +37,7 @@ export default function ChangeStreams() {
   const [phase,    setPhase]    = useState('idle')
   const [events,   setEvents]   = useState([])
   const [collection, setCollection] = useState(null)
-  const pollRef  = useRef(null)
-  const pollBusyRef = useRef(false)
+  const feedRef  = useRef(null)
   const timerRef = useRef([])
   const listRef  = useRef(null)
 
@@ -47,13 +46,12 @@ export default function ChangeStreams() {
   }, [events])
 
   useEffect(() => () => {
-    clearInterval(pollRef.current)
-    pollBusyRef.current = false
+    feedRef.current?.close()
     timerRef.current.forEach(clearTimeout)
   }, [])
 
   const startDemo = async () => {
-    clearInterval(pollRef.current)
+    feedRef.current?.close()
     timerRef.current.forEach(clearTimeout)
     timerRef.current = []
     setPhase('running')
@@ -61,18 +59,11 @@ export default function ChangeStreams() {
     const res = await call('/change-streams/start', { method: 'POST' })
     if (!res) { setPhase('idle'); return }
 
-    pollRef.current = setInterval(async () => {
-      // A latência Brasil→Atlas pode superar o intervalo. Não deixe polls
-      // assíncronos se sobreporem e criarem uma fila de requests obsoletos.
-      if (pollBusyRef.current) return
-      pollBusyRef.current = true
-      try {
-        const data = await call('/change-streams/events')
-        if (data) setEvents(data.events || [])
-      } finally {
-        pollBusyRef.current = false
-      }
-    }, 600)
+    const feed = new EventSource('/api/change-streams/feed')
+    feed.onmessage = (e) => {
+      try { setEvents(prev => [...prev, JSON.parse(e.data)]) } catch { /* keepalive */ }
+    }
+    feedRef.current = feed
 
     DEMO_SEQUENCE.forEach(({ op, delay }) => {
       const t = setTimeout(() => call(`/change-streams/trigger?operacao=${op}`, { method: 'POST' }), delay)
@@ -81,10 +72,8 @@ export default function ChangeStreams() {
 
     const lastDelay = DEMO_SEQUENCE[DEMO_SEQUENCE.length - 1].delay + 1800
     const tStop = setTimeout(async () => {
-      clearInterval(pollRef.current)
-      const data = await call('/change-streams/events')
-      if (data) setEvents(data.events || [])
       await call('/change-streams/stop', { method: 'POST' })
+      feedRef.current?.close()
       const col = await call('/change-streams/collection')
       if (col) setCollection(col)
       setPhase('done')
@@ -93,8 +82,7 @@ export default function ChangeStreams() {
   }
 
   const reset = async () => {
-    clearInterval(pollRef.current)
-    pollBusyRef.current = false
+    feedRef.current?.close()
     timerRef.current.forEach(clearTimeout)
     timerRef.current = []
     setPhase('stopping')
@@ -130,15 +118,15 @@ export default function ChangeStreams() {
           <div style={{ padding: '12px 14px', background: 'var(--bg-card)', borderRadius: 6, border: '2px solid #00ED64' }}>
             <div style={{ fontWeight: 600, marginBottom: 6, color: '#00ED64', fontSize: 11, textTransform: 'uppercase', letterSpacing: '.05em' }}>Com Change Streams</div>
             <div style={{ lineHeight: 1.65, color: 'var(--text-primary)' }}>
-              O serviço se inscreve <strong>uma vez</strong> e o MongoDB avisa no momento
-              exato que qualquer transação nova chega — sem perguntar, sem esperar.
+              O serviço se inscreve <strong>uma vez</strong> e recebe as mudanças em tempo quase real,
+              sem consultar repetidamente a coleção.
             </div>
           </div>
         </div>
         <div style={{ marginTop: 12, fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.65, padding: '10px 12px', background: 'var(--bg-subtle)', borderRadius: 6 }}>
-          💡 <strong>Exemplo:</strong> pagamento inserido → Change Stream dispara instantaneamente →
-          antifraude analisa, push notification é enviado e audit log é gravado — tudo em paralelo,
-          sem nenhum dos serviços ter consultado o banco.
+          💡 <strong>Exemplo:</strong> pagamento inserido → Change Stream publica a mudança →
+          consumidores independentes podem acionar antifraude, notificação e auditoria sem polling no MongoDB.
+          Nesta tela, o feed chega do backend por SSE.
         </div>
       </div>
 
@@ -287,10 +275,10 @@ export default function ChangeStreams() {
         <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10 }}>Capacidades do Change Streams</div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10 }}>
           {[
-            { icon: '📄', title: 'fullDocumentBeforeChange', desc: 'Recebe o estado do documento antes e depois da alteração — repare no "status: pendente → aprovada" do feed acima' },
-            { icon: '🔁', title: 'Resume token',             desc: 'Retoma de onde parou após uma queda de conexão, dentro da janela de retenção do oplog — sem perder eventos' },
+            { icon: '📄', title: 'Pre/post-image',            desc: 'Mostra o estado anterior e posterior quando o recurso está habilitado e a imagem ainda está dentro de sua retenção' },
+            { icon: '🔁', title: 'Resume token',             desc: 'Permite retomar dentro da janela do oplog. Persistência, reentrega e idempotência são demonstradas no módulo 07' },
             { icon: '🔍', title: 'Pipeline de filtro',       desc: 'Escuta apenas os eventos relevantes com $match e $project, reduzindo tráfego' },
-            { icon: '🌐', title: 'Replica sets & sharded',   desc: 'Funciona em replica sets e sharded clusters sem configuração adicional' },
+            { icon: '🌐', title: 'Replica sets & sharded',   desc: 'Suportado em replica sets e sharded clusters; quantidade de cursores, pool e oplog entram no desenho de produção' },
           ].map(c => (
             <div key={c.title} style={{ padding: '12px 14px', background: 'var(--bg-subtle)', borderRadius: 6, border: '1px solid var(--border-color)' }}>
               <div style={{ fontSize: 18, marginBottom: 6 }}>{c.icon}</div>
