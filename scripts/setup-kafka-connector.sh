@@ -21,7 +21,7 @@ CONNECTOR_NAME="${CONNECT_CONNECTOR_NAME:-atlas-pix-source}"
 STREAMING_DB="${STREAMING_DB:-pix}"
 COLLECTION="transacoes"
 # Precisa bater com STREAMING_CS_PARTICOES do backend: é o mesmo campo `particao`.
-PARTICOES="${STREAMING_CS_PARTICOES:-1}"
+PARTICOES="${STREAMING_CS_PARTICOES:-4}"
 CONNECTORS="${1:-${KAFKA_CONNECTORS:-1}}"
 
 fail() { echo "❌ $1" >&2; exit 1; }
@@ -31,6 +31,17 @@ command -v curl >/dev/null || fail "curl não encontrado."
 
 MONGO_URI="$(grep -E '^MONGO_URI=' "$ENV_FILE" | head -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' -e 's/\r$//')"
 [[ -n "$MONGO_URI" ]] || fail "MONGO_URI ausente em backend/.env."
+
+# O connector reparseia connection.uri a cada start de task; com mongodb+srv://
+# isso é uma consulta DNS SRV+TXT em cada restart, e um resolver instável deixa
+# o connector RUNNING com a task FAILED. Resolvemos o SRV uma vez, aqui.
+# A URI vai por stdin: credencial não aparece em `ps`.
+if [[ "$MONGO_URI" == mongodb+srv://* ]]; then
+  MONGO_URI="$(printf '%s' "$MONGO_URI" | python3 "$BASE/scripts/lib/expand_srv.py")"
+  [[ -n "$MONGO_URI" ]] || fail "Falha ao expandir a URI SRV."
+  [[ "$MONGO_URI" == mongodb+srv://* ]] ||
+    echo "▶ URI SRV expandida para a forma padrão (restart de task não depende mais de DNS)."
+fi
 [[ "$CONNECTORS" =~ ^[0-9]+$ ]] || fail "Número de connectors inválido: $CONNECTORS"
 [[ "$PARTICOES" =~ ^[0-9]+$ ]] || fail "Número de partições inválido: $PARTICOES"
 (( CONNECTORS >= 1 && CONNECTORS <= PARTICOES )) ||
@@ -90,6 +101,7 @@ print(json.dumps({
   "collection": os.environ["STREAM_COLL"],
   "topic.prefix": "atlas",
   "publish.full.document.only": "true",
+  "change.stream.document.key.as.key": "true",
   "pipeline": os.environ["STREAM_FILTER"],
   "startup.mode": "latest",
   "heartbeat.interval.ms": "10000",
