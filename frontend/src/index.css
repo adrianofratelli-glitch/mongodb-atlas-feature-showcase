@@ -344,6 +344,40 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-note { font-size: 11px; line-height: 1.55; color: var(--text-secondary);
   border-top: 1px solid var(--border-subtle); padding-top: 9px; }
 
+/* Injeção de falha e semântica de entrega: dois blocos pequenos que carregam
+   a conversa técnica que o caminho feliz não puxa sozinho. */
+.str-falhas { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; margin-bottom: 12px; border-radius: 8px;
+  border: 1px dashed rgba(249,115,22,.35); background: rgba(249,115,22,.04); }
+.str-falhas-rotulo { font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: #f97316; }
+.str-falhas-msg { font-size: 11px; color: var(--text-secondary); }
+.str-garantia { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px;
+  padding: 10px 12px; border-radius: 8px; background: rgba(0,237,100,.05);
+  border: 1px solid rgba(0,237,100,.22); font-size: 11.5px; line-height: 1.55; }
+.str-garantia-tag { flex-shrink: 0; font-family: var(--font-mono); font-size: 9px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--accent); padding-top: 2px; }
+
+/* Painel do sinal em event time: é a ponte entre os módulos 07 e 08, e a
+   borda verde o separa dos painéis retrospectivos que vêm abaixo. */
+.geo-live { border-left: 3px solid var(--accent); }
+.geo-live-contagem { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 12px; }
+.geo-live-contagem > div { display: flex; flex-direction: column; gap: 2px; }
+.geo-live-contagem span { font-family: var(--font-mono); font-size: 26px; font-weight: 700; line-height: 1; }
+.geo-live-contagem small { font-size: 11px; color: var(--text-secondary); }
+
+/* Texto secundário atrás de um clique: mantém a evidência no alto da tela.
+   O <details> dentro do card não repete a borda — quem desenha é o .str-note. */
+.str-note-details > summary,
+.str-hero-mais > summary { cursor: pointer; font-size: 11px; font-weight: 600;
+  color: var(--text-secondary); list-style-position: inside; }
+.str-note-details > summary:hover,
+.str-hero-mais > summary:hover { color: var(--text-primary); }
+.str-note-details > .str-note { border-top: none; padding-top: 0; }
+.str-hero-mais { margin-top: 8px; }
+.str-hero-mais p { font-size: 11.5px; line-height: 1.55; color: var(--text-secondary); margin: 8px 0 0; }
+.str-hero-mais code { font-size: 11px; }
+
 .str-offline { padding: 12px 13px; border-radius: 9px;
   border: 1px dashed rgba(249,115,22,.5); background: rgba(249,115,22,.05); }
 .str-offline-t { font-weight: 700; font-size: 12.5px; color: #f97316; margin-bottom: 5px; }
@@ -392,6 +426,44 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-env-compact strong { display: block; margin-top: 1px; font-family: var(--font-mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .str-generator { padding: 13px 16px; }
 .str-generator .str-presets { margin-bottom: 8px; }
+
+.str-capability-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.str-capability { min-width: 0; padding: 11px 12px; border-radius: 9px;
+  background: rgba(255,255,255,.018); border: 1px solid var(--border-subtle); }
+.str-capability-cs { border-top-color: rgba(0,237,100,.65); }
+.str-capability-kafka { border-top-color: rgba(6,182,212,.65); }
+.str-capability-asp { border-top-color: rgba(168,85,247,.65); }
+.str-capability-title { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.str-capability-title > span { font-size: 14px; font-weight: 800; }
+.str-capability-title > strong { color: var(--text-secondary); font-family: var(--font-mono);
+  font-size: 9px; text-transform: uppercase; letter-spacing: .06em; text-align: right; }
+.str-capability p { margin: 6px 0 8px; color: var(--text-primary); font-size: 11px; line-height: 1.45; }
+.str-capability dl, .str-capability dd { margin: 0; }
+.str-capability dl { display: grid; gap: 6px; }
+.str-capability dl > div { display: grid; grid-template-columns: 63px 1fr; gap: 7px; }
+.str-capability dt { color: var(--text-secondary); font-family: var(--font-mono); font-size: 8.5px;
+  text-transform: uppercase; letter-spacing: .05em; }
+.str-capability dd { color: var(--text-secondary); font-size: 10px; line-height: 1.4; }
+
+/* Veredito da execução: os três números que o cliente leva da sala. */
+.str-veredito { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+  margin-top: 14px; padding: 14px 16px; border-radius: 10px;
+  border: 1px solid rgba(0,237,100,.28); background: rgba(0,237,100,.05); }
+.str-veredito > div { min-width: 0; text-align: center; }
+.str-veredito span { display: block; font-family: var(--font-mono); font-size: 26px;
+  font-weight: 800; line-height: 1.1; color: var(--text-primary); }
+.str-veredito small { display: block; margin-top: 4px; color: var(--text-secondary);
+  font-size: 10.5px; line-height: 1.35; }
+@media (max-width: 640px) { .str-veredito { grid-template-columns: 1fr; } }
+
+.str-latency-context { padding: 7px 9px; border-radius: 7px; border-left: 3px solid;
+  background: rgba(255,255,255,.018); }
+.str-latency-context span, .str-latency-context small { display: block; }
+.str-latency-context span { font-size: 10.5px; font-weight: 700; color: var(--text-primary); }
+.str-latency-context small { margin-top: 2px; color: var(--text-secondary); font-size: 9.5px; line-height: 1.4; }
+.str-latency-cs { border-left-color: #00ED64; }
+.str-latency-kafka { border-left-color: #06b6d4; }
+.str-latency-asp { border-left-color: #a855f7; }
 .str-tech-details > summary, .schema-code-details > summary { cursor: pointer; font-weight: 700; font-size: 14px; list-style-position: inside; }
 .str-tech-details > summary span, .schema-code-details > summary span { margin-left: 8px; color: var(--text-secondary); font-size: 11px; font-weight: 400; }
 .str-tech-details[open] > summary, .schema-code-details[open] > summary { margin-bottom: 12px; }
@@ -414,8 +486,13 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 
 @media (max-width: 900px) {
   .str-hero { grid-template-columns: 1fr; }
+  .str-capability-grid { grid-template-columns: 1fr; }
   .agg-flow { grid-template-columns: 1fr; }
   .agg-arrow { display: none; }
+}
+
+@media (max-width: 560px) {
+  .str-capability dl > div { grid-template-columns: 1fr; gap: 2px; }
 }
 
 /* ── Sidebar retrátil (expande no hover; alfinete fixa) ─────────────────── */
@@ -482,7 +559,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .geo-metrica.vencedora { border-color: rgba(0,237,100,.35); background: rgba(0,237,100,.06); }
 
 .geo-mapa { position: relative; width: 100%; border-radius: 10px; overflow: hidden;
-  background: rgba(255,255,255,.02); border: 1px solid var(--border-subtle); }
+  background: radial-gradient(120% 90% at 50% 0%, rgba(0,237,100,.05), rgba(255,255,255,.015) 60%);
+  border: 1px solid var(--border-subtle); }
+.geo-mapa-selo { position: absolute; right: 7px; top: 6px; font-family: var(--font-mono);
+  font-size: 8.5px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--text-disabled); pointer-events: none; }
 .geo-mapa svg { width: 100%; height: 100%; display: block; }
 .geo-mapa circle { cursor: pointer; }
 .geo-mapa-tip { position: absolute; left: 8px; bottom: 8px; right: 8px; font-size: 11px;

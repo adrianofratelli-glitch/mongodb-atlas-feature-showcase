@@ -72,6 +72,14 @@ function fmtEscala(v) {
   return String(v)
 }
 
+function fmtDataGravacao(v) {
+  if (!v) return 'data não informada'
+  const d = new Date(v)
+  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString('pt-BR', {
+    dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo',
+  })
+}
+
 function Stat({ label, value, sub, color }) {
   return (
     <div className="str-stat">
@@ -97,6 +105,15 @@ function Percentis({ m, color }) {
         <span className="str-pct-k">ev/s</span>
         <span className="str-pct-v" style={m?.eventos_s ? { color } : undefined}>{m?.eventos_s ?? '—'}</span>
       </div>
+    </div>
+  )
+}
+
+function LatencyContext({ title, detail, tone }) {
+  return (
+    <div className={`str-latency-context str-latency-${tone}`}>
+      <span>{title}</span>
+      <small>{detail}</small>
     </div>
   )
 }
@@ -130,20 +147,16 @@ function Sparkline({ values }) {
 export default function Streaming() {
   const { call } = useApi()
 
-  // ── Esta aba roda SEMPRE sobre uma execução gravada ──────────────────────
-  // Não existe modo ao vivo aqui. A escrita ao vivo estressava o cluster sem
-  // necessidade: M20/M30 são instâncias burstable e o auto-scaling do Atlas
-  // dispara por CPU RELATIVA — 17,6% absolutos deram 88% relativos e escalaram
-  // o cluster com o gerador JÁ PARADO, só com esta tela aberta e consumindo.
-  //
-  // O que se reproduz é medição real (scripts/capture_replay.py grava os mesmos
-  // eventos SSE e snapshots que a tela consumia ao vivo); nada é sintetizado.
-  // Mas número medido ontem apresentado sem contexto vira número de hoje na
-  // cabeça de quem assiste — por isso o selo abaixo é permanente e não
-  // condicional. Ele é a única coisa que separa "gravado" de "ao vivo" para a
-  // plateia. Não remover.
-  const replay = true
-  const base = '/replay'
+  // Ao vivo e o modo principal para a conversa com o time PIX. O replay real
+  // permanece como fallback operacional caso Kafka/ASP/rede nao estejam prontos.
+  // Os cursores live so existem durante uma sessao iniciada nesta tela: isso
+  // evita repetir a regressao em que tres cursores + polling ficaram pressionando
+  // uma M20 com o gerador parado.
+  const [modo, setModo] = useState('live')
+  const replay = modo === 'replay'
+  const base = replay ? '/replay' : ''
+  const [sessaoLive, setSessaoLive] = useState(false)
+  const [preparando, setPreparando] = useState(false)
   const [manifest, setManifest] = useState(null)
 
   useEffect(() => {
@@ -155,47 +168,130 @@ export default function Streaming() {
   // ── Cenário PIX conceitual ────────────────────────────────────────────────
   const [cenario, setCenario] = useState(null)
   const [rede, setRede] = useState(null)
+  const [tpsSelecionado, setTpsSelecionado] = useState(8_000)
+  // O preset carrega o modo junto: o patamar de headroom só é alcançável em
+  // lote, e escolhê-lo sem trocar o modo mostraria "alvo 12.000, medido 2.000".
+  const [modoSelecionado, setModoSelecionado] = useState(null)
   useEffect(() => {
-    // O cenário vem da gravação: descreve o ambiente em que a execução foi
-    // medida, não o ambiente de agora.
-    call(`${base}/streaming/cenario`).then((d) => d && setCenario(d))
+    call(`${base}/streaming/cenario`).then((d) => {
+      if (!d) return
+      setCenario(d)
+      if (!replay && d.default_tps) setTpsSelecionado(d.default_tps)
+      if (!replay && d.modo_escrita) setModoSelecionado(d.modo_escrita)
+    })
     call(`${base}/streaming/rede`).then((d) => d && setRede(d))
-  }, [call, base])
+  }, [call, base, replay])
 
   // ── Relógio da reprodução ────────────────────────────────────────────────
   const [gen, setGen] = useState(null)
+  // Injeção de falha: qual está em curso e o que dizer sobre a última.
+  const [falha, setFalha] = useState(null)
+  const [falhaMsg, setFalhaMsg] = useState('')
+  const genRequestSeq = useRef(0)
+  const activeRunRef = useRef(null)
 
   const refreshGen = useCallback(async () => {
+    const seq = ++genRequestSeq.current
     const data = await call(`${base}/streaming/generator/status`)
-    if (data) setGen(data)
+    if (data && seq === genRequestSeq.current) {
+      activeRunRef.current = data.run_id || null
+      setGen(data)
+    }
   }, [call, base])
 
-  // Enquanto o relógio anda, 1 s. Parado, um heartbeat lento só para notar um
-  // play disparado de outra aba — a posição não muda sozinha.
-  useIntervaloVisivel(refreshGen, gen?.running ? 1000 : 15000)
+  useEffect(() => { refreshGen() }, [refreshGen])
+  // Sem sessao live, nada consulta a collection remotamente em loop.
+  useIntervaloVisivel(refreshGen, 1000, Boolean(gen?.running) || Boolean(gen?.stopping) || sessaoLive || replay)
 
-  // Play move o relógio da gravação. Nenhuma escrita sai daqui.
-  const play = useCallback(async () => {
-    await call('/replay/play', { method: 'POST' })
-    refreshGen()
-  }, [call, refreshGen])
+  const iniciar = useCallback(async () => {
+    if (replay) {
+      await call('/replay/play', { method: 'POST' })
+      refreshGen()
+      return
+    }
+    setPreparando(true)
+    try {
+      // Toda rodada começa isolada. Sem isto, documentos/janelas e o run_id da
+      // rodada anterior podiam aparecer durante o novo Play e a reconciliação
+      // comparava snapshots de duas execuções diferentes.
+      const reset = await call('/streaming/reset', { method: 'POST', timeoutMs: 220_000 })
+      if (!reset?.reset) return
+      window.dispatchEvent(new Event('preflight-refresh'))
+      genRequestSeq.current += 1 // invalida um /status antigo ainda em voo
+      activeRunRef.current = null
+      setGen(null)
+      setCsEvents([]); setCsMetrics(null)
+      setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
+      setKafkaMsgs([]); setKafkaMetrics(null)
+      setJanelas([]); setDlq([]); setAspMetrics(null)
+      setReconciliacao(null)
+
+      // Abre CS/Kafka/ASP antes da primeira escrita para nenhum evento nascer
+      // fora da observação. `preparando` impede o efeito de fechamento de usar
+      // a reconciliação antiga durante esta espera.
+      setSessaoLive(true)
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      const started = await call('/streaming/generator/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tps: tpsSelecionado,
+          duration_s: cenario?.default_duration_s ?? 30,
+          ...(modoSelecionado ? { modo: modoSelecionado } : {}),
+        }),
+      })
+      if (!started?.run_id) {
+        setSessaoLive(false)
+        return
+      }
+      genRequestSeq.current += 1
+      activeRunRef.current = started.run_id
+      setGen(started)
+      refreshGen()
+    } finally {
+      setPreparando(false)
+    }
+  }, [call, cenario?.default_duration_s, refreshGen, replay, tpsSelecionado, modoSelecionado])
 
   const stopGen = async () => {
-    await call('/replay/stop', { method: 'POST' })
+    await call(replay ? '/replay/stop' : '/streaming/generator/stop', { method: 'POST' })
     refreshGen()
+  }
+
+  const derrubarConnector = async () => {
+    setFalha('connector'); setFalhaMsg('')
+    const d = await call('/streaming/falha/connector', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segundos: 8 }), timeoutMs: 60_000,
+    })
+    setFalha(null)
+    setFalhaMsg(d?.derrubado
+      ? `connector fora por ${d.segundos}s e retomado pelo offset — confira a reconciliação fechar`
+      : (d?.detalhe || 'não foi possível derrubar o connector'))
+  }
+
+  const injetarInvalido = async () => {
+    setFalha('evento'); setFalhaMsg('')
+    const d = await call('/streaming/falha/evento-invalido', { method: 'POST' })
+    setFalha(null)
+    setFalhaMsg(d?.injetado
+      ? `evento inválido gravado (${d.endToEndId.slice(0, 10)}…) — deve aparecer na DLQ da coluna 3`
+      : 'não foi possível injetar o evento')
   }
 
   // Reset: volta o relógio ao início E limpa os painéis. O /replay/stop já zera
   // a posição no backend, mas os feeds/métricas vivem no estado desta tela e só
   // seriam limpos pelo evento `reset` do SSE, que depende de o laço da gravação
   // dar a volta. Sem isto, parar deixa a tela congelada no meio da execução.
-  const resetReplay = async () => {
-    await call('/replay/stop', { method: 'POST' })
+  const resetExecucao = async () => {
+    await call(replay ? '/replay/stop' : '/streaming/reset', { method: 'POST', timeoutMs: 220_000 })
     setCsEvents([]); setCsMetrics(null)
     setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
     setKafkaMsgs([]); setKafkaMetrics(null)
     setJanelas([]); setDlq([]); setAspMetrics(null)
     setReconciliacao(null)
+    activeRunRef.current = null
+    if (!replay) setSessaoLive(false)
     refreshGen()
   }
 
@@ -204,6 +300,7 @@ export default function Streaming() {
   const [csState, setCsState] = useState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
   const [csMetrics, setCsMetrics] = useState(null)
 
+  const observar = replay ? Boolean(manifest?.disponivel) : sessaoLive
   const csConnected = useSse(`${base}/streaming/changestream`, (msg) => {
     if (msg.type === 'evento') {
       setCsEvents((prev) => push(prev, msg))
@@ -220,7 +317,7 @@ export default function Streaming() {
       setCsEvents([]); setCsMetrics(null)
       setCsState({ eventos: 0, recuperados: 0, token: null, fase: 'ativo' })
     }
-  })
+  }, observar)
 
   const dropResume = async () => { await call('/streaming/changestream/drop-resume', { method: 'POST' }) }
 
@@ -233,7 +330,7 @@ export default function Streaming() {
     if (msg.type === 'mensagem') setKafkaMsgs((prev) => push(prev, msg))
     else if (msg.type === 'metricas') setKafkaMetrics(msg)
     else if (msg.type === 'reset') { setKafkaMsgs([]); setKafkaMetrics(null) }
-  })
+  }, observar)
 
   // Snapshot gravado: só muda com o relógio andando. Uma carga inicial para o
   // painel não nascer vazio, e poll apenas durante a reprodução.
@@ -242,7 +339,7 @@ export default function Streaming() {
     if (d) setKafkaStatus(d)
   }, [call, base])
   useEffect(() => { lerKafkaStatus() }, [lerKafkaStatus])
-  useIntervaloVisivel(lerKafkaStatus, 4000, Boolean(gen?.running))
+  useIntervaloVisivel(lerKafkaStatus, 4000, observar)
 
   const connectorState = kafkaStatus?.connector?.estado
   const kafkaOk = connectorState === 'RUNNING'
@@ -266,14 +363,14 @@ export default function Streaming() {
     if (msg.type === 'janela') { setJanelas((prev) => push(prev, msg)); setAspMetrics(msg) }
     else if (msg.type === 'dlq') setDlq((prev) => push(prev, msg))
     else if (msg.type === 'reset') { setJanelas([]); setDlq([]); setAspMetrics(null) }
-  })
+  }, observar)
 
   const lerAspStatus = useCallback(async () => {
     const d = await call(`${base}/streaming/asp/status`)
     if (d) setAspStatus(d)
   }, [call, base])
   useEffect(() => { lerAspStatus() }, [lerAspStatus])
-  useIntervaloVisivel(lerAspStatus, 5000, Boolean(gen?.running))
+  useIntervaloVisivel(lerAspStatus, 5000, observar)
 
   // ── Evidências de confiabilidade ─────────────────────────────────────────
   const [oplog, setOplog] = useState(null)
@@ -287,7 +384,7 @@ export default function Streaming() {
     if (o) setOplog(o)
     if (l) setLeitura(l)
     if (d) setDlqResumo(d)
-  }, [call, base]), 4000, Boolean(gen?.running))
+  }, [call, base]), 4000, observar)
 
   // Reconciliação só enquanto a reprodução anda. O relógio repete a gravação
   // com o mesmo run_id; portanto, mesmo depois de chegar a "reconciliado", o
@@ -295,22 +392,39 @@ export default function Streaming() {
   // inicial no próximo ciclo. Parado, o resultado não muda e não é consultado.
   useEffect(() => {
     if (!gen?.run_id) { setReconciliacao(null); return }
-    call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
-      .then((d) => d && setReconciliacao(d))
+    const runId = gen.run_id
+    let cancelado = false
+    call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(runId)}`)
+      .then((d) => {
+        if (!cancelado && d?.run_id === runId && activeRunRef.current === runId) setReconciliacao(d)
+      })
+    return () => { cancelado = true }
   }, [gen?.run_id, call, base])
   useIntervaloVisivel(useCallback(async () => {
-    if (!gen?.run_id) return
-    const d = await call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(gen.run_id)}`)
-    if (!d) return
-    setReconciliacao(d)
-  }, [call, base, gen?.run_id]), 5000, Boolean(gen?.run_id) && Boolean(gen?.running))
+    const runId = gen?.run_id
+    if (!runId) return
+    const d = await call(`${base}/streaming/reconciliacao?run_id=${encodeURIComponent(runId)}`)
+    if (d?.run_id === runId && activeRunRef.current === runId) setReconciliacao(d)
+  }, [call, base, gen?.run_id]), 5000, Boolean(gen?.run_id) && observar)
+
+  // Assim que uma execucao finita estiver reconciliada, fecha os tres cursores
+  // e todos os polls Atlas-facing. Os numeros permanecem congelados na tela.
+  useEffect(() => {
+    if (!replay && !preparando && !gen?.running && !gen?.stopping && reconciliacao?.final === 'reconciliado') setSessaoLive(false)
+  }, [gen?.running, gen?.stopping, preparando, reconciliacao?.final, replay])
 
   const aspOk = aspStatus?.estado === 'configurado'
+  // "individual" = 1 insert por PIX. Muda o significado do número de latência
+  // na tela, então precisa ser visível, não implícito.
+  const modoIndividual = !replay && (gen?.modo ?? cenario?.modo_escrita) === 'individual'
+  const csPendentes = reconciliacao?.change_streams?.pendentes
+  const kafkaPendentes = reconciliacao?.kafka?.pendentes
+  const aspPendentes = reconciliacao?.asp?.pendentes
 
   // Tamanho da janela lido das bordas da própria janela ($meta stream.window),
-  // não fixado no código: a gravação atual foi medida com 10 s e o processor
-  // passou a 5 s. Deixar o número escrito na tela faria a legenda mentir para
-  // um dos dois. Sem janela ainda, cai no valor configurado hoje.
+  // não fixado no código: gravações antigas podem ter outra configuração.
+  // Deixar o número escrito na tela faria a legenda mentir. Sem janela ainda,
+  // cai no valor configurado hoje.
   const janelaSegundos = (() => {
     const j = janelas[0]
     if (j?.window_start && j?.window_end) {
@@ -339,16 +453,30 @@ export default function Streaming() {
       {/* Enredo + escala do cenário */}
       <div className="card str-hero">
         <div className="str-hero-copy">
-          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>Uma execução PIX, três capacidades complementares</div>
+          <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 6 }}>Um PIX gravado, três consumos, zero ETL</div>
           <div style={{ fontSize: 12.5, color: 'var(--text-primary)', lineHeight: 1.55 }}>
-          Um único gerador escreve em <code>pix.transacoes</code> contra este cluster Atlas. As três colunas consomem
-          <strong> a mesma mudança</strong> por caminhos diferentes: dentro da aplicação (Change Streams), no barramento
-          (MongoDB Kafka Connector) e num serviço gerenciado com janela e estado (Atlas Stream Processing).
-          A prova é de <strong>integridade, retomada, fan-out, janela e tratamento de erro</strong> — não de sizing.
+          Uma escrita em <code>pix.transacoes</code>, três consumos independentes — sem ETL, sem dual-write.
+          A pergunta não é "aguenta o volume", e sim <strong>quantos sistemas o mesmo dado alimenta sem você
+          construir integração</strong>, com perda zero comprovada por reconciliação.
           </div>
-          <div className="str-workload-note">
-            Workload sintético, mecanismos reais · <code>run_id</code> reconcilia os três caminhos · TPS e latência valem apenas para esta execução.
-          </div>
+          {/* A prosa longa cabe na fala do apresentador; na tela ela competia
+              com as três colunas, que são a evidência. Fica um clique atrás. */}
+          <details className="str-hero-mais">
+            <summary>Contexto e premissas</summary>
+            <p>
+              Sem pipeline de cópia, sem job noturno, sem uma segunda base para análise: as três colunas consomem
+              <strong> a mesma mudança</strong> — dentro da aplicação (Change Streams), no barramento para o
+              ecossistema (Kafka Connector) e num processador gerenciado com janela e estado (ASP).
+            </p>
+            <p>
+              No Data Explorer, acompanhe <code>pix</code> → <code>transacoes</code>;
+              <code>pix_poc.pix_transactions</code> é outra collection e não recebe esta carga.
+            </p>
+            <p>
+              Workload sintético, mecanismos reais · <code>run_id</code> reconcilia os três caminhos ·
+              TPS e latência valem apenas para esta execução.
+            </p>
+          </details>
         </div>
         <div className="str-env-compact">
           <div><span>Cluster</span><strong>{cenario?.ambiente?.cluster || '—'}</strong></div>
@@ -358,16 +486,41 @@ export default function Streaming() {
         </div>
       </div>
 
-      {/* Sem selo de origem quando há gravação: a decisão é do apresentador,
-          que declara a origem na fala. A ausência de gravação continua visível —
-          isso é estado de erro, não rótulo de modo. O texto do gerador ("O Play
-          reproduz essa execução; o banco não é tocado") segue no card abaixo. */}
-      {manifest && !manifest.disponivel && (
+      <div className="str-selo-linha" style={{ justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+        <span className="str-selo-txt">
+          <strong>Modo da demonstração:</strong> ao vivo é o caminho principal; replay é contingência.
+        </span>
+        <span style={{ display: 'flex', gap: 6 }}>
+          <button className={`btn btn-sm ${!replay ? 'btn-primary' : ''}`} onClick={() => setModo('live')} disabled={preparando || gen?.running || gen?.stopping}>
+            ● Ao vivo
+          </button>
+          <button className={`btn btn-sm ${replay ? 'btn-primary' : ''}`} onClick={() => { setSessaoLive(false); setModo('replay') }} disabled={preparando || gen?.running || gen?.stopping}>
+            ▶ Replay de segurança
+          </button>
+        </span>
+      </div>
+
+      {/* Transparencia e parte da evidencia: replay nunca parece live. */}
+      {replay && manifest?.disponivel && (
+        <div className="str-selo-linha">
+          <span className="str-selo-tag">execução real gravada</span>
+          <span className="str-selo-txt">
+            {fmtDataGravacao(manifest.gravado_em)} · <code>{manifest.run_id}</code> · reprodução sem escrita no Atlas
+          </span>
+        </div>
+      )}
+      {replay && manifest && !manifest.disponivel && (
         <div className="str-selo-linha">
           <span className="str-selo-tag str-selo-tag-alerta">sem gravação</span>
           <span className="str-selo-txt">
             rode <code>python scripts/capture_replay.py</code> com o ambiente ligado
           </span>
+        </div>
+      )}
+      {!replay && gen && !Object.prototype.hasOwnProperty.call(gen, 'write_ack') && (
+        <div className="str-selo-linha">
+          <span className="str-selo-tag str-selo-tag-alerta">backend desatualizado</span>
+          <span className="str-selo-txt">reinicie o <code>overview</code> para habilitar ACK Atlas e o cenário padrão de 8.000 TPS</span>
         </div>
       )}
 
@@ -377,35 +530,140 @@ export default function Streaming() {
           <div>
             <div style={{ fontWeight: 700, fontSize: 15 }}>Fluxo PIX da execução</div>
             <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
-              Escrita original em <code>{gen?.colecao || 'pix.transacoes'}</code> · micro-batches a
-              cada 100 ms · TTL de {gen?.ttl_segundos ? (gen.ttl_segundos >= 60 ? `${Math.round(gen.ttl_segundos / 60)} min` : `${gen.ttl_segundos}s`) : '—'} em <code>ts</code>.
-              O Play reproduz essa execução; o banco não é tocado.
+              {replay ? 'Escrita original' : 'Escrita ao vivo'} em <code>{gen?.colecao || 'pix.transacoes'}</code>
+              {modoIndividual ? <> · <strong>1 insert = 1 PIX</strong>{gen?.workers ? `, ${gen.workers} em voo` : ''}</> : null}
+              {' '}· TTL de {gen?.ttl_segundos ? (gen.ttl_segundos >= 60 ? `${Math.round(gen.ttl_segundos / 60)} min` : `${gen.ttl_segundos}s`) : '—'} em <code>ts</code>.
+              {replay ? ' O Play reproduz a medição; o banco não é tocado.' : ' Contadores e latências abaixo são medidos nesta execução.'}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            {gen?.running
-              ? <button className="btn btn-danger btn-sm" onClick={stopGen}>■ Parar</button>
-              : <button className="btn btn-primary btn-sm" onClick={play}>▶ Play</button>}
-            <button className="btn btn-sm" onClick={resetReplay}
-              title="Volta ao início e limpa os painéis">↺ Reset</button>
+            {gen?.running || gen?.stopping
+              ? <button className="btn btn-danger btn-sm" onClick={stopGen} disabled={gen?.stopping}
+                  title="Fecha a carga e avança o watermark para reconciliar a última janela">
+                  {gen?.stopping ? '◌ Fechando janelas…' : '■ Parar e reconciliar'}
+                </button>
+              : <button className="btn btn-primary btn-sm" onClick={iniciar} disabled={preparando || (replay && !manifest?.disponivel)}>
+                {preparando ? '◌ Limpando rodada anterior…' : (replay ? '▶ Play' : `▶ Play · ${num(tpsSelecionado)} TPS por ${cenario?.default_duration_s ?? 30}s`)}
+              </button>}
+            <button className="btn btn-sm" onClick={resetExecucao} disabled={preparando}
+              title={replay ? 'Volta ao início e limpa os painéis' : 'Para a sessão e limpa somente os dados PIX da PoV'}>↺ Reset</button>
           </div>
         </div>
 
-        {/* Sem presets nem slider de TPS: o Play reproduz a execução como ela
-            foi medida. Um controle de carga aqui prometeria o que a reprodução
-            não faz — a carga foi decidida na gravação. */}
+        {/* Injeção de falha: a evidência que o caminho feliz não dá. Só ao
+            vivo — em replay não há o que derrubar, a execução já terminou. */}
+        {!replay && (
+          <div className="str-falhas">
+            <span className="str-falhas-rotulo">Quebrar de propósito</span>
+            <button className="btn btn-xs" onClick={derrubarConnector}
+              disabled={falha === 'connector' || !gen?.running}
+              title="Para o connector por 8 s no meio do fluxo. Ele volta pelo offset guardado e a reconciliação tem de fechar mesmo assim.">
+              {falha === 'connector' ? '◌ connector fora…' : '⚡ Derrubar o Kafka Connector (8s)'}
+            </button>
+            <button className="btn btn-xs" onClick={injetarInvalido} disabled={falha === 'evento'}
+              title="Grava uma transação com `valor` em texto. O ASP desvia para a DLQ e segue rodando.">
+              {falha === 'evento' ? '◌ enviando…' : '☠ Injetar evento inválido → DLQ'}
+            </button>
+            {falhaMsg && <span className="str-falhas-msg">{falhaMsg}</span>}
+            {!gen?.running && (
+              <span className="str-falhas-msg">derrubar o connector só faz sentido com o fluxo rodando</span>
+            )}
+          </div>
+        )}
+
+        {!replay && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+            {cenario?.presets?.map((preset) => (
+              <button key={preset.tps} className={`btn btn-sm ${tpsSelecionado === preset.tps ? 'btn-primary' : ''}`}
+                onClick={() => { setTpsSelecionado(preset.tps); setModoSelecionado(preset.modo || cenario?.modo_escrita) }}
+                disabled={preparando || gen?.running || gen?.stopping} title={preset.detalhe}>
+                {preset.label} · {num(preset.tps)} TPS
+              </button>
+            ))}
+          </div>
+        )}
         <div className="str-gen-row">
           <div className="str-stats">
-            <Stat label="TPS da execução" value={num(gen?.tps_alvo ?? manifest?.tps_alvo ?? 0)}
-              sub={gen?.running ? 'reproduzindo' : 'medido na gravação'}
+            <Stat label={replay ? 'TPS da execução' : 'TPS medido'} value={num(replay ? (gen?.tps_alvo ?? manifest?.tps_alvo ?? 0) : (gen?.tps_medido ?? 0))}
+              sub={replay ? (gen?.running ? 'reproduzindo' : 'medido na gravação') : `alvo ${num(gen?.tps_alvo || tpsSelecionado)}`}
               color={gen?.running ? '#00ED64' : undefined} />
-            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub="confirmados pelo Atlas na gravação" />
+            <Stat label="Inseridos" value={num(gen?.inseridos ?? 0)} sub={replay ? 'confirmados pelo Atlas na gravação' : 'confirmados pelo Atlas agora'} />
+            <Stat label="Escrita no Atlas" value={fmtMs(gen?.ingestao_servidor?.p50)}
+              color={gen?.ingestao_servidor?.p50 != null ? '#00ED64' : undefined}
+              sub={modoIndividual ? 'p50 server-side · janela isolada' : 'p50 server-side (lote)'} />
+            <Stat label="ACK do cliente" value={fmtMs(gen?.write_ack?.p50)}
+              sub="p50 ponta a ponta, inclui rede" />
             <Stat label="Execução" value={gen?.run_id ? gen.run_id.slice(-6).toUpperCase() : '—'}
               sub="run_id para reconciliação" color={gen?.run_id ? '#00ED64' : undefined} />
-            <Stat label="Objetivo" value="Confiabilidade" sub="sem claim de sizing" />
+            <Stat label="Escala de referência" value={`${num(cenario?.referencia_pix?.pico_sustentado_fatia_tps ?? 1000)} TPS`}
+              sub={`${cenario?.referencia_pix?.premissa_participacao_pct ?? 10}% do pico sustentado BCB`} />
+            <Stat label="Duração" value={`${gen?.duration_s ?? cenario?.default_duration_s ?? 30} s`}
+              sub="stop automático + reconciliação" />
           </div>
         </div>
+        {/* O número de destaque é o do servidor; a rede fica ao lado como
+            contexto. Sem essa separação a plateia lê latência de rede como se
+            fosse tempo de banco. */}
+        {!replay && gen?.ingestao_servidor?.disponivel && (
+          <div className="str-workload-note" style={{ marginTop: 12 }}>
+            <strong>Onde estão os milissegundos:</strong> as escritas observadas pelo mongod levaram{' '}
+            <strong>{fmtMs(gen.ingestao_servidor.p50)} (p50)</strong> e{' '}
+            {fmtMs(gen.ingestao_servidor.p99)} (p99), sobre {num(gen.ingestao_servidor.comandos)}{' '}
+            comandos no intervalo. O ACK de {fmtMs(gen?.write_ack?.p50)} inclui
+            o round-trip da aplicação até o cluster
+            {rede?.rtt_ms ? <> (RTT medido {fmtMs(rede.rtt_ms)})</> : null}.
+            {modoIndividual
+              ? <> Como a carga usa <strong>um insert por PIX</strong>, a amostra representa um PIX quando
+                  esta PoV está isolada. <code>opLatencies</code> é cluster-wide e não filtra por <code>run_id</code>.</>
+              : null}
+            {' '}Os percentis vêm dos buckets do histograma do servidor e são aproximados por faixa.
+          </div>
+        )}
+        {!replay && cenario?.referencia_pix && (
+          <div className="str-workload-note" style={{ marginTop: 12 }}>
+            <strong>Escala do PIX, por números públicos do BCB:</strong> o recorde de {num(cenario.referencia_pix.recorde_brasil_transacoes_dia)} PIX
+            em {cenario.referencia_pix.recorde_brasil_data} equivale a {num(cenario.referencia_pix.media_brasil_tps)} TPS médios no Brasil,
+            e o planejamento do BCB fala em {num(cenario.referencia_pix.pico_sustentado_brasil_tps)} TPS de pico sustentado.
+            Os presets partem de <strong>{cenario.referencia_pix.premissa_participacao_pct}%</strong> desse pico
+            ({num(cenario.referencia_pix.pico_sustentado_fatia_tps)} TPS) — premissa de apresentação, ajustável.
+            É equivalência de carga, não certificação de capacidade ou sizing de produção.
+          </div>
+        )}
+        {modoIndividual && (
+          <div className="str-workload-note" style={{ marginTop: 8 }}>
+            <strong>Onde está o limite:</strong> quem satura primeiro é o <strong>consumidor local</strong>,
+            não o Atlas. O servidor segue gravando cada PIX em poucos milissegundos, com as conexões em
+            torno de 5% do limite do cluster — a folga que aparece nos contadores é do banco, não da máquina
+            que apresenta.
+          </div>
+        )}
       </div>
+
+      {/* Argumento de negócio: entra quando o cliente pergunta "e daí?".
+          Aberto por padrão ele empurrava as três colunas para fora da dobra. */}
+      <details className="card str-tech-details" aria-labelledby="str-bank-impact-title">
+        <summary id="str-bank-impact-title">
+          Um commit, três padrões — sem dual-write <span>impacto para uma plataforma bancária</span>
+        </summary>
+        <div className="str-capability-grid">
+          <article className="str-capability str-capability-cs">
+            <div className="str-capability-title"><span style={{ color: '#00ED64' }}>Consistência</span><strong>Uma fonte operacional</strong></div>
+            <p>O evento nasce do dado já confirmado. A aplicação não precisa gravar MongoDB e publicar outro sistema na mesma requisição.</p>
+          </article>
+          <article className="str-capability str-capability-kafka">
+            <div className="str-capability-title"><span style={{ color: '#06b6d4' }}>Integração</span><strong>Fan-out sem acoplamento</strong></div>
+            <p>Kafka continua disponível para o ecossistema; o connector remove código de CDC da aplicação e preserva offsets e replay.</p>
+          </article>
+          <article className="str-capability str-capability-asp">
+            <div className="str-capability-title"><span style={{ color: '#a855f7' }}>Operação</span><strong>Streaming em MQL gerenciado</strong></div>
+            <p>Janela, estado, checkpoint, materialização e DLQ ficam no Atlas, reduzindo um plano de processamento separado para estes casos.</p>
+          </article>
+        </div>
+        <div className="str-note" style={{ marginTop: 12 }}>
+          A PoV prova integridade, retomada e latência deste ambiente. Ela não elimina idempotência em efeitos externos nem substitui
+          sizing, HA, segurança e SLOs de produção.
+        </div>
+      </details>
 
       {/* As três colunas */}
       <div className="str-grid">
@@ -414,17 +672,18 @@ export default function Streaming() {
         <div className="str-col str-col-cs">
           <div className="str-col-head">
             <span>🍃 Change Streams</span>
-            {/* "ao vivo" aqui contradiria o selo: o stream está conectado, mas
-                o que trafega nele é a gravação sendo reproduzida. */}
             <span className={`badge ${csConnected ? 'badge-green' : 'badge-yellow'}`}>
-              {csConnected ? '● reproduzindo' : '○ conectando'}
+              {csConnected ? (replay ? '● reproduzindo' : '● ao vivo') : (observar ? '○ conectando' : '○ em espera')}
             </span>
           </div>
           <div className="str-col-body">
             <div className="str-stats">
               <Stat label="Eventos" value={num(csState.eventos)} color="#00ED64" />
               <Stat label="Recuperados" value={num(csState.recuperados)} color={csState.recuperados ? '#00ED64' : undefined} sub="via resume token" />
+              <Stat label="Pendentes" value={num(csPendentes ?? 0)} color={csPendentes ? '#f97316' : undefined} sub="backlog pós-commit" />
             </div>
+            <LatencyContext tone="cs" title="Propagação pós-commit"
+              detail="timestamp persistido → worker da aplicação; não é tempo de liquidação" />
             <Percentis m={csMetrics} color="#00ED64" />
             <div className="str-token">
               <span className="str-token-l">resume token</span>
@@ -490,7 +749,7 @@ export default function Streaming() {
             <span className={`badge ${kafkaOk ? 'badge-green' : 'badge-yellow'}`}>
               {!connectorState ? '○ verificando'
                 : connectorState === 'nao_configurado' ? '○ não configurado'
-                : `● ${connectorState}`}
+                : `● ${connectorState}${replay ? ' na gravação' : ''}`}
             </span>
           </div>
           <div className="str-col-body">
@@ -525,7 +784,10 @@ export default function Streaming() {
                 <div className="str-stats">
                   <Stat label="Mensagens" value={num(kafkaMetrics?.mensagens ?? kafkaStatus?.consumidor?.mensagens ?? 0)} color="#06b6d4" />
                   <Stat label="Offset atual" value={num(kafkaMetrics?.offset_atual ?? kafkaStatus?.consumidor?.offset_atual)} sub="partição consumida" />
+                  <Stat label="Pendentes" value={num(kafkaPendentes ?? 0)} color={kafkaPendentes ? '#f97316' : undefined} sub="backlog pós-commit" />
                 </div>
+                <LatencyContext tone="kafka" title="Propagação pelo barramento"
+                  detail="timestamp persistido → connector → Kafka → observador local" />
                 <Percentis m={kafkaMetrics} color="#06b6d4" />
                 <div className="str-token">
                   <span className="str-token-l">tópico</span>
@@ -558,6 +820,12 @@ export default function Streaming() {
               <code> group.id</code> estável e confirma offsets periodicamente.
             </div>
             <div className="str-note">
+              Nesta PoV a key publicada é a <strong>document key do MongoDB</strong> e o valor é JSON sem contrato
+              de Schema Registry. Em produção PIX, <strong>chave, particionamento e schema versionado</strong> são
+              decisões explícitas: a key define o escopo de ordenação, e troca de schema precisa ser compatível
+              com todos os consumidores. Offset não elimina duplicidade de negócio.
+            </div>
+            <div className="str-note">
               Um connector é suficiente para provar o conceito. Connectors adicionais com filtros disjuntos são
               apenas um experimento; não são apresentados como partições nativas ou sizing de produção.
               O ambiente local usa broker único e sem TLS/SASL — HA, ACL e Schema Registry ficam explicitamente fora do escopo.
@@ -570,7 +838,7 @@ export default function Streaming() {
           <div className="str-col-head">
             <span>🪟 Atlas Stream Processing</span>
             <span className={`badge ${aspOk ? 'badge-green' : 'badge-yellow'}`}>
-              {!aspStatus ? '○ verificando' : aspOk ? '● processor ativo' : '○ não configurado'}
+              {!aspStatus ? '○ verificando' : aspOk ? (replay ? '● ativo na gravação' : '● processor ativo') : '○ não configurado'}
             </span>
           </div>
           <div className="str-col-body">
@@ -593,6 +861,7 @@ export default function Streaming() {
                     sub={`${num(aspStatus?.janelas)} janelas de ${janelaSegundos} s`} />
                   <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
                   <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="rejeitados" />
+                  <Stat label="Pendentes" value={num(aspPendentes ?? 0)} color={aspPendentes ? '#f97316' : undefined} sub="janela ou backlog" />
                 </div>
                 {aspStatus?.runtime?.disponivel && (
                   <div className="str-token">
@@ -610,7 +879,11 @@ export default function Streaming() {
                     Aperte <strong>Reset</strong> para começar limpo.
                   </div>
                 ) : (
-                  <Percentis m={aspMetrics} color="#a855f7" />
+                  <>
+                    <LatencyContext tone="asp" title="Latência da materialização"
+                      detail={`fim da janela → $merge → tela; a janela de ${janelaSegundos}s é intencional`} />
+                    <Percentis m={aspMetrics} color="#a855f7" />
+                  </>
                 )}
                 <Sparkline values={janelas.slice(0, 24).map(j => j.qtd || 0).reverse()} />
                 <div className="str-dlq-acoes">
@@ -670,13 +943,19 @@ export default function Streaming() {
               não de um evento individual: são coisas diferentes de propósito.
             </div>
             <div className="str-note">
+              A janela usa <strong>event time</strong> e aceita 2 s de atraso. Ela fecha quando o
+              <strong> watermark avança</strong>; se a fonte ficar ociosa, a última janela pode permanecer aberta.
+              Documento que chega tarde demais é contabilizado na DLQ, não silenciosamente descartado.
+            </div>
+            <div className="str-note">
               <strong>Valores altos</strong> é um sinal operacional simples (PIX ≥ R$ 5 mil), não um motor antifraude.
               Ele prova que o mesmo pipeline pode manter estado de janela e produzir indicadores acionáveis sem mover o fluxo para batch.
             </div>
             <div className="str-note">
               O processor faz <code>$merge</code> em <code>pix.metricas_janela</code> e o backend
               <strong> assiste essa coleção com um change stream</strong>: o resultado do ASP chega nesta tela
-              pela mecânica da coluna 1. É o fecho das três colunas.
+              pela mecânica da coluna 1. Um processor tem um único sink terminal; fan-out adicional usa
+              processadores encadeados ou consumidores da coleção materializada.
             </div>
           </div>
         </div>
@@ -699,18 +978,39 @@ export default function Streaming() {
             </span>
           )}
         </div>
+        {/* O veredito em números absolutos: volume, perdas e o tier em que isso
+            rodou. Sem comparação com nenhuma instituição — cada plateia faz a
+            própria conta a partir da escala de referência do BCB. */}
+        {!replay && reconciliacao?.final === 'reconciliado' && reconciliacao?.fonte?.inseridas > 0 && (
+          <div className="str-veredito">
+            <div>
+              <span>{num(reconciliacao.fonte.inseridas)}</span>
+              <small>transações nesta execução</small>
+            </div>
+            <div>
+              <span style={{ color: '#00ED64' }}>0</span>
+              <small>perdidas · conferido nos três caminhos</small>
+            </div>
+            <div>
+              <span>{cenario?.ambiente?.cluster || '—'}{aspStatus?.tier ? ` + ${aspStatus.tier}` : ''}</span>
+              <small>tier em que esta execução rodou</small>
+            </div>
+          </div>
+        )}
         {reconciliacao?.fonte && (
           <div className="str-neg" style={{ marginTop: 14 }}>
             {[
-              ['Fonte Atlas', reconciliacao.fonte.inseridas, 0, true],
+              ['Fonte Atlas', reconciliacao.fonte.inseridas, 0,
+                reconciliacao.final === 'reconciliado',
+                reconciliacao.gerador_ativo ? 'escritas confirmadas até agora' : 'total persistido da execução'],
               ['Change Streams', reconciliacao.change_streams.unicos, reconciliacao.change_streams.pendentes, reconciliacao.change_streams.reconciliado],
               ['Kafka', reconciliacao.kafka.unicos, reconciliacao.kafka.pendentes, reconciliacao.kafka.reconciliado],
               ['ASP + DLQ', reconciliacao.asp.contabilizadas, reconciliacao.asp.pendentes, reconciliacao.asp.reconciliado],
-            ].map(([label, value, pending, ok]) => (
+            ].map(([label, value, pending, ok, status]) => (
               <div className="str-neg-c" key={label}>
                 <div className="str-neg-k">{label}</div>
                 <div className="str-neg-v" style={ok ? { color: '#00ED64' } : undefined}>{num(value)}</div>
-                <div className="str-neg-s">{ok ? 'contagem fechada' : `${num(pending)} ainda pendente(s)`}</div>
+                <div className="str-neg-s">{status || (ok ? 'contagem fechada' : `${num(pending)} ainda pendente(s)`)}</div>
               </div>
             ))}
             <div className="str-neg-c">
@@ -729,11 +1029,33 @@ export default function Streaming() {
             </div>
           </div>
         )}
-        <div className="str-note" style={{ marginTop: 12 }}>
-          Pare o gerador e aguarde a janela fechar: o estado final só fica verde quando a mesma execução está
-          contabilizada nos três caminhos. Durante o fluxo, “pendente” significa backlog observável, não perda.
-          Os contadores de CS/Kafka pertencem ao processo atual da API; Atlas, ASP e DLQ são consultados no banco.
+        {/* Um arquiteto de pagamentos precisa desta linha ANTES de qualquer
+            número de throughput: entrega ao menos uma vez é a semântica real, e
+            a chave única é o que a torna segura. Estava só num rodapé. */}
+        <div className="str-garantia">
+          <span className="str-garantia-tag">semântica de entrega</span>
+          <span>
+            Change Streams e Kafka entregam <strong>ao menos uma vez</strong>: depois de uma retomada, o mesmo
+            evento pode chegar de novo. O índice único em <code>endToEndId</code> é o que torna o reprocessamento
+            seguro — o consumidor precisa ser idempotente, e é assim que esta PoV conta 0 duplicados.
+            A ordem é garantida <strong>dentro da partição</strong> (<code>particao</code>, derivada do pagador),
+            não entre partições.
+          </span>
         </div>
+
+        {/* As ressalvas são necessárias, mas quem pergunta por elas pergunta
+            depois de ver os números — não por cima deles. */}
+        <details className="str-note-details" style={{ marginTop: 12 }}>
+          <summary>Como ler estes números</summary>
+          <div className="str-note" style={{ marginTop: 8 }}>
+            O estado final só fica verde quando a mesma execução está contabilizada nos três caminhos. Em event time,
+            parar a fonte não força a última janela a fechar: ela depende do avanço do watermark. Durante o fluxo,
+            “pendente” significa backlog ou janela ainda aberta, não evidência de perda.
+            Durante a execução, snapshots coletados em instantes diferentes podem divergir momentaneamente. Os contadores
+            de CS/Kafka pertencem ao processo {replay ? 'da gravação; Atlas, ASP e DLQ foram consultados no banco durante a captura.' :
+              'atual da API; Atlas, ASP e DLQ são consultados no banco ao vivo.'}
+          </div>
+        </details>
       </div>
 
       {/* Referência técnica sob demanda: mantém a narrativa principal compacta. */}
@@ -772,6 +1094,23 @@ export default function Streaming() {
                 <td>Janelas tumbling / hopping</td>
                 <td>Checkpoint demonstrável + DLQ auditável</td>
               </tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details className="card str-tech-details">
+        <summary>Checklist de produção PIX <span>o que a PoV prova e o que ainda é decisão</span></summary>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="lg-table">
+            <thead><tr><th>Preocupação</th><th>Evidência nesta PoV</th><th>Decisão de produção</th></tr></thead>
+            <tbody>
+              <tr><td>Perda e duplicidade</td><td>Reconciliação, resume/offset/checkpoint e chave idempotente</td><td>SLO, retenção do oplog, política de replay e deduplicação durável</td></tr>
+              <tr><td>Ordenação</td><td>Ordem observada por cursor/partição</td><td>Chave Kafka e escopo exigido: conta, cliente, endToEndId ou agregado</td></tr>
+              <tr><td>Backpressure</td><td>Lag, percentis, backlog e estado da task</td><td>Limites, autoscaling, alertas e teste de carga representativo</td></tr>
+              <tr><td>Contrato</td><td>Validação ASP e DLQ por motivo</td><td>Schema versionado, compatibilidade e ownership entre squads</td></tr>
+              <tr><td>Segurança</td><td>Credenciais fora do frontend e mutações protegidas</td><td>TLS/SASL, ACL/RBAC, PrivateLink, rotação e segregação de ambientes</td></tr>
+              <tr><td>Continuidade</td><td>Restart controlado e retomada demonstrável</td><td>RTO/RPO, HA do Kafka/Connect, DR regional e runbooks testados</td></tr>
             </tbody>
           </table>
         </div>

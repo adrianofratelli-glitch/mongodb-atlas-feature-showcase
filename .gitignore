@@ -22,3 +22,4 @@ Thumbs.db
 # Backups locais do .env e rascunhos de sessão
 backend/.env.bak-*
 tmp/
+.playwright-mcp/

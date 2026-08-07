@@ -16,6 +16,8 @@ COLLECTIONS = (
     "dlq_audit",
     "consumer_checkpoints",
 )
+# No database `geo`, e por isso fora da tupla acima.
+COLLECTION_SINAIS = "sinais_ao_vivo"
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -39,7 +41,7 @@ def main() -> int:
     env = read_env(env_file)
     uri = env.get("MONGO_URI", "")
     database = env.get("STREAMING_DB", "pix") or "pix"
-    ttl_seconds = int(env.get("STREAMING_TTL_SEGUNDOS", "600") or "600")
+    ttl_seconds = int(env.get("STREAMING_TTL_SEGUNDOS", "300") or "300")
     if not uri:
         print("❌ MONGO_URI ausente em backend/.env.", file=sys.stderr)
         return 1
@@ -59,11 +61,23 @@ def main() -> int:
                 db[name].drop()
                 removed.append(name)
 
+        # Sinal materializado pelo processor de geo. Vive no database `geo`,
+        # mas é dado DA RODADA, não do dataset versionado: cai na limpeza, e
+        # `geo.transacoes` nunca é tocada aqui.
+        geo_db = client[env.get("GEO_DB", "geo") or "geo"]
+        if COLLECTION_SINAIS in set(geo_db.list_collection_names()):
+            geo_db[COLLECTION_SINAIS].drop()
+            removed.append(f"{geo_db.name}.{COLLECTION_SINAIS}")
+
         # A próxima execução já encontra os contratos mínimos da fonte prontos.
         db["transacoes"].create_index(
             "endToEndId",
             unique=True,
             name="endToEndId_unique",
+        )
+        db["transacoes"].create_index(
+            "run_id",
+            name="run_id_reconciliacao",
         )
         db["transacoes"].create_index(
             "ts",

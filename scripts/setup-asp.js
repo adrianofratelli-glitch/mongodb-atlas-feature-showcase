@@ -27,6 +27,7 @@
 const CONNECTION = process.env.ASP_CONNECTION_NAME || 'atlasCluster';
 const DB = process.env.STREAMING_DB || 'pix';
 const PROCESSOR = process.env.ASP_PROCESSOR_NAME || 'pixJanelas5s';
+const TIER = process.env.ASP_TIER || 'SP10';
 const RECREATE = ['1', 'true', 'yes'].includes((process.env.ASP_RECREATE || '').toLowerCase());
 
 const source = {
@@ -34,6 +35,7 @@ const source = {
     connectionName: CONNECTION,
     db: DB,
     coll: 'transacoes',
+    config: { fullDocument: 'updateLookup' },
   },
 };
 
@@ -44,13 +46,26 @@ const onlyInserts = { $match: { operationType: 'insert' } };
 const validate = {
   $validate: {
     validator: {
-      $and: [
-        { 'fullDocument.endToEndId': { $type: 'string' } },
-        { 'fullDocument.run_id': { $type: 'string' } },
-        { 'fullDocument.valor': { $type: ['decimal', 'double', 'int', 'long'] } },
-        { 'fullDocument.tipo': { $eq: 'PIX' } },
-        { 'fullDocument.uf': { $type: 'string' } },
-      ],
+      $jsonSchema: {
+        bsonType: 'object',
+        required: ['fullDocument'],
+        properties: {
+          fullDocument: {
+            bsonType: 'object',
+            required: ['endToEndId', 'run_id', 'valor', 'tipo', 'uf'],
+            properties: {
+              endToEndId: { bsonType: 'string' },
+              run_id: { bsonType: 'string' },
+              valor: { bsonType: ['decimal', 'double', 'int', 'long'] },
+              // O stream tem dois canais: PIX (sem coordenada) e compra
+              // presencial com cartão (coordenada do terminal). Deixar só
+              // 'PIX' aqui mandaria todo o canal de cartão para a DLQ.
+              tipo: { enum: ['PIX', 'CARTAO_DEBITO', 'CARTAO_CREDITO'] },
+              uf: { bsonType: 'string' },
+            },
+          },
+        },
+      },
     },
     validationAction: 'dlq',
   },
@@ -125,10 +140,14 @@ const merge = {
   },
 };
 
+// Um pipeline implantado tem um único sink terminal. Fan-out para outro sink
+// deve consumir esta coleção materializada ou usar um processor encadeado.
+
 const pipeline = [source, onlyInserts, validate, window, windowBounds, shape, merge];
 
 const options = {
   dlq: { connectionName: CONNECTION, db: DB, coll: 'dlq' },
+  tier: TIER,
 };
 
 const existing = sp.listStreamProcessors({ name: PROCESSOR });
@@ -152,9 +171,10 @@ if (existing.length > 0) {
 }
 
 sp.createStreamProcessor(PROCESSOR, pipeline, options);
-sp[PROCESSOR].start();
+sp[PROCESSOR].start({ tier: TIER });
 
 print(`✅ Processor '${PROCESSOR}' criado e iniciado.`);
 print(`   janelas  → ${DB}.metricas_janela`);
 print(`   DLQ      → ${DB}.dlq`);
+print(`   tier     → ${TIER}`);
 print(`   status:  sp.${PROCESSOR}.stats()`);

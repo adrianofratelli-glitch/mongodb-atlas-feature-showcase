@@ -99,11 +99,15 @@ def test_impossible_travel_monta_setwindowfields_e_haversine(monkeypatch):
     janela = next(e["$setWindowFields"] for e in pipeline if "$setWindowFields" in e)
     assert janela["partitionBy"] == "$clienteId"
     assert janela["sortBy"] == {"ts": 1}
-    assert set(janela["output"]) == {"ts_ant", "coord_ant", "municipio_ant", "uf_ant"}
+    assert set(janela["output"]) == {
+        "ts_ant", "coord_ant", "municipio_ant", "uf_ant", "dispositivo_ant", "localizacao_meta_ant",
+    }
     # O cálculo tem de ficar no cluster: nada de $function.
     assert "$function" not in str(pipeline)
     assert "$degreesToRadians" in str(pipeline) and "$asin" in str(pipeline)
     assert resposta["limite_kmh"] == 900
+    assert resposta["natureza"] == "sinal_de_risco_retrospectivo"
+    assert resposta["decisao_fraude"] is False
 
 
 def test_haversine_cabe_em_uma_unica_stage():
@@ -173,6 +177,11 @@ def test_search_filtra_por_geowithin_em_metros(monkeypatch):
     assert search["compound"]["must"][0]["text"]["fuzzy"] == {"maxEdits": 1}
     # A distância volta calculada para o raio ser verificável sem confiar no operador.
     assert "km_do_centro" in str(resposta["pipeline"])
+    grupo = next(e["$group"] for e in resposta["pipeline"] if "$group" in e)
+    assert grupo["_id"] == "$dispositivo.id"
+    assert next(i for i, e in enumerate(resposta["pipeline"]) if "$group" in e) < next(
+        i for i, e in enumerate(resposta["pipeline"]) if "$limit" in e
+    )
     assert "$searchMeta" in resposta["pipeline_meta"][0]
 
 
@@ -190,6 +199,85 @@ def test_seed_e_deterministico():
     b, _ = seed_geo.gerar(clientes=5, por_cliente=8, fraudes=2)
     assert [d["endToEndId"] for d in a] == [d["endToEndId"] for d in b]
     assert len({d["endToEndId"] for d in a}) == len(a) == 40
+    assert all(d["datasetVersion"] == seed_geo.VERSAO_DATASET for d in a)
+    # A coordenada é do terminal do adquirente, não do aparelho: é isso que
+    # torna o impossible travel um sinal forte em vez de um palpite sobre GPS.
+    assert all(d["dispositivo"]["canal"] == "POS_PRESENCIAL" for d in a)
+    assert all(d["localizacaoMeta"]["origem"] == "TERMINAL_ADQUIRENTE" for d in a)
+    assert all(d["localizacaoMeta"]["qualidade"] == "CADASTRAL" for d in a)
+    assert all("precisaoMetros" not in d["localizacaoMeta"] for d in a)
+    assert all(d["tipo"].startswith("CARTAO_") for d in a)
+    assert all(d["localizacaoMeta"]["capturadaEm"] <= d["ts"] for d in a)
+    # Um terminal cadastrado é entidade estável: quando reaparece, localização
+    # e estabelecimento não podem mudar de uma compra para outra.
+    terminais = {}
+    for documento in a:
+        chave = documento["dispositivo"]["id"]
+        identidade = (documento["estabelecimento"]["nome"], documento["local"]["coordinates"])
+        assert terminais.setdefault(chave, identidade) == identidade
+
+
+def test_dataset_atual_exige_volume_e_versao(monkeypatch):
+    class FalsaColecao:
+        def __init__(self, total, divergente):
+            self.total = total
+            self.divergente = divergente
+
+        def count_documents(self, _filtro):
+            return self.total
+
+        def find_one(self, filtro, projecao):
+            assert filtro == {"datasetVersion": {"$ne": seed_geo.VERSAO_DATASET}}
+            assert projecao == {"_id": 1}
+            return self.divergente
+
+    class ManifestoPresente:
+        @staticmethod
+        def exists():
+            return True
+
+        @staticmethod
+        def read_text(encoding):
+            assert encoding == "utf-8"
+            return ('{"dataset_version": %d, "semente": 20260726}'
+                        % seed_geo.VERSAO_DATASET)
+
+    monkeypatch.setattr(seed_geo, "ARQUIVO_FRAUDES", ManifestoPresente())
+    assert seed_geo.dataset_atual(FalsaColecao(40, None), 40)[0] is True
+    assert seed_geo.dataset_atual(FalsaColecao(39, None), 40)[0] is False
+    assert seed_geo.dataset_atual(FalsaColecao(40, {"_id": 1}), 40)[0] is False
+
+
+def test_preflight_geo_e_read_only_e_exige_search_ready(monkeypatch):
+    class Metadata:
+        def find_one(self, filtro):
+            assert filtro == {"_id": seed_geo.ID_METADATA}
+            return {
+                "datasetVersion": seed_geo.VERSAO_DATASET,
+                "semente": seed_geo.SEMENTE,
+                "documentos": 40,
+            }
+
+    class Banco:
+        def __getitem__(self, nome):
+            assert nome == "demo_metadata"
+            return Metadata()
+
+    class Colecao:
+        def estimated_document_count(self):
+            return 40
+
+        def list_indexes(self):
+            return [{"name": nome} for nome in seed_geo.INDICES_OBRIGATORIOS]
+
+        def list_search_indexes(self, nome):
+            assert nome == "idx_geo_estabelecimento"
+            return [{"name": nome, "status": "READY", "queryable": True}]
+
+    monkeypatch.delenv("GEO_SEARCH_INDEX", raising=False)
+    pronto, problemas = seed_geo.verificar_prontidao(Banco(), Colecao(), 40)
+    assert pronto is True
+    assert problemas == []
 
 
 def test_seed_planta_pares_acima_do_limite():

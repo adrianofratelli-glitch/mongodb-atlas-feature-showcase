@@ -1,17 +1,14 @@
 #!/usr/bin/env bash
 #
-# Liga/desliga TUDO que a PoV consome, num comando só.
+# Liga/desliga somente os processos da PoV. O cluster é responsabilidade do operador.
 #
-#   ./scripts/ambiente.sh up      # cluster + processor do ASP + Kafka local
-#   ./scripts/ambiente.sh down    # deixa o ambiente sem custo de compute
+#   ./scripts/ambiente.sh up      # preflight + processor do ASP/Kafka quando ao vivo
+#   ./scripts/ambiente.sh down    # para ASP/Kafka e limpa os dados PIX da rodada
 #   ./scripts/ambiente.sh status
 #
-# O que custa e o que não custa quando está "down":
-#   • Cluster Atlas pausado  — não cobra compute (armazenamento continua).
-#   • Processor do ASP parado — o Atlas cobra POR PROCESSOR RODANDO, por segundo;
+# O processor do ASP cobra por segundo enquanto estiver rodando;
 #     parado não cobra, e a Stream Processing Instance em si não é cobrada.
-#     Por isso a SPI pode ficar de pé: o que liga/desliga é o processor.
-#   • Kafka é local (Homebrew) — só consome a sua máquina.
+# Kafka é local (Homebrew). Este script nunca pausa, retoma ou redimensiona Atlas.
 #
 set -euo pipefail
 
@@ -22,172 +19,31 @@ ENV_FILE="$BASE/backend/.env"
 # `|| true`: variável ausente no .env não pode derrubar o script sob `set -e`.
 le_env() { { grep -E "^$1=" "$ENV_FILE" || true; } | head -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' -e 's/\r$//'; }
 
-PUB="$(le_env ATLAS_PUBLIC_KEY)"
-PRIV="$(le_env ATLAS_PRIVATE_KEY)"
-PROJ="$(le_env ATLAS_PROJECT_ID)"
-CLUSTER="$(le_env ATLAS_CLUSTER)"
 PROCESSOR="${ASP_PROCESSOR_NAME:-$(le_env ASP_PROCESSOR_NAME)}"
 PROCESSOR="${PROCESSOR:-pixJanelas5s}"
+# Segundo processor: sinal de risco geográfico em event time, sink em
+# geo.sinais_ao_vivo. Um pipeline implantado tem um sink só, por isso são dois.
+PROCESSOR_GEO="${ASP_GEO_PROCESSOR_NAME:-$(le_env ASP_GEO_PROCESSOR_NAME)}"
+PROCESSOR_GEO="${PROCESSOR_GEO:-geoSinais30s}"
+GEO_DB_NOME="${GEO_DB:-$(le_env GEO_DB)}"
+GEO_DB_NOME="${GEO_DB_NOME:-geo}"
 ASP_URI="$(le_env ASP_CONNECTION_STRING)"
 ASP_CONNECTION="${ASP_CONNECTION_NAME:-$(le_env ASP_CONNECTION_NAME)}"
 ASP_CONNECTION="${ASP_CONNECTION:-atlasCluster}"
+ASP_TIER="${ASP_TIER:-$(le_env ASP_TIER)}"
+ASP_TIER="${ASP_TIER:-SP10}"
 STREAM_DB="${STREAMING_DB:-$(le_env STREAMING_DB)}"
 STREAM_DB="${STREAM_DB:-pix}"
-# Ponto de partida de compute de cada demo. O TETO do auto-scaling não é tocado:
-# o scale-up segue disponível para quando for necessário. O que normalizamos é o
-# tier corrente (para a PoV não herdar o tier de uma execução anterior) e o piso
-# (para o cluster poder descer mais quando ocioso).
-# ASP e Kafka só sobem sob demanda. A aba de Streaming reproduz uma execução
-# gravada (backend/data/replay_streaming.json), então os números que ela mostra
-# já foram medidos com ASP e Kafka reais — provisioná-los a cada demonstração
-# custaria por segundo sem acrescentar nada à tela.
-#
-# Eles continuam aqui porque são o que GRAVA uma execução nova: com
-# STREAMING_AO_VIVO=1 o `up` volta a montar o ambiente completo, que é o
-# pré-requisito de `scripts/capture_replay.py`.
+# A aba de Streaming usa ASP e Kafka reais no modo principal. STREAMING_AO_VIVO
+# vem ligado pelo launcher e pode ser desligado com `overview --replay`.
 AO_VIVO="${STREAMING_AO_VIVO:-$(le_env STREAMING_AO_VIVO)}"
 AO_VIVO="${AO_VIVO:-0}"
 [[ "$AO_VIVO" == "1" || "$AO_VIVO" == "true" ]] && AO_VIVO=1 || AO_VIVO=0
 
-TIER_INICIAL="${ATLAS_TIER_INICIAL:-$(le_env ATLAS_TIER_INICIAL)}"
-TIER_INICIAL="${TIER_INICIAL:-M20}"
-# Piso do auto-scaling. VAZIO por padrão = não mexe. Descer o piso parece grátis
-# mas esbarra em duas regras do Atlas: min tem que ser estritamente menor que
-# max, e cada tier tem um disco máximo (M10 vai até 128 GB — um cluster com 150
-# GB não pode ter piso M10). Preencher isto sem checar as duas coisas faz o
-# `up` falhar num PATCH 400.
-MIN_TIER="${ATLAS_MIN_TIER:-$(le_env ATLAS_MIN_TIER)}"
-API="https://cloud.mongodb.com/api/atlas/v2"
-ATLAS_MEDIA_TYPE="application/vnd.atlas.2025-03-12+json"
-ACCEPT="Accept: $ATLAS_MEDIA_TYPE"
-
-for required in PUB PRIV PROJ CLUSTER; do
-  [[ -n "${!required}" ]] || { echo "❌ $required ausente em backend/.env." >&2; exit 1; }
-done
-
-atlas() { # método, caminho, [body]
-  local m="$1" p="$2" body="${3:-}"
-  if [[ -n "$body" ]]; then
-    curl -fsS --retry 2 --digest -u "$PUB:$PRIV" -X "$m" -H "$ACCEPT" \
-      -H "Content-Type: $ATLAS_MEDIA_TYPE" --data "$body" "$API$p"
-  else
-    curl -fsS --retry 2 --digest -u "$PUB:$PRIV" -X "$m" -H "$ACCEPT" "$API$p"
-  fi
-}
-
-estado_cluster() {
-  atlas GET "/groups/$PROJ/clusters/$CLUSTER" |
-    python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('stateName','?'), '| paused:', d.get('paused'), '|', [rc['electableSpecs']['instanceSize'] for s in d.get('replicationSpecs',[]) for rc in s['regionConfigs']])"
-}
-
-# Pausar/retomar. A falha NÃO pode ser silenciosa: o Atlas recusa pausar um
-# cluster retomado há menos de 60 minutos (CANNOT_PAUSE_RECENTLY_RESUMED_CLUSTER),
-# e a versão anterior descartava o corpo do erro e seguia imprimindo "sem custo
-# de compute" com o cluster rodando — exatamente a informação errada, já que é
-# ela que decide se a fatura continua correndo.
-pausa_cluster() { # true|false
-  local corpo codigo
-  corpo="$(curl -sS --digest -u "$PUB:$PRIV" -X PATCH -H "$ACCEPT" \
-    -H "Content-Type: $ATLAS_MEDIA_TYPE" --data "{\"paused\": $1}" \
-    -w '\n%{http_code}' "$API/groups/$PROJ/clusters/$CLUSTER" 2>/dev/null)"
-  codigo="$(printf '%s' "$corpo" | tail -n1)"
-
-  if [[ "$codigo" == 2* ]]; then
-    echo "   cluster paused=$1 solicitado"
-    return 0
-  fi
-
-  local detalhe
-  detalhe="$(printf '%s' "$corpo" | sed '$d' | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print(d.get("errorCode", ""), "-", d.get("detail", ""))
-except Exception:
-    print(sys.stdin.read()[:200] if not sys.stdin.closed else "")
-' 2>/dev/null)"
-  echo "❌ Falha ao definir paused=$1 (HTTP $codigo): $detalhe" >&2
-  if [[ "$detalhe" == *CANNOT_PAUSE_RECENTLY_RESUMED_CLUSTER* ]]; then
-    echo "   O Atlas exige 60 min rodando após um resume. O cluster CONTINUA" >&2
-    echo "   consumindo compute até lá — pause pela console quando liberar." >&2
-  fi
-  return 1
-}
-
-aguarda_idle() {
-  echo "   aguardando o cluster ficar IDLE (pode levar alguns minutos)..."
-  for _ in $(seq 1 90); do
-    if atlas GET "/groups/$PROJ/clusters/$CLUSTER" | grep -q '"stateName":"IDLE"'; then
-      return 0
-    fi
-    sleep 10
-  done
-  return 1
-}
-
-# Normaliza o ponto de partida de compute do cluster antes de cada demo:
-# tier corrente = TIER_INICIAL, piso do auto-scaling = MIN_TIER. O TETO NÃO é
-# tocado — o scale-up continua disponível para quando for realmente necessário.
-#
-# O que isso resolve é herança: sem normalizar, uma demo que escalou ontem
-# começa hoje no tier grande e a PoV deixa de ser reproduzível no tier de
-# entrada. O custo em regime depende das correções do módulo Streaming
-# (índice de run_id, poll da reconciliação, TPS e TTL), não de um limite.
-#
-# Atlas exige minInstanceSize ESTRITAMENTE menor que maxInstanceSize quando o
-# auto-scaling de compute está ligado — por isso o piso não pode ser igual ao
-# teto, e é o que torna "travar em M20 com auto-scaling" inexprimível.
-tier_inicial() {
-  local corpo
-  corpo="$(atlas GET "/groups/$PROJ/clusters/$CLUSTER" |
-    TIER_INICIAL="$TIER_INICIAL" MIN_TIER="$MIN_TIER" python3 -c '
-import json, os, sys
-
-ordem = ["M10", "M20", "M30", "M40", "M50", "M60", "M80", "M140", "M200", "M300"]
-inicial, piso = os.environ["TIER_INICIAL"], os.environ.get("MIN_TIER", "")
-if inicial not in ordem or (piso and (piso not in ordem or ordem.index(piso) > ordem.index(inicial))):
-    print("", end="")
-    sys.exit(0)
-
-specs = json.load(sys.stdin).get("replicationSpecs", [])
-mudou = False
-for spec in specs:
-    for rc in spec.get("regionConfigs", []):
-        # effective*Specs são campos derivados pela API; devolvê-los num PATCH
-        # é ruído e pode conflitar com o que estamos pedindo.
-        for chave in [k for k in rc if k.startswith("effective")]:
-            rc.pop(chave)
-        for chave in ("electableSpecs", "readOnlySpecs", "analyticsSpecs"):
-            alvo = rc.get(chave) or {}
-            if alvo.get("nodeCount") and alvo.get("instanceSize") != inicial:
-                alvo["instanceSize"] = inicial
-                mudou = True
-        compute = ((rc.get("autoScaling") or {}).get("compute")) or {}
-        teto = compute.get("maxInstanceSize")
-        # Piso só desce, e só até um tier abaixo do teto — a API recusa min == max.
-        if (piso and compute.get("enabled") and compute.get("minInstanceSize") != piso
-                and teto in ordem and ordem.index(piso) < ordem.index(teto)):
-            compute["minInstanceSize"] = piso
-            mudou = True
-print(json.dumps({"replicationSpecs": specs}) if mudou else "", end="")
-')"
-
-  if [[ -z "$corpo" ]]; then
-    echo "   compute já em $TIER_INICIAL — nada a ajustar"
-    return 0
-  fi
-
-  echo "▶ Normalizando o compute para $TIER_INICIAL${MIN_TIER:+ (piso $MIN_TIER)}; teto inalterado..."
-  if ! atlas PATCH "/groups/$PROJ/clusters/$CLUSTER" "$corpo" >/dev/null; then
-    echo "⚠️ Não foi possível normalizar o compute — ajuste na console do Atlas." >&2
-    return 0
-  fi
-  aguarda_idle || echo "⚠️ Cluster ainda redimensionando; a mudança foi aceita." >&2
-}
-
-processor() { # stop|start
+processor() { # stop|start|status [nome]
   local cmd="$1"
-  "$BASE/backend/venv/bin/python" - "$cmd" "$PROCESSOR" "$ENV_FILE" <<'PY'
+  local nome="${2:-$PROCESSOR}"
+  "$BASE/backend/venv/bin/python" - "$cmd" "$nome" "$ENV_FILE" <<'PY'
 import sys
 import time
 acao, nome, env_file = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -243,6 +99,11 @@ limpa_dados_pix() {
   "$BASE/backend/venv/bin/python" "$BASE/scripts/cleanup-streaming-data.py"
 }
 
+verifica_demo() {
+  echo "▶ Verificando artefatos pré-materializados da demo..."
+  "$BASE/backend/venv/bin/python" "$BASE/scripts/seed_geo.py" --check
+}
+
 recria_processor() {
   if [[ -z "$ASP_URI" ]]; then
     echo "   ASP_CONNECTION_STRING ausente — processor não configurado"
@@ -256,27 +117,33 @@ recria_processor() {
   ASP_RECREATE=true \
     ASP_CONNECTION_NAME="$ASP_CONNECTION" \
     ASP_PROCESSOR_NAME="$PROCESSOR" \
+    ASP_TIER="$ASP_TIER" \
     STREAMING_DB="$STREAM_DB" \
     mongosh "$ASP_URI" --quiet --file "$BASE/scripts/setup-asp.js"
+
+  echo "▶ Criando o processor de sinal geográfico em event time..."
+  ASP_RECREATE=true \
+    ASP_CONNECTION_NAME="$ASP_CONNECTION" \
+    ASP_GEO_PROCESSOR_NAME="$PROCESSOR_GEO" \
+    ASP_TIER="$ASP_TIER" \
+    STREAMING_DB="$STREAM_DB" \
+    GEO_DB="$GEO_DB_NOME" \
+    mongosh "$ASP_URI" --quiet --file "$BASE/scripts/setup-asp-geo.js"
 }
 
 case "${1:-status}" in
   up)
-    echo "▶ Ligando o ambiente..."
-    pausa_cluster false
-    aguarda_idle || { echo "❌ Cluster não chegou a IDLE no prazo." >&2; exit 1; }
-    # Só depois de IDLE: o Atlas não aceita mudança de spec em cluster pausado
-    # ou em transição.
-    tier_inicial
-    estado_cluster
+    echo "▶ Preparando processos da PoV (o estado do cluster não será alterado)..."
+    verifica_demo
     # Um ciclo de apresentação começa sem documentos, offsets de aplicação ou
     # estado de janela da rodada anterior. O processor é parado mesmo no modo
     # padrão: se sobrou ligado de uma gravação anterior, ele estaria cobrando.
     processor stop || true
+    processor stop "$PROCESSOR_GEO" || true
     limpa_dados_pix
 
     if [[ "$AO_VIVO" == "1" ]]; then
-      echo "▶ STREAMING_AO_VIVO=1 — montando ASP e Kafka para gravar uma execução."
+      echo "▶ STREAMING_AO_VIVO=1 — montando ASP e Kafka para a execução ao vivo."
       recria_processor
       if "$BASE/scripts/kafka-local.sh" up; then
         "$BASE/scripts/setup-kafka-connector.sh" ||
@@ -285,9 +152,7 @@ case "${1:-status}" in
         echo "   (Kafka opcional falhou — a coluna 2 renderiza 'não configurado')"
       fi
     else
-      echo "   ASP e Kafka não subiram: a aba de Streaming reproduz uma execução"
-      echo "   gravada e não precisa deles. Para gravar uma nova, use"
-      echo "   STREAMING_AO_VIVO=1 ./scripts/ambiente.sh up"
+      echo "   ASP e Kafka não subiram: modo replay selecionado."
     fi
     echo "✅ Ambiente pronto."
     ;;
@@ -295,29 +160,25 @@ case "${1:-status}" in
     echo "▶ Desligando o ambiente..."
     falhou=0
     processor stop || echo "   processor ausente ou já indisponível — seguindo com a limpeza"
+    processor stop "$PROCESSOR_GEO" || echo "   processor de geo ausente — seguindo"
     limpa_dados_pix || {
       falhou=1
       echo "❌ A limpeza direta dos dados PIX falhou." >&2
     }
     "$BASE/scripts/kafka-local.sh" down || falhou=1
-    pausou=1
-    pausa_cluster true || { falhou=1; pausou=0; }
     if [[ "$falhou" == "0" ]]; then
-      echo "✅ Sem custo de compute: cluster pausado e processor parado."
-      echo "   (armazenamento do cluster continua sendo cobrado)"
+      echo "✅ Processos locais encerrados, processor parado e dados PIX removidos."
+      echo "   cluster Atlas não foi alterado"
     else
       echo "⚠️ Desligamento parcial; confira o status." >&2
-      # A distinção que importa é de custo: processor parado é uma economia,
-      # cluster não pausado é fatura correndo. Não misturar as duas.
-      if [[ "$pausou" == "0" ]]; then
-        echo "⚠️ O CLUSTER NÃO FOI PAUSADO e segue consumindo compute." >&2
-      fi
       exit 1
     fi
     ;;
   status)
-    echo "cluster : $(estado_cluster)"
+    echo "cluster : não gerenciado pelo overview"
+    verifica_demo || true
     processor status
+    processor status "$PROCESSOR_GEO"
     "$BASE/scripts/kafka-local.sh" status
     ;;
   *)

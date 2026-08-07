@@ -170,6 +170,59 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
     }
 
 
+# ──────────────────────────────────────────── sinal em event time (ASP) ────
+COL_SINAIS = "sinais_ao_vivo"
+sinais = banco[COL_SINAIS]
+
+
+@router.get("/sinais-ao-vivo")
+def sinais_ao_vivo(limite: int = Query(default=12, ge=1, le=50)):
+    """
+    Sinais de impossible travel materializados pelo processor `geoSinais30s`.
+
+    A diferença para `/geo/impossible-travel` é o *quando*: aqui o cálculo já
+    aconteceu na janela, na passagem do evento, e esta rota apenas lê o
+    resultado. O painel sob demanda continua existindo — ele responde a
+    investigação retrospectiva, que é outra pergunta.
+
+    `plantados` e `emergentes` vêm separados de propósito: o gerador injeta
+    pares para a demo ter sinal garantido, e misturar os dois números
+    transformaria a garantia em prova.
+    """
+    try:
+        recentes = list(
+            sinais.find({}, {"pontos": 0})
+            .sort("detectadoEm", -1)
+            .limit(limite)
+        )
+        plantados = sinais.count_documents({"origem": "plantado"})
+        emergentes = sinais.count_documents({"origem": "emergente"})
+    except Exception as exc:  # noqa: BLE001 - o painel é opcional
+        return {
+            "estado": "indisponivel",
+            "mensagem": f"{GEO_DB}.{COL_SINAIS} inacessível ({type(exc).__name__})",
+            "sinais": [], "plantados": 0, "emergentes": 0,
+        }
+
+    for s in recentes:
+        s["_id"] = str(s.get("_id"))
+        for extremo in ("de", "para"):
+            ponto = s.get(extremo) or {}
+            if isinstance(ponto.get("ts"), object) and hasattr(ponto.get("ts"), "isoformat"):
+                ponto["ts"] = ponto["ts"].isoformat()
+        if hasattr(s.get("detectadoEm"), "isoformat"):
+            s["detectadoEm"] = s["detectadoEm"].isoformat()
+
+    return {
+        "estado": "ok" if recentes else "sem_sinais",
+        "colecao": f"{GEO_DB}.{COL_SINAIS}",
+        "sinais": recentes,
+        "plantados": plantados,
+        "emergentes": emergentes,
+        "total": plantados + emergentes,
+    }
+
+
 # ────────────────────────────────────────────────────────────── endpoints ────
 @router.get("/status")
 def status():
@@ -280,6 +333,8 @@ def impossible_travel(
                 "coord_ant": {"$shift": {"output": "$local.coordinates", "by": -1}},
                 "municipio_ant": {"$shift": {"output": "$municipio", "by": -1}},
                 "uf_ant": {"$shift": {"output": "$uf", "by": -1}},
+                "dispositivo_ant": {"$shift": {"output": "$dispositivo", "by": -1}},
+                "localizacao_meta_ant": {"$shift": {"output": "$localizacaoMeta", "by": -1}},
             },
         }},
         # A primeira transação de cada cliente não tem anterior.
@@ -313,8 +368,14 @@ def impossible_travel(
             "km": {"$round": ["$km", 1]},
             "minutos": {"$round": ["$minutos", 1]},
             "kmh": {"$round": ["$kmh", 0]},
-            "de": {"municipio": "$municipio_ant", "uf": "$uf_ant", "coordinates": "$coord_ant"},
-            "para": {"municipio": "$municipio", "uf": "$uf", "coordinates": "$local.coordinates"},
+            "de": {
+                "municipio": "$municipio_ant", "uf": "$uf_ant", "coordinates": "$coord_ant",
+                "dispositivo": "$dispositivo_ant", "localizacaoMeta": "$localizacao_meta_ant",
+            },
+            "para": {
+                "municipio": "$municipio", "uf": "$uf", "coordinates": "$local.coordinates",
+                "dispositivo": "$dispositivo", "localizacaoMeta": "$localizacaoMeta",
+            },
             "ts_ant": 1,
             "ts": 1,
         }},
@@ -322,6 +383,8 @@ def impossible_travel(
 
     resultados = list(colecao.aggregate(pipeline, allowDiskUse=True))
     return {
+        "natureza": "sinal_de_risco_retrospectivo",
+        "decisao_fraude": False,
         "limite_kmh": limiteKmh,
         "encontrados": len(resultados),
         "truncado": len(resultados) == limite,
@@ -380,7 +443,6 @@ def geo_search(pedido: SearchRequest):
             "compound": compound,
             "highlight": {"path": "estabelecimento.nome"},
         }},
-        {"$limit": pedido.limite},
         {"$addFields": {"score": {"$meta": "searchScore"}, "highlights": {"$meta": "searchHighlights"}}},
     ]
     # A distância volta calculada para a UI e para o teste de aceite: o raio
@@ -391,9 +453,18 @@ def geo_search(pedido: SearchRequest):
         {"$arrayElemAt": ["$local.coordinates", 1]},
         {"$arrayElemAt": ["$local.coordinates", 0]},
     )
-    pipeline.append({"$project": {
+    # A coleção contém compras, mas a pergunta da investigação é "quais
+    # estabelecimentos existem aqui?". Deduplicar pelo terminal no cluster
+    # impede que vinte compras da mesma maquininha ocupem vinte resultados.
+    pipeline += [
+        {"$sort": {"score": -1, "endToEndId": 1}},
+        {"$group": {"_id": "$dispositivo.id", "documento": {"$first": "$$ROOT"}}},
+        {"$replaceWith": "$documento"},
+        {"$limit": pedido.limite},
+        {"$project": {
         "_id": 0,
         "endToEndId": 1,
+        "terminalId": "$dispositivo.id",
         "estabelecimento": 1,
         "municipio": 1,
         "uf": 1,
@@ -402,7 +473,7 @@ def geo_search(pedido: SearchRequest):
         "score": {"$round": ["$score", 3]},
         "highlights": 1,
         "km_do_centro": {"$round": ["$km_do_centro", 2]},
-    }})
+    }}]
 
     pipeline_meta = [{"$searchMeta": {
         "index": GEO_SEARCH_INDEX,

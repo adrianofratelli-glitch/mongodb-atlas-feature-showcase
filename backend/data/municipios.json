@@ -1,0 +1,285 @@
+{
+  "_comentario": "Municípios brasileiros reais usados pelo seed do módulo Geo e pelo canal de cartão presencial do módulo Streaming. peso ~ população em milhões.",
+  "municipios": [
+    {
+      "municipio": "São Paulo",
+      "uf": "SP",
+      "lat": -23.5505,
+      "lng": -46.6333,
+      "peso": 12.3
+    },
+    {
+      "municipio": "Rio de Janeiro",
+      "uf": "RJ",
+      "lat": -22.9068,
+      "lng": -43.1729,
+      "peso": 6.7
+    },
+    {
+      "municipio": "Brasília",
+      "uf": "DF",
+      "lat": -15.7939,
+      "lng": -47.8828,
+      "peso": 3.0
+    },
+    {
+      "municipio": "Salvador",
+      "uf": "BA",
+      "lat": -12.9777,
+      "lng": -38.5016,
+      "peso": 2.9
+    },
+    {
+      "municipio": "Fortaleza",
+      "uf": "CE",
+      "lat": -3.7319,
+      "lng": -38.5267,
+      "peso": 2.7
+    },
+    {
+      "municipio": "Belo Horizonte",
+      "uf": "MG",
+      "lat": -19.9167,
+      "lng": -43.9345,
+      "peso": 2.5
+    },
+    {
+      "municipio": "Manaus",
+      "uf": "AM",
+      "lat": -3.119,
+      "lng": -60.0217,
+      "peso": 2.2
+    },
+    {
+      "municipio": "Curitiba",
+      "uf": "PR",
+      "lat": -25.4284,
+      "lng": -49.2733,
+      "peso": 1.9
+    },
+    {
+      "municipio": "Recife",
+      "uf": "PE",
+      "lat": -8.0476,
+      "lng": -34.877,
+      "peso": 1.6
+    },
+    {
+      "municipio": "Goiânia",
+      "uf": "GO",
+      "lat": -16.6869,
+      "lng": -49.2648,
+      "peso": 1.5
+    },
+    {
+      "municipio": "Belém",
+      "uf": "PA",
+      "lat": -1.4558,
+      "lng": -48.5044,
+      "peso": 1.5
+    },
+    {
+      "municipio": "Porto Alegre",
+      "uf": "RS",
+      "lat": -30.0346,
+      "lng": -51.2177,
+      "peso": 1.5
+    },
+    {
+      "municipio": "Guarulhos",
+      "uf": "SP",
+      "lat": -23.4538,
+      "lng": -46.5333,
+      "peso": 1.4
+    },
+    {
+      "municipio": "Campinas",
+      "uf": "SP",
+      "lat": -22.9099,
+      "lng": -47.0626,
+      "peso": 1.2
+    },
+    {
+      "municipio": "São Luís",
+      "uf": "MA",
+      "lat": -2.5297,
+      "lng": -44.3028,
+      "peso": 1.1
+    },
+    {
+      "municipio": "Maceió",
+      "uf": "AL",
+      "lat": -9.6658,
+      "lng": -35.7353,
+      "peso": 1.0
+    },
+    {
+      "municipio": "Campo Grande",
+      "uf": "MS",
+      "lat": -20.4697,
+      "lng": -54.6201,
+      "peso": 0.9
+    },
+    {
+      "municipio": "Natal",
+      "uf": "RN",
+      "lat": -5.7945,
+      "lng": -35.211,
+      "peso": 0.9
+    },
+    {
+      "municipio": "Teresina",
+      "uf": "PI",
+      "lat": -5.0892,
+      "lng": -42.8019,
+      "peso": 0.87
+    },
+    {
+      "municipio": "João Pessoa",
+      "uf": "PB",
+      "lat": -7.1195,
+      "lng": -34.845,
+      "peso": 0.83
+    },
+    {
+      "municipio": "Osasco",
+      "uf": "SP",
+      "lat": -23.5329,
+      "lng": -46.7916,
+      "peso": 0.75
+    },
+    {
+      "municipio": "Santo André",
+      "uf": "SP",
+      "lat": -23.6639,
+      "lng": -46.5383,
+      "peso": 0.72
+    },
+    {
+      "municipio": "Jaboatão dos Guararapes",
+      "uf": "PE",
+      "lat": -8.1128,
+      "lng": -35.0147,
+      "peso": 0.7
+    },
+    {
+      "municipio": "Ribeirão Preto",
+      "uf": "SP",
+      "lat": -21.1775,
+      "lng": -47.8103,
+      "peso": 0.7
+    },
+    {
+      "municipio": "Uberlândia",
+      "uf": "MG",
+      "lat": -18.9186,
+      "lng": -48.2772,
+      "peso": 0.7
+    },
+    {
+      "municipio": "Sorocaba",
+      "uf": "SP",
+      "lat": -23.5015,
+      "lng": -47.4526,
+      "peso": 0.69
+    },
+    {
+      "municipio": "Contagem",
+      "uf": "MG",
+      "lat": -19.9317,
+      "lng": -44.0536,
+      "peso": 0.67
+    },
+    {
+      "municipio": "Aracaju",
+      "uf": "SE",
+      "lat": -10.9472,
+      "lng": -37.0731,
+      "peso": 0.66
+    },
+    {
+      "municipio": "Feira de Santana",
+      "uf": "BA",
+      "lat": -12.2664,
+      "lng": -38.9663,
+      "peso": 0.62
+    },
+    {
+      "municipio": "Cuiabá",
+      "uf": "MT",
+      "lat": -15.6014,
+      "lng": -56.0979,
+      "peso": 0.62
+    },
+    {
+      "municipio": "Joinville",
+      "uf": "SC",
+      "lat": -26.3044,
+      "lng": -48.8456,
+      "peso": 0.6
+    },
+    {
+      "municipio": "Londrina",
+      "uf": "PR",
+      "lat": -23.3045,
+      "lng": -51.1696,
+      "peso": 0.58
+    },
+    {
+      "municipio": "Juiz de Fora",
+      "uf": "MG",
+      "lat": -21.7642,
+      "lng": -43.3503,
+      "peso": 0.57
+    },
+    {
+      "municipio": "Porto Velho",
+      "uf": "RO",
+      "lat": -8.7612,
+      "lng": -63.9004,
+      "peso": 0.54
+    },
+    {
+      "municipio": "Serra",
+      "uf": "ES",
+      "lat": -20.1211,
+      "lng": -40.3078,
+      "peso": 0.53
+    },
+    {
+      "municipio": "Niterói",
+      "uf": "RJ",
+      "lat": -22.8832,
+      "lng": -43.1034,
+      "peso": 0.51
+    },
+    {
+      "municipio": "Florianópolis",
+      "uf": "SC",
+      "lat": -27.5954,
+      "lng": -48.548,
+      "peso": 0.51
+    },
+    {
+      "municipio": "Macapá",
+      "uf": "AP",
+      "lat": 0.0349,
+      "lng": -51.0694,
+      "peso": 0.51
+    },
+    {
+      "municipio": "Campos dos Goytacazes",
+      "uf": "RJ",
+      "lat": -21.7545,
+      "lng": -41.3244,
+      "peso": 0.51
+    },
+    {
+      "municipio": "Vila Velha",
+      "uf": "ES",
+      "lat": -20.3297,
+      "lng": -40.2925,
+      "peso": 0.5
+    }
+  ]
+}

@@ -12,6 +12,7 @@ duas vezes mantém o mesmo total.
 
     python scripts/seed_geo.py            # cria (ou completa) o dataset
     python scripts/seed_geo.py --drop     # recria do zero
+    python scripts/seed_geo.py --ensure   # só recria se versão/volume estiverem divergentes
     python scripts/seed_geo.py --clientes 500 --por-cliente 20   # dataset menor
 
 Nunca aponte para um cluster que não seja descartável: `--drop` apaga a coleção.
@@ -31,59 +32,31 @@ from pathlib import Path
 from bson import Decimal128
 from dotenv import load_dotenv
 from pymongo import ASCENDING, DESCENDING, GEOSPHERE, MongoClient
-from pymongo.errors import BulkWriteError
+from pymongo.errors import BulkWriteError, PyMongoError
 
 RAIZ = Path(__file__).resolve().parent.parent
 load_dotenv(RAIZ / "backend" / ".env")
 
 SEMENTE = 20260726
+# v4: estabelecimentos e terminais passam a ser entidades estáveis. Na v3 um
+# terminal era sorteado por compra e `precisaoMetros=0` sugeria uma exatidão que
+# cadastro de adquirente não garante. A proveniência continua forte, mas agora
+# é modelada sem exagerar a qualidade da fonte.
+VERSAO_DATASET = 4
+ID_METADATA = "geo_seed"
 DIAS = 90
 DIR_DADOS = RAIZ / "backend" / "data"
 ARQUIVO_FRAUDES = DIR_DADOS / "fraud_seeds.json"
 
 # (município, UF, latitude, longitude, peso ~ população em milhões)
-MUNICIPIOS = [
-    ("São Paulo", "SP", -23.5505, -46.6333, 12.3),
-    ("Rio de Janeiro", "RJ", -22.9068, -43.1729, 6.7),
-    ("Brasília", "DF", -15.7939, -47.8828, 3.0),
-    ("Salvador", "BA", -12.9777, -38.5016, 2.9),
-    ("Fortaleza", "CE", -3.7319, -38.5267, 2.7),
-    ("Belo Horizonte", "MG", -19.9167, -43.9345, 2.5),
-    ("Manaus", "AM", -3.1190, -60.0217, 2.2),
-    ("Curitiba", "PR", -25.4284, -49.2733, 1.9),
-    ("Recife", "PE", -8.0476, -34.8770, 1.6),
-    ("Goiânia", "GO", -16.6869, -49.2648, 1.5),
-    ("Belém", "PA", -1.4558, -48.5044, 1.5),
-    ("Porto Alegre", "RS", -30.0346, -51.2177, 1.5),
-    ("Guarulhos", "SP", -23.4538, -46.5333, 1.4),
-    ("Campinas", "SP", -22.9099, -47.0626, 1.2),
-    ("São Luís", "MA", -2.5297, -44.3028, 1.1),
-    ("Maceió", "AL", -9.6658, -35.7353, 1.0),
-    ("Campo Grande", "MS", -20.4697, -54.6201, 0.9),
-    ("Natal", "RN", -5.7945, -35.2110, 0.9),
-    ("Teresina", "PI", -5.0892, -42.8019, 0.87),
-    ("João Pessoa", "PB", -7.1195, -34.8450, 0.83),
-    ("Osasco", "SP", -23.5329, -46.7916, 0.75),
-    ("Santo André", "SP", -23.6639, -46.5383, 0.72),
-    ("Jaboatão dos Guararapes", "PE", -8.1128, -35.0147, 0.70),
-    ("Ribeirão Preto", "SP", -21.1775, -47.8103, 0.70),
-    ("Uberlândia", "MG", -18.9186, -48.2772, 0.70),
-    ("Sorocaba", "SP", -23.5015, -47.4526, 0.69),
-    ("Contagem", "MG", -19.9317, -44.0536, 0.67),
-    ("Aracaju", "SE", -10.9472, -37.0731, 0.66),
-    ("Feira de Santana", "BA", -12.2664, -38.9663, 0.62),
-    ("Cuiabá", "MT", -15.6014, -56.0979, 0.62),
-    ("Joinville", "SC", -26.3044, -48.8456, 0.60),
-    ("Londrina", "PR", -23.3045, -51.1696, 0.58),
-    ("Juiz de Fora", "MG", -21.7642, -43.3503, 0.57),
-    ("Porto Velho", "RO", -8.7612, -63.9004, 0.54),
-    ("Serra", "ES", -20.1211, -40.3078, 0.53),
-    ("Niterói", "RJ", -22.8832, -43.1034, 0.51),
-    ("Florianópolis", "SC", -27.5954, -48.5480, 0.51),
-    ("Macapá", "AP", 0.0349, -51.0694, 0.51),
-    ("Campos dos Goytacazes", "RJ", -21.7545, -41.3244, 0.51),
-    ("Vila Velha", "ES", -20.3297, -40.2925, 0.50),
-]
+#
+# A tabela vive em backend/data/municipios.json porque o canal de cartão
+# presencial do módulo Streaming gera pontos ao vivo sobre as MESMAS
+# coordenadas. Duas listas divergentes fariam o sinal ao vivo e o dataset
+# histórico apontarem para cidades diferentes com o mesmo nome.
+_MUN_JSON = json.loads((DIR_DADOS / "municipios.json").read_text(encoding="utf-8"))
+MUNICIPIOS = [(m["municipio"], m["uf"], m["lat"], m["lng"], m["peso"]) for m in _MUN_JSON["municipios"]]
+
 
 CATEGORIAS = {
     "alimentação": (
@@ -108,7 +81,10 @@ CATEGORIAS = {
     ),
 }
 NOMES_CATEGORIAS = list(CATEGORIAS)
-TIPOS = ["PIX", "PIX", "PIX", "TED", "CARTAO", "CARTAO"]
+# Compra presencial: o que existe aqui é captura em terminal, não transferência.
+# PIX vive no módulo 07 e não carrega coordenada — misturar os dois faria a tela
+# sugerir que o arranjo PIX fornece geolocalização, o que é falso.
+TIPOS = ["CARTAO_DEBITO"] * 6 + ["CARTAO_CREDITO"] * 4
 STATUS = ["APROVADA"] * 8 + ["NEGADA", "PENDENTE"]
 
 RAIO_TERRA_KM = 6371.0088
@@ -158,6 +134,21 @@ def gerar(clientes: int, por_cliente: int, fraudes: int):
     inicio = agora - timedelta(days=DIAS)
     espaco = (DIAS * 24 * 3600) / por_cliente
 
+    # Catálogo determinístico: o mesmo estabelecimento/terminal reaparece em
+    # muitas compras e sua coordenada permanece fixa. Isso representa o dado
+    # cadastral do adquirente, em vez de inventar uma maquininha por transação.
+    terminais: dict[tuple[int, str], list[dict]] = {}
+    for cidade, (_, _, lat, lng, _) in enumerate(MUNICIPIOS):
+        for categoria in NOMES_CATEGORIAS:
+            terminais[(cidade, categoria)] = [
+                {
+                    "id": f"POS{cidade:02d}{NOMES_CATEGORIAS.index(categoria):02d}{numero:02d}",
+                    "nome": nome_estabelecimento(rng, categoria),
+                    "coordinates": list(reversed(dispersar(rng, lat, lng, sigma_km=4.0))),
+                }
+                for numero in range(12)
+            ]
+
     documentos, plantados = [], []
     for c in range(clientes):
         cliente_id = f"CLI{c:05d}"
@@ -187,20 +178,35 @@ def gerar(clientes: int, por_cliente: int, fraudes: int):
             else:
                 cidade = origem
 
-            nome, uf, lat, lng, _ = MUNICIPIOS[cidade]
-            p_lat, p_lng = dispersar(rng, lat, lng)
+            nome, uf, _, _, _ = MUNICIPIOS[cidade]
             categoria = rng.choice(NOMES_CATEGORIAS)
+            terminal = rng.choice(terminais[(cidade, categoria)])
+            capturada_em = ts - timedelta(seconds=rng.randint(1, 20))
             documentos.append({
                 "clienteId": cliente_id,
                 "endToEndId": f"E{cliente_id}{j:04d}",
+                "datasetVersion": VERSAO_DATASET,
                 "valor": Decimal128(f"{rng.lognormvariate(3.9, 0.9):.2f}"),
                 "tipo": rng.choice(TIPOS),
                 "status": rng.choice(STATUS),
                 "estabelecimento": {
-                    "nome": nome_estabelecimento(rng, categoria),
+                    "nome": terminal["nome"],
                     "categoria": categoria,
                 },
-                "local": {"type": "Point", "coordinates": [p_lng, p_lat]},
+                "local": {"type": "Point", "coordinates": terminal["coordinates"]},
+                # Compra PRESENCIAL com cartão: a coordenada é a do terminal do
+                # estabelecimento, cadastrada pelo adquirente — não o GPS do
+                # celular. Essa distinção é o que sustenta o impossible travel:
+                # a localização cadastral não é controlada pelo aparelho do
+                # cliente, mas ainda pode estar desatualizada ou incorreta. A
+                # proveniência viaja junto para o sinal nunca parecer verdade
+                # sem origem.
+                "dispositivo": {"id": terminal["id"], "canal": "POS_PRESENCIAL"},
+                "localizacaoMeta": {
+                    "origem": "TERMINAL_ADQUIRENTE",
+                    "qualidade": "CADASTRAL",
+                    "capturadaEm": capturada_em,
+                },
                 "uf": uf,
                 "municipio": nome,
                 "ts": ts,
@@ -235,9 +241,100 @@ def criar_indices(colecao) -> list[str]:
     ]
 
 
+INDICES_OBRIGATORIOS = {
+    "e2e_unq_idx",
+    "cliente_status_local_idx",
+    "local_2dsphere_idx",
+    "cliente_ts_idx",
+    "uf_ts_idx",
+    "categoria_local_idx",
+}
+
+
+def registrar_dataset(banco, alvo: int) -> None:
+    banco["demo_metadata"].replace_one(
+        {"_id": ID_METADATA},
+        {
+            "_id": ID_METADATA,
+            "datasetVersion": VERSAO_DATASET,
+            "semente": SEMENTE,
+            "documentos": alvo,
+            "atualizadoEm": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+
+
+def verificar_prontidao(banco, colecao, alvo: int) -> tuple[bool, list[str]]:
+    """Preflight rápido e read-only usado no início da apresentação."""
+    problemas = []
+    metadata = banco["demo_metadata"].find_one({"_id": ID_METADATA}) or {}
+    esperado = (VERSAO_DATASET, SEMENTE, alvo)
+    encontrado = (
+        metadata.get("datasetVersion"),
+        metadata.get("semente"),
+        metadata.get("documentos"),
+    )
+    if encontrado != esperado:
+        problemas.append("metadata do dataset Geo ausente ou divergente")
+
+    total = colecao.estimated_document_count()
+    if total != alvo:
+        problemas.append(f"Geo contém {total} documentos; esperado {alvo}")
+
+    indices = {indice["name"] for indice in colecao.list_indexes()}
+    ausentes = sorted(INDICES_OBRIGATORIOS - indices)
+    if ausentes:
+        problemas.append("índices MongoDB ausentes: " + ", ".join(ausentes))
+
+    nome_search = os.getenv("GEO_SEARCH_INDEX", "idx_geo_estabelecimento").strip()
+    try:
+        search = list(colecao.list_search_indexes(nome_search))
+    except PyMongoError as erro:
+        problemas.append(f"não foi possível consultar Atlas Search: {erro}")
+    else:
+        indice = search[0] if search else {}
+        if indice.get("status") != "READY" or indice.get("queryable") is False:
+            problemas.append(f"Atlas Search '{nome_search}' não está READY/consultável")
+    return not problemas, problemas
+
+
+def dataset_atual(colecao, alvo: int) -> tuple[bool, str]:
+    """Valida a identidade do dataset sem depender de uma amostra otimista."""
+    total = colecao.count_documents({})
+    if total != alvo:
+        return False, f"volume {total}, esperado {alvo}"
+    divergente = colecao.find_one(
+        {"datasetVersion": {"$ne": VERSAO_DATASET}},
+        {"_id": 1},
+    )
+    if divergente is not None:
+        return False, f"há documentos anteriores à versão {VERSAO_DATASET}"
+    if not ARQUIVO_FRAUDES.exists():
+        return False, f"manifesto ausente: {ARQUIVO_FRAUDES}"
+    try:
+        manifesto = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False, f"manifesto inválido: {ARQUIVO_FRAUDES}"
+    if manifesto.get("dataset_version") != VERSAO_DATASET or manifesto.get("semente") != SEMENTE:
+        return False, "manifesto pertence a outra versão/semente"
+    return True, f"{total} documentos na versão {VERSAO_DATASET}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Seed do módulo Geo")
-    parser.add_argument("--drop", action="store_true", help="apaga a coleção antes de gerar")
+    modo = parser.add_mutually_exclusive_group()
+    modo.add_argument("--drop", action="store_true", help="apaga a coleção antes de gerar")
+    modo.add_argument(
+        "--ensure",
+        action="store_true",
+        help="mantém o dataset atual ou recria automaticamente se estiver divergente",
+    )
+    modo.add_argument(
+        "--check",
+        action="store_true",
+        help="preflight rápido e read-only; não cria nem altera dados/índices",
+    )
     parser.add_argument("--clientes", type=int, default=2_000)
     parser.add_argument("--por-cliente", type=int, default=75)
     parser.add_argument("--fraudes", type=int, default=40)
@@ -259,11 +356,38 @@ def main() -> int:
     banco = cliente[os.getenv("GEO_DB", "geo").strip() or "geo"]
     colecao = banco["transacoes"]
 
+    alvo = args.clientes * args.por_cliente
+    if args.check:
+        pronto, problemas = verificar_prontidao(banco, colecao, alvo)
+        if pronto:
+            print(f"demo pronta: Geo v{VERSAO_DATASET}, {alvo} documentos e Atlas Search READY")
+            cliente.close()
+            return 0
+        for problema in problemas:
+            print(f"❌ {problema}", file=sys.stderr)
+        print("rode ./scripts/prepare-demo.sh antes da apresentação", file=sys.stderr)
+        cliente.close()
+        return 1
+
+    if args.ensure:
+        atual, detalhe = dataset_atual(colecao, alvo)
+        if atual:
+            print(f"dataset Geo pronto: {detalhe}")
+            print("validando índices idempotentes…")
+            for nome in criar_indices(colecao):
+                print(f"  · {nome}")
+            registrar_dataset(banco, alvo)
+            cliente.close()
+            return 0
+        print(f"dataset Geo divergente ({detalhe}); recriando a coleção dedicada")
+        banco["demo_metadata"].delete_one({"_id": ID_METADATA})
+        colecao.drop()
+
     if args.drop:
+        banco["demo_metadata"].delete_one({"_id": ID_METADATA})
         colecao.drop()
         print(f"coleção {banco.name}.transacoes removida")
 
-    alvo = args.clientes * args.por_cliente
     documentos, plantados = gerar(args.clientes, args.por_cliente, args.fraudes)
     print(f"gerados {len(documentos)} documentos em memória ({args.clientes} clientes)")
 
@@ -291,6 +415,7 @@ def main() -> int:
             {
                 "gerado_em": datetime.now(timezone.utc).isoformat(),
                 "semente": SEMENTE,
+                "dataset_version": VERSAO_DATASET,
                 "limite_kmh": 900,
                 "clientes": plantados,
             },
@@ -306,7 +431,10 @@ def main() -> int:
     print(f"total em {banco.name}.transacoes: {total} (alvo {alvo})")
     print(f"clientes com par de fraude plantado: {len(plantados)} → {ARQUIVO_FRAUDES}")
     if total != alvo:
-        print("aviso: total diferente do alvo — rode com --drop para recriar do zero")
+        print("erro: total diferente do alvo — rode com --drop para recriar do zero", file=sys.stderr)
+        cliente.close()
+        return 1
+    registrar_dataset(banco, alvo)
     cliente.close()
     return 0
 

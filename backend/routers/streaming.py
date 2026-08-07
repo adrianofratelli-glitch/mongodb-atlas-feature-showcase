@@ -29,12 +29,14 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from bson import Decimal128
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from pymongo import AsyncMongoClient
 from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure, PyMongoError
 
 from database import client
@@ -65,18 +67,61 @@ ASP_ENABLED = os.getenv("ASP_ENABLED", "false").strip().lower() in {"1", "true",
 ASP_CONNECTION_STRING = os.getenv("ASP_CONNECTION_STRING", "").strip()
 ASP_PROCESSOR_NAME = os.getenv("ASP_PROCESSOR_NAME", "pixJanelas5s").strip() or "pixJanelas5s"
 ASP_CONNECTION_NAME = os.getenv("ASP_CONNECTION_NAME", "atlasCluster").strip() or "atlasCluster"
+# Segundo processor: o sinal de risco geográfico em event time. Existe separado
+# porque um pipeline implantado tem um único sink terminal — este termina em
+# geo.sinais_ao_vivo, o outro em pix.metricas_janela.
+ASP_GEO_PROCESSOR_NAME = (
+    os.getenv("ASP_GEO_PROCESSOR_NAME", "geoSinais30s").strip() or "geoSinais30s"
+)
 # Só para exibição: o que está provisionado nesta PoV.
 CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M20").strip() or "M20"
-# Cargas deliberadamente moderadas: a PoV prova conceitos sem induzir sizing
-# nem exigir tiers maiores só para produzir um número de palco.
-#
-# O teto existe para manter a demo reproduzível em M20 sem disparar o
-# auto-scaling do Atlas (que sobe por CPU/memória sustentadas e vira custo).
-# `scripts/ambiente.sh` fecha o mesmo contrato do outro lado, limitando
-# `autoScaling.compute.maxInstanceSize`. Subir daqui sem subir o tier lá só
-# transfere o problema para a fatura.
-TPS_MAX = 1_000
+# O teto permite calibrar acima do pico Brasil sem transformar o gerador em uma
+# ferramenta de carga irrestrita. O default de palco e 8 mil TPS; isso nao
+# promete permanencia em M20: a
+# execucao mostra o tier real e pode escalar a M30 se a telemetria exigir.
+# Capacidade e sizing continuam dependendo de teste representativo, working set,
+# indices, duracao, latencia de rede e SLOs do cliente.
+TPS_MAX = 15_000
 CONCEPT_TPS = min(TPS_MAX, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "200"))))
+# Modo de escrita da demo. "individual" é o padrão porque é o que corresponde a
+# um PIX real: uma transação, um insert. Ele só se tornou viável com o cluster
+# na mesma região do gerador — ver docs/SESSION_HANDOFF.md.
+MODO_ESCRITA_PADRAO = os.getenv("STREAMING_MODO_ESCRITA", "individual").strip() or "individual"
+if MODO_ESCRITA_PADRAO not in ("individual", "lote"):
+    MODO_ESCRITA_PADRAO = "individual"
+DEMO_TPS_DEFAULT = min(TPS_MAX, max(1, int(os.getenv("STREAMING_DEMO_TPS", "8000"))))
+# Alvo do modo individual: 2.000 TPS.
+#
+# Curva medida em sa-east-1 com os três consumidores ativos (alvo → medido,
+# Kafka p50, que é sempre o primeiro a degradar):
+#
+#   1.000 → 1.018,  28 ms      2.500 → 2.277,  100 ms
+#   2.000 → 2.095,  35 ms      3.000 → 2.544,  263 ms
+#                              4.000 → 3.015, 1.003 ms
+#
+# 2.000 é o último patamar que ENTREGA o alvo e mantém todo o caminho
+# pós-commit abaixo de 35 ms. Acima disso o consumidor Kafka local vira o
+# gargalo — não o Atlas, que segue ingerindo cada PIX em 3 ms.
+DEMO_TPS_INDIVIDUAL = min(TPS_MAX, max(1, int(os.getenv("STREAMING_DEMO_TPS_INDIVIDUAL", "2000"))))
+DEMO_DURATION_DEFAULT_S = min(120, max(10, int(os.getenv("STREAMING_DEMO_DURATION_S", "30"))))
+
+# Referencia de escala do PIX no Brasil, a partir de numeros PUBLICOS do BCB.
+# Nao e sizing e nao pressupoe nenhuma instituicao especifica: cada plateia
+# calcula a propria participacao a partir daqui.
+# - recorde de 313.339.828 PIX em 05/12/2025 -> 3.627 TPS medios no dia;
+# - planejamento do BCB para 10 mil TPS de pico sustentado.
+#
+# A fatia usada nos presets e configuravel (`PIX_PARTICIPACAO_PCT`) justamente
+# para a PoV servir a qualquer instituicao: 10% e so o valor de partida.
+PIX_RECORDE_DIA = 313_339_828
+PIX_RECORDE_DATA = "2025-12-05"
+PIX_BRASIL_MEDIA_TPS = round(PIX_RECORDE_DIA / 86_400)
+PIX_BRASIL_PICO_TPS = 10_000
+PIX_PARTICIPACAO = min(1.0, max(0.01, float(os.getenv("PIX_PARTICIPACAO_PCT", "10")) / 100))
+PIX_FATIA_MEDIA_TPS = round(PIX_BRASIL_MEDIA_TPS * PIX_PARTICIPACAO)
+PIX_FATIA_PICO_TPS = round(PIX_BRASIL_PICO_TPS * PIX_PARTICIPACAO)
+PIX_FONTE_RECORDE = "https://www.bcb.gov.br/estabilidadefinanceira/estatisticaspix"
+PIX_FONTE_PICO = "https://www.bcb.gov.br/Adm/Edital/pregaoe/DEMAP901082024/arq01_DEMAP901082024.pdf"
 
 # TTL = rede de segurança, não a limpeza principal (essa é o botão Reset, que
 # dropa a coleção na hora).
@@ -87,23 +132,146 @@ CONCEPT_TPS = min(TPS_MAX, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "200")
 # maiores que o cache do WiredTiger de um M20, o que sozinho sustentava a
 # pressão de memória que dispara o auto-scaling.
 #
-# A 600 s e no TPS moderado atual o conjunto vivo fica na casa das dezenas de
-# milhares: cabe no cache, e a taxa de deleção é baixa demais para concorrer com
-# o pico ou para inflar o oplog de que o resume token depende. A janela continua
-# maior que a rajada de uma demo.
-TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "600"))
-PURGE_TIMEOUT_MS = 180_000
+# A 300 s o TTL continua maior que a rodada e sua drenagem. Ele é apenas uma
+# rede de segurança: em 8 mil TPS o Reset imediato é obrigatório entre ensaios
+# para o conjunto vivo não crescer até milhões de documentos.
+TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "300"))
 # Partições do consumo do change stream (um cursor + uma thread por partição).
-CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "1")))
+CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "4")))
 # Amostragem do feed SSE (contadores e percentis seguem cobrindo 100%).
 FEED_INTERVALO_S = 0.12
 METRICAS_INTERVALO_S = 0.5
+# Janela de 5 s + 2 s de allowed lateness. Depois que o gerador para, um evento
+# tecnico posterior avanca o watermark e fecha a ultima janela da execucao.
+ASP_WATERMARK_FLUSH_S = 7.2
+ASP_WATERMARK_RUN_ID = "__demo_watermark__"
 
 sdb = client[STREAM_DB]
+
+# Cliente assíncrono, usado SÓ pela escrita do modo individual. Tudo o mais
+# (change streams, reconciliação, preflight) segue no cliente síncrono: a
+# mudança é cirúrgica de propósito, para não reescrever o módulo inteiro atrás
+# de uma otimização do gerador.
+#
+# Criado sob demanda porque um AsyncMongoClient precisa nascer dentro de um
+# event loop em execução; instanciá-lo no import prenderia o cliente ao loop
+# errado e o primeiro insert falharia.
+_acliente: "AsyncMongoClient | None" = None
+
+
+def acol_tx():
+    """Coleção de transações no driver assíncrono."""
+    global _acliente
+    if _acliente is None:
+        _acliente = AsyncMongoClient(
+            settings.mongo_uri,
+            appname="atlas-showcase-async",
+            maxPoolSize=Generator.WORKERS_MAX + 20,
+            serverSelectionTimeoutMS=settings.mongo_timeout_ms,
+        )
+    return _acliente[STREAM_DB][COL_TX]
+
+
+async def fechar_cliente_async() -> None:
+    """Encerra o cliente assíncrono no shutdown da aplicação."""
+    global _acliente
+    if _acliente is not None:
+        await _acliente.close()
+        _acliente = None
 
 # Distribuição sintética de UFs para produzir grupos diferentes nas janelas.
 _UFS = ["SP", "RJ", "MG", "RS", "PR", "BA", "PE", "SC", "GO", "CE"]
 _UF_PESOS = [30, 14, 11, 8, 8, 7, 6, 6, 5, 5]
+
+# ---------------------------------------------------------------------------
+# Canal de cartão presencial — a metade georreferenciada do mesmo stream.
+#
+# PIX não carrega coordenada, e essa afirmação continua valendo. O que muda é o
+# escopo do stream: ele deixa de ser "PIX" e passa a ser "eventos de pagamento
+# da plataforma", com dois canais. PIX segue sem ponto; compra presencial com
+# cartão carrega a coordenada CADASTRAL do terminal do adquirente — a mesma
+# modelagem do módulo 08, lendo a mesma tabela de municípios.
+#
+# É isso que permite ao ASP calcular risco geográfico EM EVENT TIME, na
+# passagem, em vez de o módulo 08 varrer histórico sob demanda.
+# ---------------------------------------------------------------------------
+CARTAO_PCT = min(90, max(0, int(os.getenv("STREAMING_CARTAO_PCT", "18"))))
+GEO_DB_NOME = os.getenv("GEO_DB", "geo").strip() or "geo"
+COL_SINAIS = "sinais_ao_vivo"
+# Velocidade acima da qual o par vira sinal. 900 km/h ~ jato comercial: é o
+# limiar didático do módulo 08, mantido igual para as duas telas concordarem.
+SINAL_LIMITE_KMH = float(os.getenv("STREAMING_SINAL_KMH", "900"))
+
+_MUNICIPIOS: list[dict[str, Any]] = json.loads(
+    (Path(__file__).resolve().parent.parent / "data" / "municipios.json").read_text(encoding="utf-8")
+)["municipios"]
+_MUN_PESOS = [m["peso"] for m in _MUNICIPIOS]
+_CATEGORIAS_CARTAO = ["alimentação", "combustível", "farmácia", "vestuário", "serviços"]
+_TIPOS_CARTAO = ["CARTAO_DEBITO"] * 6 + ["CARTAO_CREDITO"] * 4
+# Duas populações de portadores, e a separação é deliberada.
+#
+# O tráfego comum precisa ser dilúido: com poucos cartões, cada um compraria
+# dezenas de vezes por janela e qualquer viagem legítima viraria alerta — a
+# 2.000 TPS isso dava 0,4% das compras sinalizadas, taxa que não existe em
+# operação real.
+#
+# Os pares plantados usam uma faixa PRÓPRIA de cartões, que o tráfego comum
+# nunca toca. Sem isso, as duas compras do par eram diluídas entre as outras
+# compras do mesmo cartão na janela, os extremos deixavam de ser os dois pontos
+# plantados, e o sinal garantido da demo se classificava como emergente —
+# destruindo justamente a distinção que a tela usa como evidência.
+CARTAO_CLIENTES = 12_000
+CARTAO_CLIENTES_PLANTADOS = 400
+
+
+def _catalogo_terminais() -> dict[tuple[int, str], list[dict[str, Any]]]:
+    """
+    Terminais estáveis: mesma ideia (e mesmo formato de id) do seed do módulo 08.
+
+    Gerado uma vez, com semente fixa, para que o terminal `POS0301` esteja
+    sempre no mesmo ponto — um terminal que muda de lugar a cada compra
+    inviabilizaria qualquer conversa sobre proveniência.
+    """
+    rng = random.Random(20260807)
+    catalogo: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for cidade, mun in enumerate(_MUNICIPIOS):
+        for indice, categoria in enumerate(_CATEGORIAS_CARTAO):
+            catalogo[(cidade, categoria)] = [
+                {
+                    "id": f"POS{cidade:02d}{indice:02d}{numero:02d}",
+                    "coordinates": [
+                        round(mun["lng"] + rng.gauss(0, 4.0) / (111.32 * max(0.2, math.cos(math.radians(mun["lat"])))), 6),
+                        round(mun["lat"] + rng.gauss(0, 4.0) / 111.32, 6),
+                    ],
+                }
+                for numero in range(8)
+            ]
+    return catalogo
+
+
+_TERMINAIS = _catalogo_terminais()
+# Cidade "de casa" de cada portador: sem isso todo cartão viajaria o tempo todo
+# e o sinal perderia qualquer significado.
+_CASA_CLIENTE = [
+    random.Random(20260807 + i).choices(range(len(_MUNICIPIOS)), weights=_MUN_PESOS, k=1)[0]
+    for i in range(CARTAO_CLIENTES + CARTAO_CLIENTES_PLANTADOS)
+]
+
+
+def _municipio_distante(origem: int, minimo_km: float = 700.0) -> int:
+    """Índice de um município a pelo menos `minimo_km` — mesma regra do módulo 08."""
+    base = _MUNICIPIOS[origem]
+    for i, m in enumerate(_MUNICIPIOS):
+        if i != origem and _haversine_km(base["lat"], base["lng"], m["lat"], m["lng"]) >= minimo_km:
+            return i
+    return (origem + 1) % len(_MUNICIPIOS)
+
+
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = (math.sin((p2 - p1) / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lng2 - lng1) / 2) ** 2)
+    return 2 * 6371.0088 * math.asin(min(1.0, math.sqrt(a)))
 
 # ---------------------------------------------------------------------------
 # Perfil de valores — PREMISSA declarada, exposta em /streaming/cenario.
@@ -271,6 +439,104 @@ meter_cs = Meter()
 meter_leitura = Meter()
 meter_kafka = Meter()
 meter_asp = Meter()
+# Tempo do insert_many até o ACK do Atlas. Uma amostra representa um
+# micro-batch confirmado, não um evento de CDC; por isso a UI o apresenta fora
+# das três colunas de propagação pós-commit.
+meter_write_ack = Meter()
+
+
+# ---------------------------------------------------------------------------
+# Ingestão medida DENTRO do servidor
+#
+# `meter_write_ack` mede o round-trip do cliente e, com o cluster em us-east-1 e
+# o gerador em São Paulo, carrega ~148 ms de rede que não são do MongoDB. Para
+# responder "quanto tempo o Atlas leva para ingerir", a única fonte honesta é o
+# próprio servidor: `serverStatus().opLatencies.writes` contabiliza a execução do
+# comando no mongod, sem rede e sem a fila do cliente.
+#
+# O histograma é acumulado desde o boot, então o que vale é o DELTA entre o
+# início e o fim da execução — caso contrário a demo mostraria a média de toda a
+# vida do processo, não a da rodada.
+#
+# Uma amostra é um COMANDO, não um documento: um insert_many de 800 docs conta
+# como uma escrita de latência alta. Por isso o payload separa as duas leituras
+# e a UI nunca apresenta o número por comando como se fosse por transação.
+# ---------------------------------------------------------------------------
+def _oplatencies_writes() -> dict[str, Any] | None:
+    """Lê opLatencies.writes com histograma. `None` quando indisponível."""
+    try:
+        status = client.admin.command("serverStatus", opLatencies={"histograms": True})
+        w = (status.get("opLatencies") or {}).get("writes") or {}
+    except PyMongoError:
+        return None
+    if "ops" not in w or "latency" not in w:
+        return None
+    hist = [(int(b.get("micros", 0)), int(b.get("count", 0))) for b in (w.get("histogram") or [])]
+    return {"ops": int(w["ops"]), "latency_us": int(w["latency"]), "hist": hist}
+
+
+def _percentis_do_histograma(buckets: list[tuple[int, int]]) -> dict[str, float | None]:
+    """Percentis a partir dos buckets do mongod.
+
+    O bucket dá a fronteira inferior da faixa, então o valor é uma cota
+    inferior — declarada como aproximada na UI, nunca apresentada como medida
+    exata.
+    """
+    total = sum(c for _, c in buckets)
+    if total <= 0:
+        return {"p50": None, "p95": None, "p99": None}
+    saida: dict[str, float | None] = {}
+    for rotulo, fracao in (("p50", 0.50), ("p95", 0.95), ("p99", 0.99)):
+        alvo, acumulado, valor = total * fracao, 0, None
+        for micros, count in buckets:
+            acumulado += count
+            if acumulado >= alvo:
+                valor = round(micros / 1000, 2)
+                break
+        saida[rotulo] = valor
+    return saida
+
+
+class IngestaoServidor:
+    """Delta de opLatencies entre o início e o instante consultado."""
+
+    def __init__(self) -> None:
+        self._base: dict[str, Any] | None = None
+        self._lock = threading.Lock()
+
+    def marcar_inicio(self) -> None:
+        base = _oplatencies_writes()
+        with self._lock:
+            self._base = base
+
+    def medir(self) -> dict[str, Any]:
+        with self._lock:
+            base = self._base
+        atual = _oplatencies_writes()
+        if atual is None:
+            return {"disponivel": False, "motivo": "serverStatus indisponível para este usuário"}
+        if base is None:
+            return {"disponivel": False, "motivo": "sem baseline: inicie uma execução"}
+
+        ops = atual["ops"] - base["ops"]
+        if ops <= 0:
+            return {"disponivel": False, "motivo": "nenhuma escrita no intervalo"}
+
+        us = atual["latency_us"] - base["latency_us"]
+        antes = dict(base["hist"])
+        delta = [(m, c - antes.get(m, 0)) for m, c in atual["hist"] if c - antes.get(m, 0) > 0]
+        return {
+            "disponivel": True,
+            "fonte": "serverStatus.opLatencies.writes",
+            "escopo": "todas as escritas do cluster durante a janela da execução, sem rede",
+            "atribuicao": "representativa do PIX somente com workload isolado",
+            "comandos": ops,
+            "media_ms_por_comando": round(us / ops / 1000, 2),
+            **_percentis_do_histograma(delta),
+        }
+
+
+ingestao_servidor = IngestaoServidor()
 
 
 class RunTracker:
@@ -395,10 +661,100 @@ def _ensure_indexes() -> None:
         })
 
 
+def _ponto_cartao(cliente: int, cidade: int, quando: datetime,
+                  run_id: str, sequencia: int | None,
+                  origem_sinal: str | None = None) -> dict[str, Any]:
+    """Uma compra presencial: coordenada do terminal, com proveniência junto."""
+    mun = _MUNICIPIOS[cidade]
+    categoria = random.choice(_CATEGORIAS_CARTAO)
+    terminal = random.choice(_TERMINAIS[(cidade, categoria)])
+    tipo = random.choice(_TIPOS_CARTAO)
+    doc = {
+        "endToEndId": f"C{uuid.uuid4().hex[:31].upper()}",
+        "run_id": run_id,
+        "sequencia": sequencia,
+        "canal": "CARTAO_PRESENCIAL",
+        "clienteId": f"CLI{cliente:05d}",
+        "particao": cliente % CS_PARTICOES,
+        "valor": Decimal128(f"{_sorteia_valor('PIX'):.2f}"),
+        "tipo": tipo,
+        "uf": mun["uf"],
+        "municipio": mun["municipio"],
+        "estabelecimento": {"categoria": categoria},
+        "local": {"type": "Point", "coordinates": terminal["coordinates"]},
+        "dispositivo": {"id": terminal["id"], "canal": "POS_PRESENCIAL"},
+        "localizacaoMeta": {"origem": "TERMINAL_ADQUIRENTE", "qualidade": "CADASTRAL"},
+        # Dois instantes distintos, e a distinção não é cosmética:
+        #
+        #   ts          — quando o evento entrou no stream. É o campo do TTL e o
+        #                 que ordena o fluxo.
+        #   compradaEm  — quando a compra aconteceu no terminal, que pode ser
+        #                 minutos antes: a captura do adquirente atrasa.
+        #
+        # A velocidade do sinal de risco se calcula sobre `compradaEm`. Colocar
+        # esse instante retroativo em `ts` fazia o TTL apagar a compra mais
+        # antiga do par antes da reconciliação — a fonte contava menos que os
+        # três consumidores, e a diferença parecia perda quando era expiração.
+        "ts": _now(),
+        "compradaEm": quando,
+        "status": "liquidada",
+    }
+    if origem_sinal:
+        # Rastro honesto: a tela separa o par que o gerador armou do par que
+        # emergiu do tráfego. Sem isso, "detectamos 5" é indistinguível de
+        # "plantamos 5".
+        doc["origemSinal"] = origem_sinal
+    return doc
+
+
+def _par_impossivel(run_id: str, sequencia: int | None) -> list[dict[str, Any]]:
+    """
+    Duas compras do mesmo cartão, distantes demais para o tempo entre elas.
+
+    As duas chegam juntas ao stream — é a captura que chega junta, não a compra.
+    O intervalo real entre as compras (`ts`) fica em minutos, então a velocidade
+    resultante é da ordem de milhares de km/h, e não de um número absurdo que
+    só existiria por causa do tamanho da janela.
+    """
+    # Faixa exclusiva dos pares: nenhum destes cartões aparece no tráfego comum.
+    cliente = CARTAO_CLIENTES + random.randrange(CARTAO_CLIENTES_PLANTADOS)
+    origem = _CASA_CLIENTE[cliente]
+    destino = _municipio_distante(origem)
+    agora = _now()
+    minutos = random.uniform(4, 9)
+    return [
+        _ponto_cartao(cliente, origem, agora - timedelta(minutes=minutos), run_id, sequencia, "plantado"),
+        _ponto_cartao(cliente, destino, agora, run_id, sequencia, "plantado"),
+    ]
+
+
+def _new_cartao(run_id: str = "execucao-local", sequencia: int | None = None) -> dict[str, Any]:
+    """Compra presencial de rotina: o portador compra perto de casa."""
+    cliente = random.randrange(CARTAO_CLIENTES)
+    cidade = _CASA_CLIENTE[cliente]
+    if random.random() < 0.0006:
+        # Viagem legítima, e rara. Em 6% o portador teleportava a cada poucos
+        # segundos e a tela virava uma parede de alertas — mais falso positivo
+        # do que qualquer detector produziria com dado real. Nesta ordem de
+        # grandeza, um par distante do mesmo cartão na mesma janela é
+        # coincidência do tráfego: quando aparece, o sinal foi EMERGENTE,
+        # achado pelo pipeline e não montado pelo gerador.
+        cidade = random.choices(range(len(_MUNICIPIOS)), weights=_MUN_PESOS, k=1)[0]
+    # Atraso de captura do adquirente: a compra aconteceu até 10 min antes de o
+    # evento chegar. É o que dá escala de minutos ao intervalo entre duas
+    # compras do mesmo cartão — sem isso toda velocidade sai na casa das
+    # dezenas de milhares de km/h só porque os eventos chegaram juntos.
+    atraso = timedelta(seconds=random.uniform(0, 600))
+    return _ponto_cartao(cliente, cidade, _now() - atraso, run_id, sequencia)
+
+
 def _new_transacao(run_id: str = "execucao-local", sequencia: int | None = None) -> dict[str, Any]:
+    if CARTAO_PCT and random.randrange(100) < CARTAO_PCT:
+        return _new_cartao(run_id, sequencia)
     pagador = random.randint(1, 5000)
     tipo = random.choices(_TIPOS, weights=_TIPO_PESOS)[0]
     return {
+        "canal": "PIX",
         "endToEndId": f"E{uuid.uuid4().hex[:31].upper()}",
         "run_id": run_id,
         "sequencia": sequencia,
@@ -437,6 +793,13 @@ class Generator:
         self.inserted = 0
         self.started_at: datetime | None = None
         self.run_id: str | None = None
+        self.duration_s: int | None = None
+        self.ends_at: datetime | None = None
+        self._auto_stop_task: asyncio.Task | None = None
+        self.stopping = False
+        self._stop_depth = 0
+        self.modo = MODO_ESCRITA_PADRAO
+        self.workers_ativos = 0
         self._sequence = 0
         self._recent: list[tuple[float, int]] = []   # (monotonic, docs) p/ TPS medido
         self._start_mono: float | None = None
@@ -469,8 +832,13 @@ class Generator:
         janela = min(self.JANELA_TPS_S, max(agora - inicio, 0.001))
         return round(docs / janela, 1)
 
-    async def start(self, tps: int) -> None:
+    async def start(self, tps: int, duration_s: int | None = None,
+                    modo: str | None = None) -> None:
         await asyncio.to_thread(_ensure_indexes)
+        if self._auto_stop_task and not self._auto_stop_task.done():
+            return
+        if modo in ("individual", "lote"):
+            self.modo = modo
         self.tps_alvo = tps
         if self.running:
             return                                    # já rodando: só ajusta o TPS
@@ -479,9 +847,55 @@ class Generator:
         self._sequence = 0
         self._recent = []
         self._start_mono = time.monotonic()
+        meter_write_ack.reset()
+        # Definido aqui, e não em `_run_individual`: a resposta do /start é
+        # enviada antes da task entrar em execução, e reportava workers=0.
+        self.workers_ativos = self._workers_para(tps) if self.modo == "individual" else 0
+        await asyncio.to_thread(ingestao_servidor.marcar_inicio)
+        self.duration_s = duration_s
+        self.ends_at = self.started_at + timedelta(seconds=duration_s) if duration_s else None
         self.task = asyncio.create_task(self._run())
+        if duration_s:
+            self._auto_stop_task = asyncio.create_task(self._stop_after(duration_s))
 
-    async def stop(self) -> None:
+    async def _stop_after(self, duration_s: int) -> None:
+        current = asyncio.current_task()
+        try:
+            await asyncio.sleep(duration_s)
+            await self.stop(advance_watermark=True, from_timer=True)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self._auto_stop_task is current:
+                self._auto_stop_task = None
+
+    async def stop(self, advance_watermark: bool = False, from_timer: bool = False) -> None:
+        # `stopping` é sinalizado aqui, e não só no timer: o Parar manual passa
+        # pela mesma espera de watermark (ASP_WATERMARK_FLUSH_S) e a UI precisa
+        # mostrar "fechando janelas" nos dois caminhos, não apenas no automático.
+        #
+        # O contador existe porque o Parar manual cancela o timer e o aguarda:
+        # um `stopping = False` simples no fim do stop do timer apagaria o sinal
+        # no meio do stop manual, que é justamente o mais longo.
+        self._stop_depth += 1
+        self.stopping = True
+        try:
+            await self._stop(advance_watermark=advance_watermark, from_timer=from_timer)
+        finally:
+            self._stop_depth -= 1
+            if self._stop_depth <= 0:
+                self._stop_depth = 0
+                self.stopping = False
+
+    async def _stop(self, advance_watermark: bool = False, from_timer: bool = False) -> None:
+        if not from_timer:
+            timer, self._auto_stop_task = self._auto_stop_task, None
+            if timer and not timer.done():
+                timer.cancel()
+                try:
+                    await timer
+                except asyncio.CancelledError:
+                    pass
         task, self.task = self.task, None
         if task:
             task.cancel()
@@ -495,6 +909,17 @@ class Generator:
         if self._inflight:
             await asyncio.gather(*list(self._inflight), return_exceptions=True)
         self.tps_alvo = 0
+        if advance_watermark and ASP_ENABLED and self.run_id and self.inserted:
+            # Em event time, fonte ociosa nao fecha a ultima janela. O marcador
+            # usa outro run_id, portanto avanca o watermark sem entrar na
+            # reconciliacao da execucao que acabou de ser demonstrada.
+            await asyncio.sleep(ASP_WATERMARK_FLUSH_S)
+            marcador = _new_transacao(ASP_WATERMARK_RUN_ID, 0)
+            marcador["controle_demo"] = "avancar_watermark"
+            try:
+                await asyncio.to_thread(sdb[COL_TX].insert_one, marcador)
+            except PyMongoError:
+                logger.exception("Falha ao inserir marcador de fechamento da janela ASP")
 
     def reset_counters(self) -> None:
         with self._lock:
@@ -503,7 +928,10 @@ class Generator:
             self._start_mono = time.monotonic()
         self.run_id = None
         self.started_at = None
+        self.duration_s = None
+        self.ends_at = None
         self._sequence = 0
+        meter_write_ack.reset()
 
     def _insert_batch(self, docs: list[dict[str, Any]]) -> None:
         """
@@ -520,7 +948,9 @@ class Generator:
         agora = _now()
         for doc in docs:
             doc["ts"] = agora
+        inicio_ack = time.monotonic()
         sdb[COL_TX].insert_many(docs, ordered=False)
+        meter_write_ack.record((time.monotonic() - inicio_ack) * 1000)
         self._record(len(docs))
 
     async def _batch(self, docs: list[dict[str, Any]]) -> None:
@@ -529,7 +959,113 @@ class Generator:
         except PyMongoError:
             logger.exception("Falha ao inserir micro-batch do gerador")
 
+    # ── Modo PIX individual ────────────────────────────────────────────────
+    #
+    # A escrita usa o driver ASSÍNCRONO. Com `asyncio.to_thread(insert_one)`
+    # cada PIX ocupava uma thread do pool, e como o mesmo processo mantém os
+    # quatro cursores de change stream, o consumidor Kafka e os polls da tela,
+    # o GIL travava a vazão em ~1.000 TPS. Medido lado a lado, 1 insert = 1 PIX
+    # nos dois casos: to_thread ~1.000 TPS, async 1.829 TPS (p50 17,7 ms).
+    #
+    # O gargalo nunca foi o Atlas: durante 1.000 TPS o servidor ingeria cada
+    # PIX em 3,07 ms usando 157 de 3.000 conexões.
+    #
+    # Um PIX de verdade chega sozinho, não em lote de 800. Neste modo cada
+    # transação é um `insert_one`, o que torna a demonstração fiel e — mais
+    # importante para a conversa com a squad — faz `opLatencies.writes` medir
+    # UMA transação por comando, em vez de um micro-batch inteiro.
+    #
+    # Isto só é viável com o cluster na mesma região: a 148 ms de RTT cada
+    # conexão sustentava ~6,7 escritas/s e o teto ficava em ~260 TPS. A 7,4 ms
+    # o mesmo cliente passa de 2.300 TPS, acima do marco de 1.000 TPS do PIX.
+    #
+    # O paralelismo é deliberadamente modesto: acima de ~50 threads o gargalo
+    # vira o CPython (GIL + encoding BSON) e a vazão CAI enquanto o p95 explode
+    # (medido: 50 → 2.376 TPS/p95 34 ms; 600 → 2.041 TPS/p95 2.038 ms).
+    # Com I/O assíncrono a "concorrência" é barata: são corrotinas, não threads.
+    # O teto medido fica perto de 200 em voo; acima disso a vazão para de subir
+    # e só o p95 piora, porque o custo passa a ser encoding BSON no event loop.
+    WORKERS_MAX = 200
+    # Custo de UMA escrita confirmada, não o RTT puro: o ACK medido em sa-east-1
+    # com os três consumidores ativos fica perto de 15-18 ms (o ping sozinho dá
+    # 7,4 ms). Dimensionar pelo RTT entregava 70% do alvo.
+    CUSTO_ESCRITA_S = 0.020
+
+    def _workers_para(self, tps: int) -> int:
+        """Corrotinas suficientes para o alvo, sem passar do ponto de contenção."""
+        necessarios = math.ceil(tps * self.CUSTO_ESCRITA_S) + 1
+        return max(2, min(self.WORKERS_MAX, necessarios))
+
+    async def _insert_um(self, doc: dict[str, Any]) -> None:
+        doc["ts"] = _now()
+        inicio = time.monotonic()
+        await acol_tx().insert_one(doc)
+        meter_write_ack.record((time.monotonic() - inicio) * 1000)
+        self._record(1)
+
+    async def _worker_individual(self, intervalo_s: float) -> None:
+        """Uma corrotina: insere e espera o bastante para manter a taxa."""
+        proximo = time.monotonic()
+        while True:
+            with self._lock:
+                seq = self._sequence
+                self._sequence += 1
+            doc = _new_transacao(self.run_id or "execucao-local", seq)
+            try:
+                await self._insert_um(doc)
+            except PyMongoError:
+                logger.exception("Falha ao inserir PIX individual")
+            proximo += intervalo_s
+            await asyncio.sleep(max(0.0, proximo - time.monotonic()))
+
+    async def _run_individual(self) -> None:
+        workers = self.workers_ativos or self._workers_para(self.tps_alvo)
+        intervalo = workers / max(self.tps_alvo, 1)
+        tarefas = [asyncio.create_task(self._worker_individual(intervalo))
+                   for _ in range(workers)]
+        try:
+            await asyncio.gather(*tarefas)
+        except asyncio.CancelledError:
+            for t in tarefas:
+                t.cancel()
+            await asyncio.gather(*tarefas, return_exceptions=True)
+            raise
+
+    # Um par a cada ~6 s: perto o bastante para a demo de 30 s render vários
+    # sinais, longe o bastante para não virar o fluxo dominante da tela.
+    INTERVALO_PAR_S = 6.0
+
+    async def _plantar_pares(self) -> None:
+        """
+        Injeta pares de impossible travel enquanto o gerador roda.
+
+        Existe para a demo ter um sinal garantido no palco. Cada documento sai
+        marcado com `origemSinal: "plantado"`, e a tela conta plantados e
+        emergentes separadamente — a garantia não pode virar a evidência.
+        """
+        while True:
+            await asyncio.sleep(self.INTERVALO_PAR_S)
+            with self._lock:
+                seq = self._sequence
+                self._sequence += 2
+            try:
+                for doc in _par_impossivel(self.run_id or "execucao-local", seq):
+                    await self._insert_um(doc)
+            except PyMongoError:
+                logger.exception("Falha ao inserir par de impossible travel")
+
     async def _run(self) -> None:
+        pares = asyncio.create_task(self._plantar_pares()) if CARTAO_PCT else None
+        try:
+            await self._run_modo()
+        finally:
+            if pares:
+                pares.cancel()
+
+    async def _run_modo(self) -> None:
+        if self.modo == "individual":
+            await self._run_individual()
+            return
         carry = 0.0
         next_tick = time.monotonic()
         while True:
@@ -560,23 +1096,32 @@ generator = Generator()
 
 
 class GeneratorStart(BaseModel):
-    tps: int = Field(default=CONCEPT_TPS, ge=1, le=TPS_MAX)
+    tps: int = Field(default=DEMO_TPS_DEFAULT, ge=1, le=TPS_MAX)
+    duration_s: int = Field(default=DEMO_DURATION_DEFAULT_S, ge=10, le=120)
+    # "individual" = 1 insert por PIX (fiel ao fluxo de um banco, e o que faz
+    # opLatencies medir uma transação). "lote" = micro-batches, necessário só
+    # para volumes que o modo individual não alcança do cliente Python.
+    modo: str = Field(default=MODO_ESCRITA_PADRAO, pattern="^(individual|lote)$")
 
 
 @router.post("/generator/start")
 async def generator_start(body: GeneratorStart):
-    await generator.start(body.tps)
+    await generator.start(body.tps, body.duration_s, body.modo)
     return {
         "running": True,
         "run_id": generator.run_id,
         "tps_alvo": generator.tps_alvo,
+        "duration_s": generator.duration_s,
+        "modo": generator.modo,
+        "workers": generator.workers_ativos,
+        "ends_at": generator.ends_at.isoformat() if generator.ends_at else None,
         "colecao": f"{STREAM_DB}.{COL_TX}",
     }
 
 
 @router.post("/generator/stop")
 async def generator_stop():
-    await generator.stop()
+    await generator.stop(advance_watermark=True)
     return {"running": False, "inseridos": generator.inserted}
 
 
@@ -584,8 +1129,12 @@ async def generator_stop():
 async def generator_status():
     total = await asyncio.to_thread(sdb[COL_TX].estimated_document_count)
     medido = generator.measured_tps()
+    write_ack = meter_write_ack.snapshot()
     return {
         "running": generator.running,
+        "stopping": generator.stopping,
+        "modo": generator.modo,
+        "workers": generator.workers_ativos,
         "tps_alvo": generator.tps_alvo,
         "tps_medido": medido,
         "inseridos": generator.inserted,
@@ -594,7 +1143,17 @@ async def generator_status():
         "ttl_segundos": TTL_SECONDS,
         "ttl_ativo": True,
         "started_at": generator.started_at.isoformat() if generator.started_at else None,
+        "duration_s": generator.duration_s,
+        "ends_at": generator.ends_at.isoformat() if generator.ends_at else None,
         "run_id": generator.run_id,
+        "write_ack": {
+            "p50": write_ack["p50"],
+            "p95": write_ack["p95"],
+            "p99": write_ack["p99"],
+            "amostras": write_ack["amostras"],
+            "microbatches_s": write_ack["eventos_s"],
+        },
+        "ingestao_servidor": await asyncio.to_thread(ingestao_servidor.medir),
     }
 
 
@@ -904,12 +1463,11 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
 
     info = _cluster_info_sync()
     auto = info.get("autoscaling") or {}
-    if auto.get("ativo") and info.get("escalou"):
+    if auto.get("ativo"):
         checks["cluster_tier"] = {
-            "ok": False,
-            "message": f"cluster em {info['tier']}, acima do tier de entrada {auto.get('min')} "
-                       f"(auto-scaling {auto.get('min')}→{auto.get('max')}); "
-                       "a PoV é calibrada para rodar no tier de entrada",
+            "ok": True,
+            "message": f"cluster em {info['tier']} — dentro do auto-scaling "
+                       f"{auto.get('min')}→{auto.get('max')}",
         }
     else:
         checks["cluster_tier"] = {"ok": True, "message": f"cluster em {info['tier']}"}
@@ -951,21 +1509,53 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
 
 @router.get("/cenario")
 async def cenario():
-    """Cargas moderadas para provar capacidades sem sugerir sizing."""
+    """Marcos comparaveis com o PIX, sem converter a PoV em benchmark."""
     return {
         "premissas": {
             "workload": "sintético",
             "objetivo": "provar integridade, recuperação, fan-out, janela, estado e DLQ",
             "sizing": False,
         },
-        "presets": [
-            {"label": "Passo a passo", "tps": max(10, CONCEPT_TPS // 5),
-             "detalhe": "fluxo leve para acompanhar cada mecanismo"},
-            {"label": "Fluxo contínuo", "tps": CONCEPT_TPS,
-             "detalhe": "carga moderada para observar janelas e reconciliação"},
-            {"label": "Rajada controlada", "tps": min(TPS_MAX, CONCEPT_TPS * 2),
-             "detalhe": "demonstra backlog e recuperação sem pretensão de benchmark"},
-        ],
+        "presets": ([
+            {"label": "Operação típica", "tps": min(TPS_MAX, PIX_FATIA_PICO_TPS), "modo": "individual",
+             "detalhe": "uma transação por insert · latência real de um PIX individual"},
+            {"label": "Pico sustentado", "tps": min(TPS_MAX, PIX_FATIA_PICO_TPS * 2),
+             "modo": "individual",
+             "detalhe": "dobro da operação típica com o caminho pós-commit abaixo de 35 ms"},
+            # 12k só existe em modo lote, e com o gargalo dito em voz alta: no
+            # modo individual o teto é o cliente Python, não o Atlas. Oferecer
+            # 12k individual convidava a demo a quebrar no palco.
+            {"label": "Volume em lote", "tps": min(TPS_MAX, 12_000), "modo": "lote",
+             "detalhe": "micro-batches; história de volume, não de latência por transação"},
+        ] if MODO_ESCRITA_PADRAO == "individual" else [
+            {"label": "Escala de referência", "tps": min(TPS_MAX, PIX_FATIA_PICO_TPS),
+             "detalhe": "fatia configurável do pico sustentado planejado pelo BCB"},
+            {"label": "Confortável medido", "tps": min(TPS_MAX, 4_000),
+             "detalhe": "abaixo do ponto em que um cursor único acumulou lag"},
+            {"label": "Recomendado para a PoV", "tps": min(TPS_MAX, 8_000),
+             "detalhe": "carga ponta a ponta medida com latência controlada"},
+            {"label": "Stress — escala Brasil", "tps": min(TPS_MAX, PIX_BRASIL_PICO_TPS),
+             "detalhe": "10 mil TPS testa headroom; pode abrir backlog pós-commit"},
+        ]),
+        "default_tps": DEMO_TPS_INDIVIDUAL if MODO_ESCRITA_PADRAO == "individual" else DEMO_TPS_DEFAULT,
+        "default_duration_s": DEMO_DURATION_DEFAULT_S,
+        "modo_escrita": MODO_ESCRITA_PADRAO,
+        "teto_individual_tps": DEMO_TPS_INDIVIDUAL,
+        "referencia_pix": {
+            "premissa_participacao_pct": round(PIX_PARTICIPACAO * 100, 1),
+            "recorde_brasil_transacoes_dia": PIX_RECORDE_DIA,
+            "recorde_brasil_data": PIX_RECORDE_DATA,
+            "media_brasil_tps": PIX_BRASIL_MEDIA_TPS,
+            "media_fatia_tps": PIX_FATIA_MEDIA_TPS,
+            "pico_sustentado_brasil_tps": PIX_BRASIL_PICO_TPS,
+            "pico_sustentado_fatia_tps": PIX_FATIA_PICO_TPS,
+            "fontes": [PIX_FONTE_RECORDE, PIX_FONTE_PICO],
+            "nota": (
+                "Numeros publicos do BCB. A fatia e uma premissa de apresentacao "
+                "(PIX_PARTICIPACAO_PCT), nao distribuicao intradia real nem "
+                "capacidade certificada do Atlas."
+            ),
+        },
         "tps_max": TPS_MAX,
         "ambiente": {
             "cluster": (await asyncio.to_thread(_cluster_info_sync))["tier"],
@@ -975,7 +1565,11 @@ async def cenario():
     }
 
 
-DROP_ACIMA_DE = 300_000
+# Acima de uma rodada pequena, delete_many mantém índices e change streams mas
+# é lento para palco (~10 s com 60 mil documentos no M20). O caminho controlado
+# de drop para o processor, recria os três índices e retoma ASP/Kafka em menos
+# tempo. Configurável para ensaios com outro perfil de carga.
+DROP_ACIMA_DE = max(1_000, int(os.getenv("STREAMING_DROP_ACIMA_DE", "25000")))
 
 
 def _asp_command(cmd: dict[str, Any]) -> bool:
@@ -1048,22 +1642,16 @@ def _drop_and_recreate() -> int:
 
 def _purge(col: str) -> tuple[int, int]:
     """
-    Esvazia a coleção usando um cliente dedicado com socket timeout longo.
+    Esvazia a coleção reutilizando o cliente já conectado da aplicação.
 
     Alguns minutos a 5000 TPS deixam centenas de milhares de documentos, e um
-    delete_many nesse volume estoura o socketTimeoutMS padrão (16 s) — o Reset
-    morria com 500 no meio da demo. Dropar a coleção seria instantâneo, mas
-    invalidaria o change stream do processor do ASP e o do próprio backend.
+    delete_many nesse volume pode ser caro; acima de `DROP_ACIMA_DE`, o Reset já
+    usa o caminho de drop controlado. Para volumes menores, abrir um novo
+    MongoClient era pior: cada coleção refazia a resolução DNS SRV e o Play
+    ficava 20 s em "Preparando" ou devolvia 500 quando o DNS oscilava, embora o
+    cliente principal continuasse conectado ao Atlas.
     """
-    from pymongo import MongoClient
-
-    purge_client = MongoClient(
-        settings.mongo_uri or "mongodb://127.0.0.1:27017",
-        appname="mongodb-atlas-feature-showcase-purge",
-        serverSelectionTimeoutMS=settings.mongo_timeout_ms,
-        socketTimeoutMS=PURGE_TIMEOUT_MS,
-    )
-    target = purge_client[STREAM_DB][col]
+    target = sdb[col]
     removed = 0
     try:
         # Um delete grande sob carga pode pegar uma eleição no meio
@@ -1081,13 +1669,15 @@ def _purge(col: str) -> tuple[int, int]:
     except PyMongoError:
         logger.exception("Falha ao esvaziar %s", col)
         return removed, sdb[col].estimated_document_count()
-    finally:
-        purge_client.close()
 
 
 @router.post("/reset")
 async def reset(finalizar: bool = False):
     await generator.stop()
+    # Contratos baratos e idempotentes. Além de evitar COLLSCAN na
+    # reconciliação, isto cura ambientes preparados por versões antigas do
+    # cleanup que não criavam o índice run_id.
+    await asyncio.to_thread(_ensure_indexes)
     # O worker do change stream NÃO é parado aqui: ele só volta a subir quando um
     # novo assinante SSE chega, e a aba já aberta na demo não reabre o
     # EventSource — a coluna 1 ficaria muda depois do Reset até dar F5.
@@ -1124,6 +1714,17 @@ async def reset(finalizar: bool = False):
                 _asp_command,
                 {"startStreamProcessor": ASP_PROCESSOR_NAME},
             )
+        # O drop invalida o change stream dos DOIS processors. Reiniciar só o de
+        # janelas deixaria o de sinais geográficos parado sem sinal na tela.
+        await asyncio.to_thread(
+            _asp_command,
+            {"stopStreamProcessor": ASP_GEO_PROCESSOR_NAME},
+        )
+        if not finalizar:
+            await asyncio.to_thread(
+                _asp_command,
+                {"startStreamProcessor": ASP_GEO_PROCESSOR_NAME},
+            )
         alvos = (COL_WINDOWS, COL_DLQ, COL_DLQ_AUDIT)
     else:
         alvos = (COL_TX, COL_WINDOWS, COL_DLQ, COL_DLQ_AUDIT)
@@ -1131,18 +1732,31 @@ async def reset(finalizar: bool = False):
     if finalizar:
         alvos = (*alvos, COL_CHECKPOINTS)
 
-    for col in alvos:
-        removed, left = await asyncio.to_thread(_purge, col)
+    # Coleções independentes: limpar em paralelo elimina quatro round-trips
+    # sequenciais antes do Play sem mudar a semântica do Reset.
+    resultados_purge = await asyncio.gather(*(
+        asyncio.to_thread(_purge, col) for col in alvos
+    ))
+    for col, (removed, left) in zip(alvos, resultados_purge, strict=True):
         deleted[col] = removed
         restantes += left
-    # Religa os connectors SEMPRE: um drop anterior invalida o change stream
-    # deles e as tasks não se recuperam sozinhas — sem isto a coluna 2 fica
-    # vermelha depois do Reset. É idempotente e barato.
-    if not finalizar:
+    # Somente o drop invalida o change stream do connector. Reiniciá-lo em toda
+    # rodada limpa adicionava segundos ao Play e perturbava uma task saudável.
+    if not finalizar and grande > DROP_ACIMA_DE:
         try:
             kafka_reiniciado = (await asyncio.to_thread(_connector_restart_sync)).get("reiniciado", False)
         except Exception:  # noqa: BLE001 - Kafka é opcional na demo
             kafka_reiniciado = False
+
+    # Sinais da rodada anterior vivem no database `geo`, fora das coleções
+    # acima. Deixá-los para trás faria a próxima execução começar com um
+    # contador de detecções que não é dela.
+    try:
+        deleted[f"{GEO_DB_NOME}.{COL_SINAIS}"] = (
+            await asyncio.to_thread(lambda: client[GEO_DB_NOME][COL_SINAIS].delete_many({}).deleted_count)
+        )
+    except PyMongoError:
+        logger.warning("Não foi possível limpar %s.%s", GEO_DB_NOME, COL_SINAIS)
 
     generator.reset_counters()
     cs_worker.reset_counters()
@@ -1156,7 +1770,12 @@ async def reset(finalizar: bool = False):
     for hub in (hub_cs, hub_kafka, hub_asp):
         hub.publish({"type": "reset"})
     # `restantes` só é > 0 se o orçamento de tempo acabou antes de esvaziar tudo;
-    # a UI mostra o número em vez de fingir que a limpeza terminou.
+    # não é seguro iniciar uma rodada misturada com o resíduo anterior.
+    if restantes:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Preparação incompleta: {restantes} documento(s) ainda presentes. Tente Reset novamente.",
+        )
     return {"reset": True, "removidos": deleted, "restantes": restantes,
             "via_drop": grande > DROP_ACIMA_DE, "asp_reiniciado": asp_reiniciado,
             "asp_parado": asp_parado, "kafka_reiniciado": kafka_reiniciado,
@@ -1762,6 +2381,83 @@ def _connector_restart_sync() -> dict[str, Any]:
     return {"reiniciado": True, "detalhe": f"{reiniciados} connector(s) e suas tasks reiniciados"}
 
 
+# ---------------------------------------------------------------------------
+# Injeção de falha — a parte da demo que vale mais que os painéis verdes
+#
+# Reconciliação fechando no caminho feliz não prova recuperação: prova que nada
+# deu errado. Estes dois endpoints derrubam o que dá para derrubar em segurança
+# e deixam a própria reconciliação responder se houve perda.
+# ---------------------------------------------------------------------------
+def _connector_derrubar_sync(segundos: float) -> dict[str, Any]:
+    """
+    Para o connector e o traz de volta depois de `segundos`.
+
+    Parar não apaga o offset: o resume token fica no tópico connect-offsets, e
+    ao voltar o connector retoma do ponto onde estava. Tudo o que foi gravado no
+    Atlas durante a parada é entregue depois — é exatamente isso que a
+    reconciliação tem de mostrar fechando.
+    """
+    import requests
+
+    with requests.Session() as sessao:
+        nomes = _connectores_do_showcase(sessao)
+        if not nomes:
+            return {"derrubado": False, "detalhe": "nenhum connector do showcase encontrado"}
+        for nome in nomes:
+            sessao.put(f"{CONNECT_URL.rstrip('/')}/connectors/{nome}/stop", timeout=10)
+        time.sleep(max(1.0, min(segundos, 30.0)))
+        for nome in nomes:
+            sessao.put(f"{CONNECT_URL.rstrip('/')}/connectors/{nome}/resume", timeout=10)
+    return {
+        "derrubado": True,
+        "segundos": round(max(1.0, min(segundos, 30.0)), 1),
+        "detalhe": f"{len(nomes)} connector(s) parado(s) e retomado(s) pelo offset guardado",
+    }
+
+
+class FalhaConnector(BaseModel):
+    segundos: float = Field(default=8, ge=1, le=30)
+
+
+@router.post("/falha/connector")
+async def falha_connector(body: FalhaConnector):
+    """Derruba a coluna 2 no meio do fluxo e a traz de volta."""
+    try:
+        return await asyncio.to_thread(_connector_derrubar_sync, body.segundos)
+    except Exception as exc:  # noqa: BLE001 - Kafka é opcional
+        raise HTTPException(status_code=503, detail=f"Connect indisponível: {type(exc).__name__}") from exc
+
+
+@router.post("/falha/evento-invalido")
+async def falha_evento_invalido():
+    """
+    Grava um documento que viola o `$validate` do processor.
+
+    Ele é uma transação legítima do ponto de vista da coleção — passa no índice
+    único e entra na contagem da fonte —, mas tem `valor` como string. O ASP o
+    desvia para a DLQ e continua rodando: é a diferença entre um evento ruim e
+    um pipeline parado.
+    """
+    doc = {
+        "endToEndId": f"X{uuid.uuid4().hex[:31].upper()}",
+        "run_id": generator.run_id or "execucao-local",
+        "canal": "PIX",
+        "particao": 0,
+        "valor": "isto-nao-e-um-numero",
+        "tipo": "PIX",
+        "uf": "SP",
+        "ts": _now(),
+        "status": "liquidada",
+        "injetado": "falha-demo",
+    }
+    await acol_tx().insert_one(doc)
+    return {
+        "injetado": True,
+        "endToEndId": doc["endToEndId"],
+        "detalhe": f"documento com `valor` string gravado; o ASP deve desviá-lo para {STREAM_DB}.{COL_DLQ}",
+    }
+
+
 @router.get("/kafka/status")
 async def kafka_status():
     kafka_consumer.ensure_started()
@@ -1826,22 +2522,24 @@ async def kafka_sse(request: Request):
 # COLUNA 3 — Atlas Stream Processing
 # ---------------------------------------------------------------------------
 ASP_PIPELINE_SNIPPET = """[
-  { $source: { connectionName: __CONNECTION__, db: __DB__, coll: "transacoes" } },
+  { $source: { connectionName: __CONNECTION__, db: __DB__, coll: "transacoes",
+               config: { fullDocument: "updateLookup" } } },
   { $match: { operationType: "insert" } },
 
   // documento malformado vai para a DLQ; o processor nao cai
-  { $validate: { validator: { $and: [
-        { "fullDocument.endToEndId": { $type: "string" } },
-        { "fullDocument.run_id": { $type: "string" } },
-        { "fullDocument.valor": { $type: ["decimal","double","int","long"] } },
-        { "fullDocument.tipo":  { $eq: "PIX" } },
-        { "fullDocument.uf": { $type: "string" } } ] },
+  { $validate: { validator: { $jsonSchema: {
+        bsonType: "object", required: ["fullDocument"], properties: {
+          fullDocument: { bsonType: "object",
+            required: ["endToEndId","run_id","valor","tipo","uf"], properties: {
+              endToEndId: { bsonType: "string" }, run_id: { bsonType: "string" },
+              valor: { bsonType: ["decimal","double","int","long"] },
+              tipo: { enum: ["PIX"] }, uf: { bsonType: "string" } } } } } },
       validationAction: "dlq" } },
 
   { $tumblingWindow: {
       boundary: "eventTime",
-      interval: { size: 10, unit: "second" },
-      allowedLateness: { size: 3, unit: "second" },
+      interval: { size: 5, unit: "second" },
+      allowedLateness: { size: 2, unit: "second" },
       pipeline: [
         { $group: {
             _id: { run_id: "$fullDocument.run_id", uf: "$fullDocument.uf", tipo: "$fullDocument.tipo" },

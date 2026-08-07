@@ -110,6 +110,33 @@ def test_record_soma_inseridos_e_alimenta_janela():
     assert g.inserted == 50
 
 
+def test_stop_avanca_watermark_sem_contaminar_run_id(monkeypatch):
+    class Colecao:
+        def __init__(self):
+            self.docs = []
+
+        def insert_one(self, doc):
+            self.docs.append(doc)
+
+    async def sem_espera(_segundos):
+        return None
+
+    colecao = Colecao()
+    monkeypatch.setattr(streaming, "ASP_ENABLED", True)
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_TX: colecao})
+    monkeypatch.setattr(streaming.asyncio, "sleep", sem_espera)
+    g = streaming.Generator()
+    g.run_id = "run-da-demo"
+    g.inserted = 10
+
+    asyncio.run(g.stop(advance_watermark=True))
+
+    assert len(colecao.docs) == 1
+    assert colecao.docs[0]["run_id"] == streaming.ASP_WATERMARK_RUN_ID
+    assert colecao.docs[0]["run_id"] != g.run_id
+    assert colecao.docs[0]["controle_demo"] == "avancar_watermark"
+
+
 def test_reset_counters_zera_inseridos():
     g = streaming.Generator()
     g._start_mono = time.monotonic()
@@ -435,12 +462,12 @@ def test_carga_conceitual_cabe_no_limite_da_api():
     assert 10 <= streaming.CONCEPT_TPS <= streaming.TPS_MAX
 
 
-def test_teto_de_tps_mantem_a_pov_reproduzivel_em_m20():
+def test_teto_de_tps_limita_a_carga_de_palco_sem_virar_claim_de_capacidade():
     """
-    O teto é uma decisão de custo: acima disso a escrita sustentada dispara o
-    auto-scaling do Atlas e a PoV deixa de rodar inteira no tier de entrada.
+    O teto permite calibrar acima do pico Brasil, mas continua limitado.
+    Nao afirma que M20 sustenta essa carga em regime de producao.
     """
-    assert streaming.TPS_MAX <= 1_000
+    assert streaming.PIX_BRASIL_PICO_TPS <= streaming.TPS_MAX <= 15_000
     body = streaming.GeneratorStart(tps=streaming.TPS_MAX)
     assert body.tps == streaming.TPS_MAX
     with pytest.raises(ValidationError):
@@ -448,25 +475,62 @@ def test_teto_de_tps_mantem_a_pov_reproduzivel_em_m20():
 
 
 def test_presets_do_cenario_respeitam_o_teto():
-    assert min(streaming.TPS_MAX, streaming.CONCEPT_TPS * 2) <= streaming.TPS_MAX
+    cenario = asyncio.run(streaming.cenario())
+    assert all(1 <= preset["tps"] <= streaming.TPS_MAX for preset in cenario["presets"])
+    assert cenario["default_duration_s"] == 30
+    # O default segue o modo de escrita: no individual o alvo é o marco Inter,
+    # porque 1 insert = 1 PIX satura o cliente perto de 1.000 TPS com os três
+    # consumidores ativos. Prometer 8.000 ali mostraria "medido 1.000" na tela.
+    if cenario["modo_escrita"] == "individual":
+        assert cenario["default_tps"] == streaming.DEMO_TPS_INDIVIDUAL
+        assert streaming.PIX_FATIA_PICO_TPS in {p["tps"] for p in cenario["presets"]}
+    else:
+        assert cenario["default_tps"] == 8_000
+        assert 10_000 in {p["tps"] for p in cenario["presets"]}
 
 
-def test_ttl_cobre_uma_demo_sem_estourar_o_cache_do_m20():
+def test_write_ack_mede_o_tempo_ate_confirmacao_do_microbatch(monkeypatch):
+    class Colecao:
+        def insert_many(self, docs, ordered):
+            assert ordered is False
+            return object()
+
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_TX: Colecao()})
+    streaming.meter_write_ack.reset()
+    g = streaming.Generator()
+    g._insert_batch([{"ts": None}])
+
+    ack = streaming.meter_write_ack.snapshot()
+    assert ack["amostras"] == 1
+    assert ack["p99"] is not None
+
+
+def test_referencia_pix_separa_media_de_pico_e_aplica_a_participacao():
+    """A referência vem de números públicos do BCB e a fatia é configurável:
+    a PoV não pode ficar amarrada a uma instituição específica."""
+    assert streaming.PIX_BRASIL_MEDIA_TPS == round(streaming.PIX_RECORDE_DIA / 86_400)
+    assert streaming.PIX_FATIA_MEDIA_TPS == round(
+        streaming.PIX_BRASIL_MEDIA_TPS * streaming.PIX_PARTICIPACAO)
+    assert streaming.PIX_FATIA_PICO_TPS == round(
+        streaming.PIX_BRASIL_PICO_TPS * streaming.PIX_PARTICIPACAO)
+    assert streaming.PIX_FATIA_MEDIA_TPS < streaming.PIX_FATIA_PICO_TPS
+    assert 0.01 <= streaming.PIX_PARTICIPACAO <= 1.0
+
+
+def test_ttl_nao_concorre_com_a_rodada_finita_e_limita_residuo():
     """
-    Curto demais, o deletor concorre com o pico e enche o oplog do resume token.
-    Longo demais, o conjunto vivo passa do cache do WiredTiger de um M20 e a
-    pressão de memória sozinha sobe o tier.
+    O TTL deve ser maior que rodada + drenagem; Reset continua sendo a limpeza.
     """
-    assert 600 <= streaming.TTL_SECONDS <= 900
-    vivos = streaming.TTL_SECONDS * streaming.CONCEPT_TPS
-    assert vivos <= 250_000, f"conjunto vivo estimado de {vivos} documentos"
+    assert 180 <= streaming.TTL_SECONDS <= 300
+    assert streaming.TTL_SECONDS >= streaming.DEMO_DURATION_DEFAULT_S * 6
 
 
 def _preflight_com_mongo_stub(monkeypatch):
     """Roda preflight_checks() sem cluster: só o que interessa a ASP/Kafka."""
     class ColecaoFake:
         def list_indexes(self):
-            return iter([{"key": {"ts": 1}, "name": "ts_ttl", "expireAfterSeconds": 600},
+            return iter([{"key": {"ts": 1}, "name": "ts_ttl",
+                          "expireAfterSeconds": streaming.TTL_SECONDS},
                          {"key": {"endToEndId": 1}, "name": "endToEndId_unique"},
                          {"key": {"run_id": 1}, "name": "run_id_reconciliacao"}])
 
@@ -556,6 +620,21 @@ def test_cluster_acima_do_tier_de_entrada_e_sinalizado(monkeypatch):
     assert info["escalou"] is True
 
 
+def test_preflight_aceita_m30_dentro_do_autoscaling(monkeypatch):
+    monkeypatch.setattr(streaming, "AO_VIVO", False)
+    _preflight_com_mongo_stub(monkeypatch)
+    monkeypatch.setattr(
+        streaming,
+        "_cluster_info_sync",
+        lambda: {"tier": "M30", "autoscaling": {"ativo": True, "min": "M20", "max": "M30"}, "escalou": True},
+    )
+
+    checks = streaming.preflight_checks()
+
+    assert checks["cluster_tier"]["ok"] is True
+    assert "M20→M30" in checks["cluster_tier"]["message"]
+
+
 def test_ensure_indexes_cobre_a_contagem_da_reconciliacao(monkeypatch):
     """
     /streaming/reconciliacao conta a fonte por run_id em laço durante a demo.
@@ -576,6 +655,29 @@ def test_ensure_indexes_cobre_a_contagem_da_reconciliacao(monkeypatch):
     streaming._ensure_indexes()
 
     assert any(chave == "run_id" for chave, _ in criados), criados
+
+
+def test_purge_reutiliza_cliente_ja_conectado_sem_nova_resolucao_srv(monkeypatch):
+    """Reset não pode depender de resolver o SRV novamente para cada coleção."""
+    class ColecaoFake:
+        def __init__(self):
+            self.tentativas = 0
+
+        def delete_many(self, filtro):
+            assert filtro == {}
+            self.tentativas += 1
+            return SimpleNamespace(deleted_count=7)
+
+        def estimated_document_count(self):
+            return 0
+
+    alvo = ColecaoFake()
+    monkeypatch.setattr(streaming, "sdb", {"transacoes": alvo})
+
+    removidos, restantes = streaming._purge("transacoes")
+
+    assert (removidos, restantes) == (7, 0)
+    assert alvo.tentativas == 1
 
 
 def test_preflight_reprova_indice_de_reconciliacao_ausente_ou_ttl_divergente(monkeypatch):
@@ -608,8 +710,11 @@ def test_pipeline_asp_usa_bordas_oficiais_e_configuracao_dinamica():
     assert 'stream.window.end' in streaming.ASP_PIPELINE_SNIPPET
     assert 'boundary: "eventTime"' in streaming.ASP_PIPELINE_SNIPPET
     assert "allowedLateness" in streaming.ASP_PIPELINE_SNIPPET
+    assert 'config: { fullDocument: "updateLookup" }' in streaming.ASP_PIPELINE_SNIPPET
+    assert "$jsonSchema" in streaming.ASP_PIPELINE_SNIPPET
+    assert 'interval: { size: 5, unit: "second" }' in streaming.ASP_PIPELINE_SNIPPET
+    assert 'required: ["endToEndId","run_id","valor","tipo","uf"]' in streaming.ASP_PIPELINE_SNIPPET
     assert "fullDocument.run_id" in streaming.ASP_PIPELINE_SNIPPET
-    assert "fullDocument.endToEndId" in streaming.ASP_PIPELINE_SNIPPET
     assert "fullDocument.uf" in streaming.ASP_PIPELINE_SNIPPET
     assert "alertas_valor_alto" in streaming.ASP_PIPELINE_SNIPPET
     assert 'fullDocument: "required"' not in streaming.ASP_PIPELINE_SNIPPET
@@ -758,4 +863,141 @@ def test_reconciliacao_fecha_quando_todos_os_caminhos_contabilizam(monkeypatch):
 
 def test_api_rejeita_carga_acima_do_teto_da_poc():
     with pytest.raises(ValueError):
-        streaming.GeneratorStart(tps=2_001)
+        streaming.GeneratorStart(tps=streaming.TPS_MAX + 1)
+
+
+# ---------------------------------------------------------------------------
+# Parada: o sinal `stopping` vale para os dois caminhos
+# ---------------------------------------------------------------------------
+def test_stop_manual_sinaliza_stopping_durante_o_watermark(monkeypatch):
+    """Parar pelo botão passa pela mesma espera de watermark do stop automático.
+
+    Antes, `stopping` só era marcado no timer: o Parar manual pendurava a
+    requisição pelo tempo do flush sem a UI ter como mostrar "fechando janelas".
+    """
+    gen = streaming.Generator()
+    visto: list[bool] = []
+
+    async def _stop_interno(**_kwargs):
+        visto.append(gen.stopping)
+
+    monkeypatch.setattr(gen, "_stop", _stop_interno)
+    asyncio.run(gen.stop(advance_watermark=True))
+
+    assert visto == [True]
+    assert gen.stopping is False
+
+
+def test_stop_aninhado_nao_apaga_o_sinal_antes_da_hora(monkeypatch):
+    """O Parar manual cancela e aguarda o timer; o sinal é do stop mais externo."""
+    gen = streaming.Generator()
+
+    chamadas = 0
+
+    async def _stop_interno(**_kwargs):
+        nonlocal chamadas
+        chamadas += 1
+        if chamadas == 1:
+            # Simula o stop do timer sendo aguardado pelo stop manual.
+            await gen.stop(advance_watermark=False)
+            assert gen.stopping is True           # o externo ainda está fechando
+
+    monkeypatch.setattr(gen, "_stop", _stop_interno)
+    asyncio.run(gen.stop(advance_watermark=True))
+
+    assert gen.stopping is False
+    assert gen._stop_depth == 0
+
+
+# ---------------------------------------------------------------------------
+# Ingestão medida no servidor — separar banco de rede
+# ---------------------------------------------------------------------------
+def test_percentis_do_histograma_usa_a_fronteira_do_bucket():
+    buckets = [(64, 10), (512, 80), (3072, 10)]
+    p = streaming._percentis_do_histograma(buckets)
+    assert p["p50"] == 0.51      # 512 us -> ms
+    assert p["p99"] == 3.07
+
+
+def test_percentis_do_histograma_sem_amostra_nao_inventa():
+    assert streaming._percentis_do_histograma([]) == {"p50": None, "p95": None, "p99": None}
+
+
+def test_ingestao_servidor_usa_delta_e_nao_o_acumulado_do_boot(monkeypatch):
+    """O histograma é acumulado desde o boot; a demo mostra só a execução."""
+    leituras = iter([
+        {"ops": 1000, "latency_us": 50_000_000, "hist": [(512, 900), (3072, 100)]},
+        {"ops": 1100, "latency_us": 52_000_000, "hist": [(512, 900), (3072, 200)]},
+    ])
+    monkeypatch.setattr(streaming, "_oplatencies_writes", lambda: next(leituras))
+
+    ing = streaming.IngestaoServidor()
+    ing.marcar_inicio()
+    r = ing.medir()
+
+    assert r["disponivel"] is True
+    assert r["comandos"] == 100                     # 1100 - 1000, não 1100
+    assert r["media_ms_por_comando"] == 20.0        # 2 s / 100 comandos
+    assert r["p50"] == 3.07                         # só o bucket que cresceu
+
+
+def test_ingestao_servidor_sem_baseline_nao_reporta_numero(monkeypatch):
+    monkeypatch.setattr(streaming, "_oplatencies_writes",
+                        lambda: {"ops": 5, "latency_us": 10, "hist": []})
+    assert streaming.IngestaoServidor().medir()["disponivel"] is False
+
+
+def test_ingestao_servidor_degrada_quando_serverstatus_nao_e_permitido(monkeypatch):
+    monkeypatch.setattr(streaming, "_oplatencies_writes", lambda: None)
+    r = streaming.IngestaoServidor().medir()
+    assert r["disponivel"] is False and "serverStatus" in r["motivo"]
+
+
+# ---------------------------------------------------------------------------
+# Modo individual — 1 insert = 1 PIX
+# ---------------------------------------------------------------------------
+def test_modo_individual_dimensiona_workers_pelo_custo_da_escrita():
+    """Dimensionar pelo RTT puro entregava 70% do alvo: cada worker só faz
+    1/custo escritas por segundo, e o custo real (ACK) é o dobro do ping."""
+    g = streaming.Generator()
+    assert g._workers_para(1000) == 21          # ceil(1000*0.020)+1
+    assert g._workers_para(50) == 2             # piso
+    assert g._workers_para(100_000) == g.WORKERS_MAX  # teto de contenção (async: 200)
+
+
+def test_modo_individual_nunca_passa_do_ponto_de_contencao():
+    """Acima de ~50 threads a vazão CAI e o p95 explode (medido)."""
+    g = streaming.Generator()
+    assert g._workers_para(10_000) <= g.WORKERS_MAX
+
+
+def test_api_aceita_apenas_modos_conhecidos():
+    assert streaming.GeneratorStart(modo="individual").modo == "individual"
+    assert streaming.GeneratorStart(modo="lote").modo == "lote"
+    with pytest.raises(ValidationError):
+        streaming.GeneratorStart(modo="turbo")
+
+
+def test_insert_um_grava_uma_transacao_e_mede_o_ack(monkeypatch):
+    """No modo individual um comando é uma transação — é isso que faz
+    opLatencies medir um PIX em vez de um micro-batch. A escrita usa o driver
+    assíncrono: com to_thread o GIL limitava o gerador a ~1.000 TPS."""
+    class ColecaoAsync:
+        def __init__(self):
+            self.docs = []
+
+        async def insert_one(self, doc):
+            self.docs.append(doc)
+
+    colecao = ColecaoAsync()
+    monkeypatch.setattr(streaming, "acol_tx", lambda: colecao)
+    streaming.meter_write_ack.reset()
+
+    g = streaming.Generator()
+    g._start_mono = time.monotonic()
+    asyncio.run(g._insert_um(streaming._new_transacao("run-x", 1)))
+
+    assert len(colecao.docs) == 1
+    assert colecao.docs[0]["ts"] is not None
+    assert g.inserted == 1
+    assert streaming.meter_write_ack.snapshot()["amostras"] == 1
