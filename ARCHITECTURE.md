@@ -48,13 +48,29 @@ are reachable from `EventSource`, which cannot send the `X-Demo-Token` header.
 | `/change-streams` | `POST /start`, `POST /trigger`, `GET /feed` (SSE), `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
 | `/transactions` | `GET /status`, `POST /executar`, `POST /reset` |
 | `/streaming` | see below |
-| `/geo` | `GET /status`, `GET /municipios`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
+| `/geo` | `GET /status`, `GET /municipios`, `GET /sinais-ao-vivo`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
 
 ### `/streaming` (module 07)
 
-One write generator feeds three consumers of the same change. Data lives in
+One write generator feeds four consumers of the same change. Data lives in
 `pix.transacoes`, `pix.metricas_janela`, `pix.dlq`, `pix.dlq_audit` and
-`pix.consumer_checkpoints` (`STREAMING_DB` overrides the database name).
+`pix.consumer_checkpoints` (`STREAMING_DB` overrides the database name), plus
+`geo.sinais_ao_vivo` for the fourth one.
+
+**Two channels in one stream.** `canal: "PIX"` carries no coordinate — a PIX
+transfer genuinely does not have one. `canal: "CARTAO_PRESENCIAL"`
+(`STREAMING_CARTAO_PCT`, 18% by default) carries `local` as the acquirer
+terminal's registered point, the same modelling as the module 08 dataset, from
+the same `backend/data/municipios.json`. That is what lets `geoSinais30s`
+compute geographic risk in event time instead of module 08 scanning history on
+demand.
+
+The card channel has two distinct instants and conflating them is a real bug:
+`ts` is arrival into the stream and the TTL field; `compradaEm` is the purchase
+at the terminal, which can be minutes earlier because acquirer capture lags.
+Speed is computed from `compradaEm`. Back-dating `ts` made the TTL delete the
+older half of a pair before reconciliation ran, so the source counted fewer than
+the consumers — expiry indistinguishable from loss.
 
 **Negócio e operação**
 
@@ -105,6 +121,17 @@ condition discards it.
 | `POST` | `/streaming/kafka/restart` | Restarts connector and tasks. A task killed by a network blip or a cluster restart never recovers on its own while the connector keeps claiming `RUNNING`. |
 | `POST` | `/streaming/kafka/consumer/restart` | Restarts the UI observer with the same `group.id`, demonstrating recovery from committed offsets and exposing re-deliveries to reconciliation. |
 
+**Injected failure**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/streaming/falha/connector` | Stops every showcase connector, waits `segundos` (1–30, default 8) and resumes them. Stopping does not discard the offset: the resume token stays in `connect-offsets`, so everything written during the outage is delivered afterwards, and reconciliation has to close anyway. |
+| `POST` | `/streaming/falha/evento-invalido` | Writes one transaction whose `valor` is a string. It is a valid document for the collection — it passes the unique index and counts at the source — but the processor's `$validate` diverts it to the DLQ while the pipeline keeps running. |
+
+Both exist because a run where nothing fails proves nothing failed. They are the
+counterpart to reconciliation: the number only means something once the path
+that produced it has been broken and recovered on stage.
+
 **Column 3 — Atlas Stream Processing**
 
 | Method | Path | Description |
@@ -153,12 +180,15 @@ this mode must not do.
 
 ### `/geo` (module 08)
 
-Its own database (`geo`, override with `GEO_DB`), a single collection
-`geo.transacoes`, seeded by `scripts/seed_geo.py`. No other module reads or
-writes it.
+Its own database (`geo`, override with `GEO_DB`). Two collections:
+`geo.transacoes`, the versioned dataset seeded by `scripts/seed_geo.py`, and
+`geo.sinais_ao_vivo`, which is run data written by the ASP processor and cleared
+by `/streaming/reset` and `cleanup-streaming-data.py`. The dataset collection is
+never touched by either cleanup path.
 
 | Method | Path | Description |
 |---|---|---|
+| `GET` | `/geo/sinais-ao-vivo` | Reads `geo.sinais_ao_vivo`, materialized by the `geoSinais30s` stream processor while module 07 runs. Nothing is computed here — the window already did it. Returns the recent pairs plus separate `plantados` and `emergentes` counts, because merging them would turn the demo's guaranteed signal into evidence. |
 | `GET` | `/geo/status` | Document count, the index list read from the collection, and whether the Atlas Search index exists. Nothing is hard-coded in the UI. |
 | `GET` | `/geo/municipios` | Municipalities present in the dataset with a representative point, so the UI can centre a query without shipping a coordinate table to the browser. Cached in memory; the list only changes when the seed runs again. |
 | `POST` | `/geo/explain-compare` | The same `$geoWithin` (`$centerSphere`) query explained twice: hinted at `cliente_status_local_idx` (equality fields first, geo last) and at `local_2dsphere_idx`. Returns winning stage, index used, `totalKeysExamined`, `totalDocsExamined`, `nReturned` and `executionTimeMillis` for each. If the measurement contradicts the didactic note, the measurement is what the screen shows. |
@@ -204,4 +234,18 @@ definitions are progressively disclosed.
 
 `docker-compose.streaming.yml` runs Redpanda (`:19092`), Kafka Connect
 (`:8083`) with the `mongodb-kafka-connect` plugin cached in a named volume, and
-Redpanda Console (`:8085`). See the *Streaming — setup* section of the README.
+Redpanda Console (`:8085`). Step-by-step instructions live in
+`docs/setup-streaming.md`.
+
+Two Atlas Stream Processing jobs, not one, because a deployed pipeline has a
+single terminal sink: `pixJanelas5s` (`scripts/setup-asp.js`) merges 5-second
+windows into `pix.metricas_janela`, and `geoSinais30s`
+(`scripts/setup-asp-geo.js`) merges geographic risk signals into
+`geo.sinais_ao_vivo`. They are independent consumers of the same change stream.
+`scripts/ambiente.sh` provisions and stops both.
+
+`scripts/lib/expand_srv.py` rewrites the `mongodb+srv://` URI into its standard
+three-host form before the connector is registered. The source connector
+reparses `connection.uri` on every task start, so an SRV URI turns each restart
+into a DNS SRV+TXT lookup; a flaky resolver left the connector `RUNNING` with
+its only task `FAILED`.

@@ -641,6 +641,42 @@ Network caveat that bit again mid-session: RTT to the cluster measured
 That is the WARP/US-egress route, not the code. Check `/streaming/rede` before
 trusting any latency number.
 
+### Accepted with WARP off
+
+The whole thing re-run end to end once the VPN route was out of the way, RTT at
+7.4 ms: 2,000 TPS individual for 30 s, both failures injected halfway,
+**47,377** documents with the same count on all four paths, zero duplicates, one
+document in the DLQ, `write_ack` p50 19.8 ms / p95 40.5 ms / p99 48.8 ms. Module
+08 in the same run: 40 pairs retrospectively, 8 search results with facets, and
+the explain comparison at 3 keys / 3 ms against 49,493 keys / 234 ms.
+
+Two defects surfaced only at demo scale and are worth remembering:
+
+- With 600 cardholders at 2,000 TPS each card buys dozens of times per window,
+  so the planted pair's extremes were outvoted by ordinary traffic: the run
+  reported **0 planted / 30 emergent** and flagged 0.4% of all purchases, a rate
+  no real detector produces. Ordinary traffic now uses 12,000 cardholders and
+  planted pairs an exclusive range of 400, with legitimate travel at 0.06%.
+- Four orphaned `uvicorn` processes from manual restarts. One of them held the
+  `showcase-pix-observer` group membership and ate the messages, so column 2
+  read zero while offsets advanced normally. Not a product bug, but the symptom
+  on stage is identical: `pgrep -f "uvicorn main:app"` must return exactly one
+  PID.
+
+### Documentation restructured
+
+The README had grown to 771 lines and mixed the pitch with Kafka/ASP/Search
+setup. It is now 183 lines — what it is, the eight modules, quick start, the two
+modules that carry the demo, security — with the rest split into
+`docs/setup-streaming.md`, `docs/setup-geo.md` and `docs/reference.md`.
+
+Screenshot rule, because mismatched sizes were skewing the GitHub tables: every
+image used inside a table is exactly **1440×900**. Detail crops used standalone
+may differ. `07e-reconciliacao.png` (1010×300) and `08b-geo-aovivo.png`
+(800×530) are the two current exceptions and should be re-shot at 1440×900 the
+next time the environment is up — the cluster was paused when the restructure
+happened.
+
 ## Fast reading order
 
 1. Read this file.
