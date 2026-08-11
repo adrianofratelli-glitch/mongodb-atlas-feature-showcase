@@ -42,7 +42,15 @@ SEMENTE = 20260726
 # terminal era sorteado por compra e `precisaoMetros=0` sugeria uma exatidão que
 # cadastro de adquirente não garante. A proveniência continua forte, mas agora
 # é modelada sem exagerar a qualidade da fonte.
-VERSAO_DATASET = 4
+#
+# v5: os pares plantados deixam de ser clones. Até a v4 todos usavam 5 minutos
+# exatos, a mesma posição na sequência do cliente e o primeiro município a mais
+# de 700 km — o resultado eram 40 linhas idênticas na tela ("5 min", ~30.000
+# km/h, quase todas terminando na mesma cidade), o que denuncia dado sintético
+# antes de qualquer pergunta. Agora intervalo, posição e destino variam dentro
+# de faixas que mantêm o sinal válido, com a mesma semente e a mesma
+# reprodutibilidade.
+VERSAO_DATASET = 5
 ID_METADATA = "geo_seed"
 DIAS = 90
 DIR_DADOS = RAIZ / "backend" / "data"
@@ -111,13 +119,24 @@ def nome_estabelecimento(rng: random.Random, categoria: str) -> str:
     return f"{rng.choice(prefixos)} {rng.choice(sufixos)}"
 
 
-def municipio_distante(origem: int, minimo_km: float = 700.0) -> int:
-    """Índice de um município a pelo menos `minimo_km` da origem — determinístico."""
+def municipio_distante(origem: int, minimo_km: float = 700.0,
+                       rng: random.Random | None = None) -> int:
+    """Índice de um município a pelo menos `minimo_km` da origem.
+
+    Sem `rng` devolve o primeiro candidato, que é determinístico mas sempre o
+    mesmo: na prática quase todo par plantado terminava na mesma cidade, e a
+    coluna "trajeto" da tela virava uma lista de "→ São Paulo". Com `rng`
+    (semeado, portanto ainda reproduzível) o destino é sorteado entre todos os
+    candidatos válidos e os 40 casos se espalham pelo país.
+    """
     _, _, lat, lng, _ = MUNICIPIOS[origem]
-    for i, (_, _, o_lat, o_lng, _) in enumerate(MUNICIPIOS):
-        if i != origem and haversine_km(lat, lng, o_lat, o_lng) >= minimo_km:
-            return i
-    raise RuntimeError(f"nenhum município a mais de {minimo_km} km de {MUNICIPIOS[origem][0]}")
+    candidatos = [
+        i for i, (_, _, o_lat, o_lng, _) in enumerate(MUNICIPIOS)
+        if i != origem and haversine_km(lat, lng, o_lat, o_lng) >= minimo_km
+    ]
+    if not candidatos:
+        raise RuntimeError(f"nenhum município a mais de {minimo_km} km de {MUNICIPIOS[origem][0]}")
+    return rng.choice(candidatos) if rng else candidatos[0]
 
 
 def gerar(clientes: int, por_cliente: int, fraudes: int):
@@ -154,9 +173,20 @@ def gerar(clientes: int, por_cliente: int, fraudes: int):
         cliente_id = f"CLI{c:05d}"
         origem = rng.choices(range(len(MUNICIPIOS)), weights=pesos, k=1)[0]
         plantar = c < fraudes
-        # O par plantado fica no meio da sequência, longe das bordas.
-        idx_fraude = por_cliente // 2 if plantar else -1
-        destino_fraude = municipio_distante(origem) if plantar else -1
+        # O par plantado NÃO fica sempre no meio: com um índice fixo, todos os
+        # pares caíam na mesma posição da sequência e portanto na mesma faixa de
+        # datas. Espalhar pelo miolo dá 40 casos em 40 momentos distintos dos 90
+        # dias, que é como um portfólio real se parece.
+        idx_fraude = rng.randrange(por_cliente // 4, (por_cliente * 3) // 4) if plantar else -1
+        destino_fraude = municipio_distante(origem, rng=rng) if plantar else -1
+        # O intervalo sai da VELOCIDADE desejada, não o contrário. Sorteando
+        # minutos direto, a velocidade implícita ficava entre 16.000 e 42.000
+        # km/h — vinte vezes além de qualquer padrão real de cartão clonado, e a
+        # tabela virava ficção científica. Fixando a velocidade-alvo entre 1.100
+        # e 9.000 km/h, os casos nascem na faixa em que fraude de verdade
+        # acontece, incluindo os limítrofes logo acima do limiar de 900 — que são
+        # justamente os que obrigam a conversa sobre política de risco.
+        kmh_alvo = rng.uniform(1_100.0, 9_000.0) if plantar else 0.0
 
         anterior_ts = None
         for j in range(por_cliente):
@@ -166,8 +196,14 @@ def gerar(clientes: int, por_cliente: int, fraudes: int):
             ts = inicio + timedelta(seconds=desloc)
 
             if j == idx_fraude:
-                # Mesmo cliente, ~5 min depois, a 700+ km de distância.
-                ts = anterior_ts + timedelta(minutes=5)
+                # Mesmo cliente, a 700+ km, num intervalo curto demais para a
+                # distância. O intervalo vem da distância real entre as duas
+                # cidades dividida pela velocidade-alvo, então cada caso nasce
+                # com a velocidade que se quis representar.
+                _, _, lat_o, lng_o, _ = MUNICIPIOS[origem]
+                _, _, lat_d, lng_d, _ = MUNICIPIOS[destino_fraude]
+                km_par = haversine_km(lat_o, lng_o, lat_d, lng_d)
+                ts = anterior_ts + timedelta(hours=km_par / kmh_alvo)
                 cidade = destino_fraude
             elif j == idx_fraude - 1:
                 # A transação anterior ao par plantado fica ancorada na origem,

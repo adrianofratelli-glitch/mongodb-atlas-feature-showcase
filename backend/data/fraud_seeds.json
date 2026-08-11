@@ -1,7 +1,7 @@
 {
-  "gerado_em": "2026-08-07T18:17:56.743801+00:00",
+  "gerado_em": "2026-08-10T19:27:46.123483+00:00",
   "semente": 20260726,
-  "dataset_version": 4,
+  "dataset_version": 5,
   "limite_kmh": 900,
   "clientes": [
     "CLI00000",

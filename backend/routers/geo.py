@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,10 @@ INDICE_GEO_PURO = "local_2dsphere_idx"
 
 RAIO_TERRA_KM = 6371.0088
 ARQUIVO_FRAUDES = Path(__file__).resolve().parent.parent / "data" / "fraud_seeds.json"
+# Janela coberta pelo dataset (mesmo valor de `DIAS` em scripts/seed_geo.py).
+# Serve para converter a contagem de sinais em alertas por dia, que é a unidade
+# em que uma operação de risco raciocina.
+DIAS_DATASET = 90
 
 banco = client[GEO_DB]
 colecao = banco[GEO_COLECAO]
@@ -81,6 +86,26 @@ def _haversine_stages(destino: str, lat1: Any, lng1: Any, lat2: Any, lng2: Any) 
             ]},
         }},
     }}}}]
+
+
+def _clientes_plantados() -> set[str]:
+    """IDs cujo par de impossible travel foi plantado pelo seed.
+
+    Lido do arquivo que o próprio seed grava, e não de uma lista no código: se o
+    dataset for regerado com outro número de casos, a marcação acompanha.
+    """
+    if not ARQUIVO_FRAUDES.exists():
+        return set()
+    try:
+        dados = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return set()
+    return {c["clienteId"] if isinstance(c, dict) else c for c in dados.get("clientes", [])}
+
+
+def _milhar(n: int) -> str:
+    """150000 → "150.000" — a tela é pt-BR e o número aparece dentro da frase."""
+    return f"{n:,}".replace(",", ".")
 
 
 def _resumo_plano(explain: dict) -> dict[str, Any]:
@@ -340,23 +365,26 @@ def impossible_travel(
         # A primeira transação de cada cliente não tem anterior.
         {"$match": {"ts_ant": {"$ne": None}}},
         {"$addFields": {"minutos": {"$divide": [{"$subtract": ["$ts", "$ts_ant"]}, 60_000]}}},
-        # Corte geométrico antes do haversine: nenhum par de pontos na Terra
-        # dista mais que meia circunferência, então um intervalo maior que
-        # (π·R / limite) horas não pode violar o limite, seja qual for a
-        # geografia. Descarta a maior parte dos documentos antes da parte cara
-        # do pipeline sem depender de nada específico deste dataset.
+    ]
+
+    # Corte geométrico antes do haversine: nenhum par de pontos na Terra dista
+    # mais que meia circunferência, então um intervalo maior que
+    # (π·R / limite) horas não pode violar o limite, seja qual for a geografia.
+    # Descarta a maior parte dos documentos antes da parte cara do pipeline sem
+    # depender de nada específico deste dataset.
+    ramo_sinais: list[dict] = [
         {"$match": {
             "minutos": {"$gt": 0, "$lt": (math.pi * RAIO_TERRA_KM / limiteKmh) * 60},
         }},
     ]
-    pipeline += _haversine_stages(
+    ramo_sinais += _haversine_stages(
         "km",
         {"$arrayElemAt": ["$coord_ant", 1]},
         {"$arrayElemAt": ["$coord_ant", 0]},
         {"$arrayElemAt": ["$local.coordinates", 1]},
         {"$arrayElemAt": ["$local.coordinates", 0]},
     )
-    pipeline += [
+    ramo_sinais += [
         {"$addFields": {"kmh": {"$divide": ["$km", {"$divide": ["$minutos", 60]}]}}},
         {"$match": {"kmh": {"$gt": limiteKmh}}},
         {"$sort": {"kmh": -1}},
@@ -381,7 +409,33 @@ def impossible_travel(
         }},
     ]
 
-    resultados = list(colecao.aggregate(pipeline, allowDiskUse=True))
+    # `$facet` sobre o MESMO fluxo já particionado: o `$setWindowFields`, que é a
+    # parte cara, roda uma vez só. O ramo `avaliados` conta os pares antes do
+    # corte geométrico, porque a pergunta de um time de risco não é "quantos
+    # sinais saíram" e sim "de quantas oportunidades" — sem denominador,
+    # "40 pares" não diz se a regra é seletiva ou se inunda a fila de alertas.
+    pipeline.append({"$facet": {
+        "avaliados": [{"$count": "pares"}],
+        "sinais": ramo_sinais,
+    }})
+
+    inicio = time.perf_counter()
+    saida = list(colecao.aggregate(pipeline, allowDiskUse=True))
+    decorrido_ms = round((time.perf_counter() - inicio) * 1000, 1)
+    bloco = saida[0] if saida else {}
+    resultados = bloco.get("sinais", [])
+    avaliados = (bloco.get("avaliados") or [{}])[0].get("pares", 0)
+
+    # Proveniência do sinal, como no painel em event time: o seed plantou pares
+    # para a demo ter resultado garantido, e apresentar os plantados sem dizer
+    # que são plantados transformaria a garantia em prova.
+    plantados = _clientes_plantados()
+    for r in resultados:
+        r["origem"] = "plantado" if r.get("clienteId") in plantados else "emergente"
+    n_plantados = sum(1 for r in resultados if r["origem"] == "plantado")
+
+    universo = colecao.estimated_document_count()
+
     return {
         "natureza": "sinal_de_risco_retrospectivo",
         "decisao_fraude": False,
@@ -390,15 +444,107 @@ def impossible_travel(
         "truncado": len(resultados) == limite,
         "pipeline": pipeline,
         "resultados": resultados,
+        "origem": {
+            "plantados": n_plantados,
+            "emergentes": len(resultados) - n_plantados,
+            "nota": (
+                "O seed planta pares para a demonstração ter resultado garantido. Eles aparecem "
+                "marcados: apresentar a garantia como descoberta seria desonesto."
+            ),
+        },
+        # O volume operacional é a pergunta de quem opera a fila de alertas, e
+        # vem antes de qualquer discussão sobre a qualidade do sinal.
+        "seletividade": {
+            "pares_avaliados": avaliados,
+            "sinalizados": len(resultados),
+            "taxa_pct": round(len(resultados) / avaliados * 100, 4) if avaliados else None,
+            "alertas_por_dia": (
+                round(len(resultados) / DIAS_DATASET, 2) if not clienteId else None
+            ),
+            "janela_dias": DIAS_DATASET if not clienteId else None,
+            "nota": (
+                "Taxa de sinalização sobre pares consecutivos do mesmo cliente, não sobre "
+                "transações. Mede volume operacional — quantos casos chegariam à fila —, "
+                "não acurácia: sem rótulo de fraude confirmada não existe precisão nem recall, "
+                "e esta PoV não tem esse rótulo."
+            ),
+            # A ressalva mais importante da aba, e a mais fácil de omitir: o
+            # numerador foi plantado por quem escreveu o seed. Comparar esta
+            # taxa com a de um emissor real é comparar um cenário construído com
+            # uma medição — e é exatamente o que um analista de risco faria.
+            "aviso": (
+                "Este percentual descreve o dataset sintético, não um portfólio real: os casos "
+                "sinalizados foram plantados pelo seed, então a taxa é consequência de quantos "
+                "foram plantados. O que se transfere para uma conversa de produção é o método de "
+                "medir volume operacional, e o custo da consulta — nunca o número em si."
+            ),
+        },
+        # O custo tem de estar na tela junto com o resultado. Sem isto, a
+        # pergunta "e sobre 90 dias reais?" fica sem resposta e o painel parece
+        # prometer uma varredura de bilhões de documentos no mesmo tempo.
+        "custo": {
+            "ms": decorrido_ms,
+            "documentos_no_escopo": universo if not clienteId else None,
+            # O separador de milhar é formatado no número, isolado: aplicar o
+            # replace na frase inteira comia a vírgula da própria frase.
+            "escopo": (
+                f"um cliente ({clienteId})" if clienteId
+                else f"a coleção inteira, {_milhar(universo)} documentos"
+            ),
+            "complexidade": (
+                "$setWindowFields particiona por cliente e ordena dentro da partição: o custo "
+                "cresce com o volume varrido, não com o número de sinais encontrados."
+            ),
+            # Pergunta obrigatória de quem já apanhou de agregação em produção, e
+            # que a tela não pode esperar ser feita para responder.
+            "memoria": (
+                "Cada partição é ordenada em memória, com o teto de 100 MB por stage. Aqui a "
+                "consulta roda com allowDiskUse, então uma partição grande transborda para disco "
+                "em vez de falhar — ao custo de I/O. Em produção o que mantém a partição pequena é "
+                "o recorte (um cliente, uma janela de datas), não o tamanho da máquina."
+            ),
+            "leitura": (
+                "Varredura completa é o modo de investigação: roda sob demanda, sobre o recorte "
+                "que o analista pedir. Para decisão no fluxo, o caminho é o sinal em event time do "
+                "painel 00, que calcula na passagem e não varre histórico. Em produção, o recorte "
+                "por cliente ou por período é o que mantém este mesmo pipeline barato — filtrar "
+                "antes da janela reduz o universo, e o índice de clienteId sustenta o filtro."
+            ),
+        },
     }
 
 
 class SearchRequest(BaseModel):
-    termo: str = Field(..., min_length=1, max_length=120)
-    centro: list[float] = Field(..., min_length=2, max_length=2, description="[lng, lat]")
+    # O termo deixou de ser obrigatório: a pergunta da investigação é "o que
+    # existe em volta deste terminal", e o nome é um refinamento opcional em
+    # cima dela — não o ponto de partida.
+    termo: str = Field("", max_length=120)
+    centro: list[float] | None = Field(None, min_length=2, max_length=2, description="[lng, lat]")
     raioKm: float = Field(25.0, gt=0, le=2_000)
     categorias: list[str] = Field(default_factory=list, max_length=10)
     limite: int = Field(20, ge=1, le=100)
+    # Âncora da investigação: a compra contestada. Quando vem preenchida, o
+    # centro sai da coordenada do terminal dela, e não de um município escolhido
+    # num select — que é o que tornava o painel uma busca de catálogo.
+    endToEndId: str | None = Field(None, max_length=64)
+
+
+def _ancora_da_contestacao(end_to_end_id: str) -> dict[str, Any]:
+    """A compra sob disputa: o ponto de partida real de uma investigação."""
+    doc = colecao.find_one(
+        {"endToEndId": end_to_end_id},
+        {
+            "_id": 0, "endToEndId": 1, "clienteId": 1, "estabelecimento": 1,
+            "municipio": 1, "uf": 1, "local": 1, "dispositivo": 1, "ts": 1,
+            "valor": 1, "status": 1, "localizacaoMeta": 1,
+        },
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Transação {end_to_end_id} não encontrada.")
+    doc["valor"] = str(doc.get("valor"))
+    if hasattr(doc.get("ts"), "isoformat"):
+        doc["ts"] = doc["ts"].isoformat()
+    return doc
 
 
 @router.post("/search")
@@ -412,7 +558,15 @@ def geo_search(pedido: SearchRequest):
     if not disponivel:
         return {"estado": "nao_configurado", "mensagem": mensagem, "index": GEO_SEARCH_INDEX}
 
-    lng, lat = pedido.centro
+    ancora = _ancora_da_contestacao(pedido.endToEndId) if pedido.endToEndId else None
+    centro = (ancora["local"]["coordinates"] if ancora else pedido.centro)
+    if not centro:
+        raise HTTPException(
+            status_code=422,
+            detail="informe `endToEndId` da compra contestada ou um `centro` [lng, lat].",
+        )
+
+    lng, lat = centro
     if not (-180 <= lng <= 180 and -90 <= lat <= 90):
         raise HTTPException(status_code=422, detail="centro fora do intervalo [lng, lat] válido.")
 
@@ -428,14 +582,16 @@ def geo_search(pedido: SearchRequest):
     if pedido.categorias:
         filtros.append({"in": {"path": "estabelecimento.categoria", "value": pedido.categorias}})
 
-    compound = {
-        "must": [{"text": {
-            "query": pedido.termo,
-            "path": "estabelecimento.nome",
-            "fuzzy": {"maxEdits": 1},
-        }}],
-        "filter": filtros,
-    }
+    # Sem termo, a pergunta é "o que existe aqui" e o `must` vira a existência do
+    # próprio campo: o compound precisa de ao menos uma cláusula pontuável, e um
+    # compound só de `filter` devolveria tudo com score zero.
+    termo = pedido.termo.strip()
+    clausula = (
+        {"text": {"query": termo, "path": "estabelecimento.nome", "fuzzy": {"maxEdits": 1}}}
+        if termo
+        else {"exists": {"path": "estabelecimento.nome"}}
+    )
+    compound = {"must": [clausula], "filter": filtros}
 
     pipeline: list[dict] = [
         {"$search": {
@@ -457,9 +613,15 @@ def geo_search(pedido: SearchRequest):
     # estabelecimentos existem aqui?". Deduplicar pelo terminal no cluster
     # impede que vinte compras da mesma maquininha ocupem vinte resultados.
     pipeline += [
-        {"$sort": {"score": -1, "endToEndId": 1}},
+        # Sem termo todos empatam no score, e "os mais relevantes" viraria uma
+        # ordem arbitrária: a pergunta, aí, é geográfica. O critério de
+        # desempate entra ANTES da deduplicação por terminal, para que o
+        # documento escolhido de cada terminal seja o certo.
+        {"$sort": ({"score": -1, "endToEndId": 1} if termo
+                   else {"km_do_centro": 1, "endToEndId": 1})},
         {"$group": {"_id": "$dispositivo.id", "documento": {"$first": "$$ROOT"}}},
         {"$replaceWith": "$documento"},
+        {"$sort": ({"score": -1} if termo else {"km_do_centro": 1})},
         {"$limit": pedido.limite},
         {"$project": {
         "_id": 0,
@@ -492,9 +654,18 @@ def geo_search(pedido: SearchRequest):
     except OperationFailure as erro:
         raise HTTPException(status_code=409, detail=f"$search falhou: {erro.details.get('errmsg', str(erro))}")
 
+    # O terminal da própria compra contestada aparece na vizinhança; marcá-lo
+    # evita que o analista o confunda com um estabelecimento vizinho.
+    terminal_ancora = (ancora or {}).get("dispositivo", {}).get("id")
+    for r in resultados:
+        r["e_a_ancora"] = bool(terminal_ancora) and r.get("terminalId") == terminal_ancora
+
     return {
         "estado": "ok",
         "index": GEO_SEARCH_INDEX,
+        "ancora": ancora,
+        "centro": [lng, lat],
+        "ordenacao": "relevância textual" if termo else "distância do terminal",
         "resultados": resultados,
         "meta": meta[0] if meta else {},
         "pipeline": pipeline,

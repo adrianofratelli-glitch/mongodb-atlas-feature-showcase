@@ -89,6 +89,9 @@ def test_impossible_travel_monta_setwindowfields_e_haversine(monkeypatch):
             capturado["pipeline"] = pipeline
             return iter([])
 
+        def estimated_document_count(self):
+            return 150_000
+
     monkeypatch.setattr(geo, "colecao", FalsaColecao())
     resposta = geo.impossible_travel(limiteKmh=900, clienteId="CLI00007")
     pipeline = resposta["pipeline"]
@@ -130,20 +133,33 @@ def test_impossible_travel_corta_pelo_limite_geometrico(monkeypatch):
         def aggregate(self, pipeline, **_kwargs):
             return iter([])
 
-    monkeypatch.setattr(geo, "colecao", FalsaColecao())
-    pipeline = geo.impossible_travel(limiteKmh=900)["pipeline"]
+        def estimated_document_count(self):
+            return 150_000
 
-    corte = next(e["$match"]["minutos"] for e in pipeline
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+    pipeline = geo.impossible_travel(limiteKmh=900, clienteId=None)["pipeline"]
+
+    # O corte vive no ramo de sinais do $facet: o ramo `avaliados` precisa contar
+    # os pares ANTES dele, senão o denominador da taxa de sinalização seria o
+    # subconjunto que já passou pelo filtro — e a taxa daria sempre alta.
+    facet = next(e["$facet"] for e in pipeline if "$facet" in e)
+    assert facet["avaliados"] == [{"$count": "pares"}]
+    ramo = facet["sinais"]
+
+    corte = next(e["$match"]["minutos"] for e in ramo
                  if "$match" in e and "minutos" in e["$match"])
     esperado = (math.pi * geo.RAIO_TERRA_KM / 900) * 60
     assert corte["$gt"] == 0
     assert corte["$lt"] == pytest.approx(esperado)
     # O corte precisa vir antes da parte cara.
-    indice_corte = next(i for i, e in enumerate(pipeline)
+    indice_corte = next(i for i, e in enumerate(ramo)
                         if "$match" in e and "minutos" in e["$match"])
-    indice_haversine = next(i for i, e in enumerate(pipeline)
+    indice_haversine = next(i for i, e in enumerate(ramo)
                             if "$addFields" in e and "km" in e["$addFields"])
     assert indice_corte < indice_haversine
+    # O $setWindowFields, que é a parte cara, roda uma vez só — antes do $facet.
+    assert any("$setWindowFields" in e for e in pipeline)
+    assert not any("$setWindowFields" in e for e in ramo)
 
 
 # ── Demo C ──────────────────────────────────────────────────────────────────
@@ -323,3 +339,151 @@ def test_haversine_km_bate_com_distancia_conhecida():
     distancia = seed_geo.haversine_km(-23.5505, -46.6333, -22.9068, -43.1729)
     assert 350 < distancia < 365
     assert math.isclose(seed_geo.haversine_km(0, 0, 0, 0), 0, abs_tol=1e-9)
+
+
+def test_impossible_travel_marca_pares_plantados_e_calcula_seletividade(monkeypatch):
+    """Contar sinais sem denominador não responde "quantos alertas por dia".
+
+    E apresentar um par plantado sem dizer que é plantado transforma a garantia
+    da demo em prova — o mesmo erro que o painel em event time já evita.
+    """
+    class FalsaColecao:
+        def aggregate(self, _pipeline, **_kwargs):
+            return iter([{
+                "avaliados": [{"pares": 148_000}],
+                "sinais": [
+                    {"clienteId": "CLI00001", "km": 2691.6, "minutos": 5.0, "kmh": 32299.0},
+                    {"clienteId": "CLI99999", "km": 1200.0, "minutos": 12.0, "kmh": 6000.0},
+                ],
+            }])
+
+        def estimated_document_count(self):
+            return 150_000
+
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+    monkeypatch.setattr(geo, "_clientes_plantados", lambda: {"CLI00001"})
+
+    # `clienteId=None` explícito: chamada direta não passa pelo FastAPI, e o
+    # default é um objeto `Query`, que é truthy.
+    resposta = geo.impossible_travel(limiteKmh=900, clienteId=None)
+
+    origens = {r["clienteId"]: r["origem"] for r in resposta["resultados"]}
+    assert origens == {"CLI00001": "plantado", "CLI99999": "emergente"}
+    assert resposta["origem"] == {"plantados": 1, "emergentes": 1, "nota": resposta["origem"]["nota"]}
+
+    sel = resposta["seletividade"]
+    assert sel["pares_avaliados"] == 148_000
+    assert sel["sinalizados"] == 2
+    assert sel["taxa_pct"] == pytest.approx(0.0014, abs=1e-4)
+    # Arredondado para duas casas: a tela mostra "alertas por dia", não fração.
+    assert sel["alertas_por_dia"] == round(2 / geo.DIAS_DATASET, 2)
+
+
+def test_seletividade_por_cliente_nao_reporta_alertas_por_dia(monkeypatch):
+    """Um recorte de um cliente não é base para volume operacional diário."""
+    class FalsaColecao:
+        def aggregate(self, _pipeline, **_kwargs):
+            return iter([{"avaliados": [{"pares": 74}], "sinais": []}])
+
+        def estimated_document_count(self):
+            return 150_000
+
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+    monkeypatch.setattr(geo, "_clientes_plantados", set)
+
+    sel = geo.impossible_travel(limiteKmh=900, clienteId="CLI00007")["seletividade"]
+
+    assert sel["pares_avaliados"] == 74
+    assert sel["alertas_por_dia"] is None
+    assert sel["janela_dias"] is None
+
+
+def test_clientes_plantados_sem_arquivo_nao_quebra(monkeypatch, tmp_path):
+    monkeypatch.setattr(geo, "ARQUIVO_FRAUDES", tmp_path / "inexistente.json")
+    assert geo._clientes_plantados() == set()
+
+
+def test_search_sem_termo_pergunta_o_entorno_e_ordena_por_distancia(monkeypatch):
+    """A investigação começa numa compra, não num termo.
+
+    Sem consulta textual todos os documentos empatam no score, então "os mais
+    relevantes" seria uma ordem arbitrária — a pergunta, aí, é geográfica.
+    """
+    class FalsaColecao:
+        def aggregate(self, _pipeline, **_kwargs):
+            return iter([])
+
+    monkeypatch.setattr(geo, "_search_disponivel", lambda: (True, "ok"))
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+
+    resposta = geo.geo_search(geo.SearchRequest(termo="", centro=[-46.63, -23.55], raioKm=10))
+
+    compound = resposta["pipeline"][0]["$search"]["compound"]
+    # Um compound só de `filter` devolveria tudo com score zero: precisa de ao
+    # menos uma cláusula pontuável.
+    assert compound["must"] == [{"exists": {"path": "estabelecimento.nome"}}]
+    ordens = [e["$sort"] for e in resposta["pipeline"] if "$sort" in e]
+    assert all("km_do_centro" in o for o in ordens)
+    assert resposta["ordenacao"] == "distância do terminal"
+
+
+def test_search_com_termo_mantem_fuzzy_e_ordena_por_relevancia(monkeypatch):
+    class FalsaColecao:
+        def aggregate(self, _pipeline, **_kwargs):
+            return iter([])
+
+    monkeypatch.setattr(geo, "_search_disponivel", lambda: (True, "ok"))
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+
+    resposta = geo.geo_search(geo.SearchRequest(termo="padaria", centro=[-46.63, -23.55]))
+
+    assert resposta["pipeline"][0]["$search"]["compound"]["must"][0]["text"]["fuzzy"] == {"maxEdits": 1}
+    assert resposta["ordenacao"] == "relevância textual"
+
+
+def test_search_ancorado_na_compra_usa_a_coordenada_do_terminal(monkeypatch):
+    """O centro sai do terminal da compra contestada, não de um município."""
+    ancora = {
+        "endToEndId": "E1", "estabelecimento": {"nome": "Auto Posto", "categoria": "combustível"},
+        "municipio": "Manaus", "uf": "AM", "local": {"type": "Point", "coordinates": [-60.02, -3.10]},
+        "dispositivo": {"id": "POS060107"}, "valor": "40.31",
+    }
+
+    class FalsaColecao:
+        def find_one(self, filtro, _projecao):
+            assert filtro == {"endToEndId": "E1"}
+            return dict(ancora)
+
+        def aggregate(self, _pipeline, **_kwargs):
+            return iter([{"terminalId": "POS060107", "estabelecimento": {"nome": "Auto Posto"}},
+                         {"terminalId": "POS999999", "estabelecimento": {"nome": "Vizinho"}}])
+
+    monkeypatch.setattr(geo, "_search_disponivel", lambda: (True, "ok"))
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+
+    resposta = geo.geo_search(geo.SearchRequest(endToEndId="E1", raioKm=25))
+
+    circulo = resposta["pipeline"][0]["$search"]["compound"]["filter"][0]["geoWithin"]["circle"]
+    assert circulo["center"]["coordinates"] == [-60.02, -3.10]
+    assert resposta["centro"] == [-60.02, -3.10]
+    # O terminal da própria compra aparece na vizinhança e vem marcado.
+    assert [r["e_a_ancora"] for r in resposta["resultados"]] == [True, False]
+
+
+def test_search_sem_ancora_nem_centro_e_rejeitado(monkeypatch):
+    monkeypatch.setattr(geo, "_search_disponivel", lambda: (True, "ok"))
+    with pytest.raises(HTTPException) as erro:
+        geo.geo_search(geo.SearchRequest(termo="padaria"))
+    assert erro.value.status_code == 422
+
+
+def test_ancora_inexistente_devolve_404(monkeypatch):
+    class FalsaColecao:
+        def find_one(self, *_a, **_k):
+            return None
+
+    monkeypatch.setattr(geo, "_search_disponivel", lambda: (True, "ok"))
+    monkeypatch.setattr(geo, "colecao", FalsaColecao())
+    with pytest.raises(HTTPException) as erro:
+        geo.geo_search(geo.SearchRequest(endToEndId="NAO-EXISTE"))
+    assert erro.value.status_code == 404
