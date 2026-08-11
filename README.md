@@ -58,9 +58,9 @@ Change Streams in the app, the Kafka Connector publishing to a real broker, and 
 
 ![Streaming module: three consumers counting the same live run](docs/screenshots/07-streaming.png)
 
-**Break it on purpose.** Two buttons sit next to the generator: *drop the connector* (stops it mid-flow, resumes 8s later from its stored offset) and *inject an invalid event* (a string `valor` — valid at the source, diverted to the DLQ by the processor's `$validate`).
+**Break it on purpose.** Four buttons sit next to the generator: *drop the connector* (stops it mid-flow, resumes from its stored offset), *inject an invalid event* (a string `valor`, diverted to the DLQ by the processor's `$validate`), *publish an incompatible schema version* (the required `valor` renamed to `amount` — the change a Schema Registry would refuse) and *force a primary failover* (the Atlas test failover, on the cluster, under load).
 
-Then watch reconciliation close anyway. Each run carries a `run_id`, countable across source, Change Streams, Kafka, ASP and its DLQ.
+Then watch reconciliation close anyway — and it checks three things, not one: **count** (nothing missing), **value** summed in integer cents (nothing transformed in transit) and an XOR **digest** of the `endToEndId` set (the paths saw the same documents, not merely the same quantity). Measured through a real election: 332,568 documents, R$ 104,486,759.65 identical on all three paths, 0 writes rejected after driver retry, 0 duplicates.
 
 ![Reconciliation closing after a connector outage and a poisoned event](docs/screenshots/07e-reconciliacao.png)
 
@@ -74,7 +74,9 @@ A second processor reads the same change stream, groups the card channel by card
 
 Planted pairs and emergent ones are counted separately — the guarantee must not become the evidence. The map is inline SVG with a hand-written projection: no tiles, no runtime request, works with the venue's network down.
 
-Output is a **risk signal** for policy, never an automatic decision.
+The retrospective panel answers the two questions an operations team asks before anything else: **how many alerts does this put in the queue** (pairs evaluated, flagged, rate, alerts per day) and **what does the query cost** — measured in both scopes, full scan against a per-client cut. Investigation starts at the contested purchase, not at a place name: pick a flagged case and one `$search` returns what exists around *that terminal*, with fuzzy name matching kept as a refinement for the cloned-merchant case.
+
+Output is a **risk signal** for policy, never an automatic decision — and explicitly not a fraud engine, which an issuer already has.
 
 ## More screenshots
 

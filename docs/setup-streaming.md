@@ -19,16 +19,16 @@ brew install kafka          # once
 ./scripts/kafka-local.sh down
 ```
 
-*Docker:*
+The `mongodb-kafka-connect` plugin is downloaded on the first run only and
+cached locally, so later runs work offline. The broker listens on
+`localhost:9092`, which is what `KAFKA_BROKERS` in `backend/.env` must point to.
 
-```bash
-docker compose -f docker-compose.streaming.yml up -d
-```
-
-Either way the `mongodb-kafka-connect` plugin is downloaded on the first run
-only and cached locally, so later runs work offline. The native path uses
-`localhost:9092` and the Docker path uses `localhost:19092`, so set
-`KAFKA_BROKERS` in `backend/.env` accordingly.
+There is deliberately **one** way to run the broker. A Docker path existed and
+was removed: two ways to start the same dependency doubled the setup surface for
+no demo value, and a container publishing `9093` on the host silently stole the
+port from Kafka's own KRaft controller — the broker then accepted TCP on the
+controller port and timed out on every registration, which reads exactly like a
+corrupted Kafka install.
 
 ## 2. Register the source connectors
 
@@ -85,8 +85,8 @@ and `tipo` (count, volume, ticket and a simple high-value signal), and `$merge`s
 collection with a change stream, so the stream processing result reaches the
 screen through the same mechanism as column 1.
 
-Tear everything down with `./scripts/teardown-streaming.sh` (add `--volumes` to
-drop the cached plugin).
+Tear everything down with `./scripts/ambiente.sh down` (or `./bin/overview down`,
+which also stops the app and cleans the PIX collections).
 
 **Cleaning up between runs.** `POST /streaming/reset` (the **Reset** button)
 clears the current source, windows, DLQ and audit while keeping the environment

@@ -1,6 +1,274 @@
 # Current implementation handoff
 
-Last reviewed: 2026-08-07
+Last reviewed: 2026-08-10
+
+## Panel 02 stopped being a catalogue search (2026-08-10)
+
+It asked "find a bakery". Nobody in a disputes team asks that. The investigation
+starts at the **contested purchase** and asks what exists around *that* terminal.
+
+The technical claim is unchanged — one `$search` stage with `geoWithin`, category
+filter and `$searchMeta` facets — but the entry point moved:
+
+- `POST /geo/search` accepts `endToEndId`. When present, the centre is the
+  registered coordinate of that purchase's terminal, and the response carries the
+  anchor (merchant, terminal, value, status, provenance) so the screen can show
+  what is being investigated.
+- **`termo` is now optional.** Without it the question is "what is here", and the
+  scoring clause becomes `exists` on the merchant name — a compound with only
+  `filter` clauses would return everything at score zero. Results are then
+  ordered by distance, because with no text query every document ties on score
+  and "most relevant" would be an arbitrary order. The tie-break is applied
+  **before** the per-terminal dedup, so each terminal contributes the right
+  document. With a term, fuzzy matching and relevance ordering are unchanged —
+  that is the "cloned merchant name" case, kept as a refinement rather than the
+  starting point.
+- The anchor's own terminal appears in its neighbourhood and is flagged, so it is
+  not mistaken for a neighbouring establishment.
+- Panel 01 gained a "ver o entorno desta compra" button that carries the flagged
+  case into panel 02, so the analyst's path is one click.
+
+Verified live: case `ECLI000270025` → anchor *Auto Posto Estrela*, Manaus/AM,
+terminal `POS060107`, neighbours ordered 0 → 2.78 km, facets returning 5,431
+documents in AM across four categories.
+
+## Module 08: closing the flanks an architect would still push on (2026-08-10)
+
+Four changes, all cheap, after re-reading the tab as a bank architect would.
+
+- **The panel promised detection and delivered investigation.** The heading was
+  "the same calculation over 90 days of history", which reads as discovery; the
+  evidence is an analyst investigating without moving data. It now says
+  *"Investigar 90 dias sem tirar o histórico do banco"*. The bigger promise was
+  undermining the smaller, true one.
+- **Positioning stated out loud.** A new banner says this is **not** a fraud
+  engine and does not replace one — an issuer has rules, behavioural scoring and
+  models trained on confirmed fraud, none of which is here. What changes is
+  *where the calculation happens*: no copy of the history in a separate engine
+  with its own CDC, contract and operations.
+- **The selectivity rate is a property of the seed.** 0.027% only reflects how
+  many cases were planted. The screen already said "not accuracy"; it now also
+  says the denominator itself is constructed, because an analyst comparing that
+  number with their own would end the conversation badly.
+- **`$setWindowFields` memory, answered before being asked.** Each partition is
+  sorted in memory under the 100 MB per-stage cap; the query runs with
+  `allowDiskUse`, so a large partition spills instead of failing, at the cost of
+  I/O. What keeps partitions small in production is the cut (one client, a date
+  window), not a bigger machine.
+
+### A defect only clicking around would find
+
+`useApi()` exposes **one** `loading` flag for every call in a component, and the
+Geo tab polls `/geo/sinais-ao-vivo` every 4 s on the same instance. The three
+action buttons therefore went to "carregando" and were **disabled for about a
+second on every poll**, with nobody having clicked. Measured before: 4 of 24
+samples over 12 s disabled; after: 0 of 24. The live poll now uses its own
+`useApi()` instance and each action tracks its own busy state, so running the
+detection no longer disables the search panel next to it. Any page mixing
+polling with action buttons on a shared `useApi()` has this bug.
+
+## Module 08 reviewed like module 07 (2026-08-10)
+
+Four problems, all found by running the tab rather than reading it.
+
+**The 40 planted pairs were clones.** Every one used exactly `5 minutes`, the
+same position in the client's sequence, and `municipio_distante` returned the
+first candidate — so most pairs ended in the same city. The table showed 40 rows
+repeating "5 min / ~30.000 km/h / → São Paulo", which announces synthetic data
+before anyone asks. Worse, deriving minutes directly produced implied speeds of
+16,000–42,000 km/h, twenty times beyond any real cloned-card pattern.
+
+The seed (v5) now picks the **target speed first** — uniform in 1,100–9,000 km/h
+— and derives the interval from the real distance between the two cities, with
+the pair's position and destination randomised inside the same fixed RNG seed.
+Measured after regeneration: speeds from **1,352 to 8,936 km/h**, intervals from
+5.5 to 115.7 minutes, routes spread across the country, and borderline cases
+just above the 900 km/h threshold — which are exactly the ones that force the
+conversation about risk policy rather than certainty. `routers/streaming.py`
+got the same treatment, so the live event-time panel stopped reporting 20,815
+km/h and now lands between 2,522 and 7,523.
+
+**The retrospective panel had no provenance.** All 40 results were the planted
+ones, while the copy ("the same calculation over 90 days of history") implied
+discovery. It now marks each row `plantado`/`emergente` from
+`backend/data/fraud_seeds.json`, exactly like the event-time panel — the
+guarantee must never be presented as the evidence.
+
+**No denominator.** A risk team does not ask "did it detect?", it asks "how many
+alerts per day does this put in my queue?". `$facet` now counts the pairs
+evaluated in the same pass (the expensive `$setWindowFields` runs once, and the
+count is taken **before** the geometric cut, or the rate would always look
+high). Measured: **148,000 pairs evaluated, 40 flagged, 0.027%, ~0.44 alerts per
+day** over 90 days. The screen says explicitly that this is operational volume,
+not accuracy: without confirmed-fraud labels there is no precision or recall, and
+this PoV has no such label.
+
+Cost of the `$facet`, measured warm to avoid mistaking a cold cache for a
+regression: 2,532 ms with it against 2,394 ms without — about 5%. The 5,641 ms
+seen right after recreating the collection was WiredTiger warming up.
+
+**The cheap path was unreachable.** `clienteId` existed in the API and had no
+control in the UI, so the presenter could not answer the scale objection. The
+panel now has a per-client cut next to the full scan and keeps both measurements
+on screen: **2.5 s over the whole collection against 371 ms for one client, 6.8×
+cheaper**. That is the honest answer to "and over 90 days of real history?" — the
+narrowing is what keeps the pipeline viable, not hardware.
+
+Deliberately left alone: panel 02 still searches a catalogue ("padaria") rather
+than an investigation question, and the LGPD note still lives inside a collapsed
+checklist.
+
+## One way to run the broker, and measured cold start (2026-08-10)
+
+The Docker/Redpanda path was removed: `docker-compose.streaming.yml` and
+`scripts/teardown-streaming.sh` are gone, and the docs, the architecture note and
+the "Kafka não configurado" panel in the UI now point at `scripts/kafka-local.sh`
+(or simply `./bin/overview`). Two ways to start the same dependency doubled the
+setup surface for no demo value — and one of the containers published `9093` on
+the host, which is the port Kafka's own KRaft controller listens on. The broker
+then accepted TCP on the controller port and timed out on every registration,
+which reads exactly like a corrupted Kafka install and cost half an hour of
+debugging. **Nothing in this PoV needs Docker.**
+
+Measured cold start, VPN on (RTT 256 ms — the worst realistic case):
+
+| Step | Time |
+|---|---:|
+| `./bin/overview` → "Pronto" (ASP recreated, broker, Connect, connector, backend, frontend) | **77 s** |
+| Play → generator writing (reset 3.5 s + deliberate 0.8 s pause + start 1.9 s) | **6.2 s** |
+
+The 6.2 s is roughly 24 sequential round trips: on the presentation network
+(cluster in the same region, no VPN) it lands under a second. Nothing here is
+warm-up dependent — the first Play after `overview` works.
+
+Request volume with the tab open, measured from the backend access log:
+
+| State | Requests / 20 s |
+|---|---:|
+| Run in progress, tab visible | 52 (~2.6/s, mostly the 1 s generator status) |
+| Run stopped, tab visible | **0** |
+| Tab hidden | **0** |
+
+Two behaviours worth knowing before blaming a panel: the page only follows runs
+**it started** (a run triggered by curl or another tab is deliberately not
+polled), and every interval and EventSource suspends when the tab is hidden.
+
+### A regression introduced and removed in the same session
+
+Making `atlas_admin_api` probe for real took `/preflight` from ~1 s to ~6 s at
+256 ms RTT, because digest auth costs two round trips and the app header calls
+preflight. The probe is now cached for 60 s with a 5 s timeout. The check that
+exists so the demo does not break must not be the thing that makes it slow.
+
+## Primary failover and schema contract, both exercised live (2026-08-10)
+
+Two failures were added to module 07, and both were run against the real
+cluster, not only unit-tested.
+
+**Primary failover.** `POST /streaming/falha/failover` triggers the Atlas test
+failover on the demo cluster. It is the only failure in this PoV that hits
+MongoDB itself rather than a third party. Measured, one run:
+
+| | |
+|---|---:|
+| Documents in the run | **332,568** |
+| Value, identical on all three paths | **R$ 104.486.759,65** |
+| Election duration (until the cluster returned to IDLE) | **145.6 s** |
+| Writes rejected after driver retry | **0** |
+| Duplicates | **0** |
+| Client ACK p50 / server-side p50 | 18.5 ms / 8.2 ms |
+| Final | **reconciliado** |
+
+Three details that make it work and must not be undone:
+
+- The run is **extended by 150 s** when the failover is injected. An election
+  outlasts the 30 s demo window, so without the extension the auto-stop closed
+  the run mid-event and the recovery would be demonstrated with the generator
+  already stopped.
+- The evidence is not the election; it is **writes rejected next to writes
+  confirmed**. `retryWrites` absorbs the step-down, so the honest number is zero
+  — and zero only means something when it sits beside 299,208 confirmed.
+- The Admin API resource has changed shape across versions, so the call tries
+  the known forms in order. Only 404/405 moves to the next one: a credential or
+  access-list error is final and must reach the screen unmasked.
+
+At 332k documents the run crossed `MAX_DOCS_DIGEST` (200,000), so the set digest
+was skipped and the page said so, while count and value still reconciled. That
+path is therefore exercised too, not just theorised.
+
+**Schema contract, without new infrastructure.** `GET /streaming/contrato`
+publishes the contract the processor enforces, mirroring the `$validate` in
+`scripts/setup-asp.js`, and `POST /streaming/falha/schema-incompativel` publishes
+an event with the required `valor` renamed to `amount` — the incompatible change
+a Schema Registry would reject at registration. Measured: 49,683 documents,
+value identical on all three paths, DLQ 1 with motive `Input document found to be
+invalid in $validate stage`, pipeline never stopped, `final: reconciliado`.
+
+The deliberate decision was to *not* add Schema Registry, Avro or TLS/SASL to
+the local broker: it would prove configuration of a third-party product, tie the
+PoV to one bank's stack design, and add the largest failure surface of the three
+options to something that must not break on stage. What convinces is the
+behaviour under violation, and that needed no new container.
+
+### Preflight was reporting a green light it could not back
+
+`atlas_admin_api` checked only whether the credential existed in `.env`. With the
+key's access list missing the current egress IP, every Admin API call was
+refused while preflight stayed green — and `/streaming/cluster` fell back to the
+`.env` tier silently (`"fonte": "env (HTTPError)"`), so the page announced M20
+without ever reaching Atlas. Module 02 (Online Archive) would have broken on
+stage after a clean preflight. It now probes the API and returns the refused IP
+with the path to fix it. **The egress IP changes whenever a VPN is switched on
+or off, so this is the check that fails most often in real life.** Note the two
+distinct lists: the project's Network Access list governs driver connections
+(which kept working), while the Admin API needs the entry under Organization →
+Access Manager → API Keys → Access List.
+
+## Reconciliation now checks value and set, not only count (2026-08-10)
+
+A count-only reconciliation goes green in two cases where the data is wrong: a
+value transformed somewhere in the path, and a document swapped for another.
+Both are exactly what a payments team asks about, so `/streaming/reconciliacao`
+now reports three levels per path:
+
+| Level | How | Where it applies |
+|---|---|---|
+| Count | documents per path | source, CS, Kafka, ASP+DLQ |
+| Value | sum in **integer cents** (never floats) | all four |
+| Set | XOR of `blake2b(endToEndId)` — order-independent | source, CS, Kafka |
+
+The ASP is aggregate-only: it reconciles by value inside a declared tolerance of
+±R$0,01 per closed window (each window rounds its volume to 2 decimals) and has
+no identifier set to digest. The digest is skipped above 200,000 documents in a
+run, and the page says so rather than showing a blank.
+
+The deliberately invalid event (string `valor`) stays counted as a document and
+out of the sums, on every path — that is what makes the DLQ story and the value
+check consistent instead of contradictory.
+
+Measured over VPN, run with both failures injected: 1,960 documents,
+R$ 726.718,22 identical across the three paths, same digest, 1 non-numeric,
+DLQ 1, `final: reconciliado`.
+
+### Two demo-stoppers fixed in the same pass
+
+- **Reset answered 503 with the collection already empty.** `_purge` confirmed
+  emptiness with `estimated_document_count()`, which reads collection metadata
+  that still reports the pre-delete total. Play was aborted silently. It now
+  uses `count_documents({}, limit=1)`, and only residue in `pix.transacoes`
+  blocks a run — a late window written by the processor is normal and everything
+  is filtered by `run_id`. The UI also says why when Play does not start.
+- **A red "backend desatualizado" badge during a healthy demo.** The badge
+  tested for `write_ack` on whatever payload was in state, and the
+  `/generator/start` response does not carry it. The start payload is now merged
+  into the status object instead of replacing it.
+
+Also added: `entrega` in `/streaming/generator/status` attributes a
+below-target TPS to the presenter's network or to the local generator process,
+so presenting over VPN no longer shows "medido 64 · alvo 2.000" without an
+explanation; and module 08 reports the measured cost of the retrospective
+pipeline (ms + documents scanned) next to its result, with the event-time panel
+named as the answer for in-flow decisions.
 
 ## Region move: done and measured (2026-08-07)
 
@@ -583,7 +851,7 @@ language.
 Validated after the current implementation:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 127 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 146 passed
 npm --prefix frontend run build                    # Vite build passed
 git diff --check                                   # passed
 ```

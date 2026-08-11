@@ -10,7 +10,7 @@ FastAPI (backend/main.py, :8002)
    ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* and geo.*)
    ├─ requests ────────────► Atlas Admin API v2      (Online Archive only)
    ├─ requests ────────────► Kafka Connect REST      (:8083, live mode)
-   ├─ aiokafka (optional) ─► Redpanda / Kafka broker (:19092, live mode)
+   ├─ aiokafka (optional) ─► Kafka broker (:9092, KRaft via Homebrew, live mode)
    └─ file ────────────────► backend/data/replay_streaming.json (module 07 playback)
 ```
 
@@ -80,7 +80,7 @@ the consumers — expiry indistinguishable from loss.
 | `GET` | `/streaming/leitura` | Latency of a point lookup by `endToEndId` sampled every 250 ms **while the generator writes**, with p50/p95/p99. Answers the daily operational question the throughput numbers do not. |
 | `GET` | `/streaming/asp/dlq/resumo` | DLQ grouped by rejection reason, with first/last occurrence. |
 | `POST` | `/streaming/asp/dlq/reprocessar` | Fixes the known defect and re-inserts, preserving the original `endToEndId` — running it twice does not duplicate, the unique index blocks it. Idempotency by business key. |
-| `GET` | `/streaming/reconciliacao` | Reconciles one finite `run_id`: source documents, unique Change Stream events, unique Kafka messages, ASP aggregates and DLQ/audit. It only reports `reconciliado` after input stops and every path accounts for the same run. The source count relies on the `run_id` index created by `_ensure_indexes()`; the UI polls this every 5 s and stops once the result is final. |
+| `GET` | `/streaming/reconciliacao` | Reconciles one finite `run_id` on three levels: **count** (source documents, unique Change Stream events, unique Kafka messages, ASP aggregates and DLQ/audit), **value** summed in integer cents — never floats, because three independent sums of doubles leave a residue indistinguishable from real divergence — and an XOR **digest** of the `endToEndId` set, which is order-independent and only matches when the paths saw the same *set*, not merely the same quantity. The ASP path is aggregate-only: it reconciles by value inside a declared tolerance of R$0.01 per closed window and has no id set to digest. The digest is skipped above 200,000 documents in a run, and the page says so. It only reports `reconciliado` after input stops and every path accounts for the same run. The source count relies on the `run_id` index created by `_ensure_indexes()`; the UI polls this every 5 s and stops once the result is final. |
 
 **Cenário e rede**
 
@@ -96,7 +96,7 @@ the consumers — expiry indistinguishable from loss.
 | `POST` | `/streaming/generator/start` | Body `{"tps": 1..TPS_MAX, "duration_s": 10..120, "modo": "individual|lote"}` (`TPS_MAX` = 15,000; defaults to individual mode at 2,000 TPS/30 s). Individual mode uses the async driver and one acknowledged `insert_one` per PIX; batch mode uses `insert_many` micro-batches for the higher-volume story. Creates a `run_id` and sequence and stops automatically. The ceiling is a guardrail, not an M20 guarantee or product limit. |
 | `POST` | `/streaming/generator/stop` | Cancels the task, waits 7.2 s (5 s window + 2 s lateness) and writes one technical marker under a reserved `run_id` to advance the event-time watermark. The marker is outside the demonstrated run's reconciliation and lets its final window close. |
 | `GET` | `/streaming/generator/status` | `run_id`, `running`, `stopping`, `duration_s`, `ends_at`, `tps_alvo`, **`tps_medido`**, `inseridos`, write mode, `write_ack` p50/p95/p99 and collection state. In individual mode `write_ack` is the end-to-end ACK for one PIX; in batch mode it describes one acknowledged micro-batch. The three consumer columns measure post-commit propagation. |
-| `POST` | `/streaming/reset` | Stops the generator, ensures the unique business-key, TTL and `run_id_reconciliacao` indexes, then clears source, windows, DLQ and audit concurrently using the application's connected MongoDB topology. Above `STREAMING_DROP_ACIMA_DE` (25k by default), it stops ASP, drops/recreates the dedicated source and indexes, then recovers ASP and Kafka; a routine delete does not restart Kafka. Residual data returns 503 instead of starting a mixed run. With `?finalizar=true`, it also removes application checkpoints and leaves ASP/Kafka stopped. |
+| `POST` | `/streaming/reset` | Stops the generator, ensures the unique business-key, TTL and `run_id_reconciliacao` indexes, then clears source, windows, DLQ and audit concurrently using the application's connected MongoDB topology. Above `STREAMING_DROP_ACIMA_DE` (25k by default), it stops ASP, drops/recreates the dedicated source and indexes, then recovers ASP and Kafka; a routine delete does not restart Kafka. Residual data **in the source collection** returns 503 instead of starting a mixed run; a late window or DLQ document is the processor finishing the previous round and does not block, since everything downstream is filtered by `run_id`. Emptiness is confirmed with a bounded exact count, never `estimated_document_count()`, whose metadata still reports the pre-delete total. With `?finalizar=true`, it also removes application checkpoints and leaves ASP/Kafka stopped. |
 
 **Column 1 — Change Streams**
 
@@ -127,6 +127,9 @@ condition discards it.
 |---|---|---|
 | `POST` | `/streaming/falha/connector` | Stops every showcase connector, waits `segundos` (1–30, default 8) and resumes them. Stopping does not discard the offset: the resume token stays in `connect-offsets`, so everything written during the outage is delivered afterwards, and reconciliation has to close anyway. |
 | `POST` | `/streaming/falha/evento-invalido` | Writes one transaction whose `valor` is a string. It is a valid document for the collection — it passes the unique index and counts at the source — but the processor's `$validate` diverts it to the DLQ while the pipeline keeps running. |
+| `POST` | `/streaming/falha/schema-incompativel` | Publishes a "new version" of the event with the required `valor` renamed to `amount` — the incompatible change a Schema Registry would refuse at registration. Same outcome, different cause: DLQ with the reason, pipeline still running, reconciliation still closing. |
+| `POST` | `/streaming/falha/failover` | Atlas **test failover**: a real primary election on the demo cluster, under load. The only injected failure that hits MongoDB rather than a third party. It extends the run by 150 s, because an election outlasts the 30 s window and the auto-stop would otherwise close the run mid-event. The evidence is `escritas_rejeitadas` next to `escritas_confirmadas` — `retryWrites` absorbs the step-down, so the honest number is zero. The Admin API resource changed shape across versions, so the call tries the known forms in order and only 404/405 advances; a credential or access-list error surfaces unmasked. |
+| `GET` | `/streaming/contrato` | The contract the processor enforces, mirroring the `$validate` in `scripts/setup-asp.js`, plus the policy on violation. Shown on screen so "it went to the DLQ" becomes "it went to the DLQ because it violated *this*, which you just read". |
 
 Both exist because a run where nothing fails proves nothing failed. They are the
 counterpart to reconciliation: the number only means something once the path
@@ -192,8 +195,8 @@ never touched by either cleanup path.
 | `GET` | `/geo/status` | Document count, the index list read from the collection, and whether the Atlas Search index exists. Nothing is hard-coded in the UI. |
 | `GET` | `/geo/municipios` | Municipalities present in the dataset with a representative point, so the UI can centre a query without shipping a coordinate table to the browser. Cached in memory; the list only changes when the seed runs again. |
 | `POST` | `/geo/explain-compare` | The same `$geoWithin` (`$centerSphere`) query explained twice: hinted at `cliente_status_local_idx` (equality fields first, geo last) and at `local_2dsphere_idx`. Returns winning stage, index used, `totalKeysExamined`, `totalDocsExamined`, `nReturned` and `executionTimeMillis` for each. If the measurement contradicts the didactic note, the measurement is what the screen shows. |
-| `GET` | `/geo/impossible-travel` | Retrospective risk signal: `$setWindowFields` partitioned by `clienteId`, sorted by `ts`, `$shift` pulling the previous timestamp, coordinates, device and location provenance, then haversine in pure MQL. It explicitly returns `decisao_fraude: false`; no document leaves the cluster for the calculation. |
-| `POST` | `/geo/search` | Contextual receiver/merchant discovery: one `$search` with fuzzy text, `geoWithin`, optional category filter and `$searchMeta` facets. It is not part of PIX settlement or cadastral validation. Without the index the endpoint returns `estado: "nao_configurado"` rather than empty results. |
+| `GET` | `/geo/impossible-travel` | Retrospective risk signal: `$setWindowFields` partitioned by `clienteId`, sorted by `ts`, `$shift` pulling the previous timestamp, coordinates, device and location provenance, then haversine in pure MQL. It explicitly returns `decisao_fraude: false`; no document leaves the cluster for the calculation. A `$facet` also counts the pairs evaluated **before** the geometric cut, so the response carries selectivity (rate, alerts per day) next to the cases, each one labelled `plantado`/`emergente` from `fraud_seeds.json`. Accepts `clienteId` to narrow the scan — the cut, not hardware, is what keeps this viable over real history. |
+| `POST` | `/geo/search` | The neighbourhood of a **contested purchase**: pass `endToEndId` and the centre becomes that terminal's registered coordinate, with the anchor returned alongside the results. One `$search` with `geoWithin`, optional category filter and `$searchMeta` facets; `termo` is optional and adds fuzzy name matching for the cloned-merchant case. Without a term the scoring clause is `exists` (a compound of only `filter` returns everything at score zero) and results order by distance, with the tie-break applied before the per-terminal dedup. Without the index the endpoint returns `estado: "nao_configurado"` rather than empty results. |
 
 The geo checks join `/preflight` but never fail it: the module is optional, the
 same way Kafka and ASP are.
@@ -232,10 +235,13 @@ definitions are progressively disclosed.
 
 ## External infrastructure
 
-`docker-compose.streaming.yml` runs Redpanda (`:19092`), Kafka Connect
-(`:8083`) with the `mongodb-kafka-connect` plugin cached in a named volume, and
-Redpanda Console (`:8085`). Step-by-step instructions live in
-`docs/setup-streaming.md`.
+`scripts/kafka-local.sh` runs the Kafka broker (Homebrew, KRaft, `:9092`) and
+Kafka Connect (`:8083`) with the `mongodb-kafka-connect` plugin cached locally
+after the first download. Step-by-step instructions live in
+`docs/setup-streaming.md`. Nothing here needs Docker — the container path was
+removed on purpose, because a second way to start the same dependency only added
+setup surface, and one of its containers published `9093` on the host, which is
+the port Kafka's own KRaft controller listens on.
 
 Two Atlas Stream Processing jobs, not one, because a deployed pipeline has a
 single terminal sink: `pixJanelas5s` (`scripts/setup-asp.js`) merges 5-second

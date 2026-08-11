@@ -36,8 +36,7 @@ responsibility table. The short version:
 │   ├── lib/expand_srv.py        # Rewrites the SRV URI so the connector skips DNS
 │   ├── seed_geo.py              # Geo dataset: 150k georeferenced transactions
 │   ├── create_search_index_geo.sh # Atlas Search index for the Geo module
-│   ├── generate-streaming-guide.py # Regenerates the presenter PDF from Markdown
-│   └── teardown-streaming.sh
+│   └── generate-streaming-guide.py # Regenerates the presenter PDF from Markdown
 ├── docs/
 │   ├── SESSION_HANDOFF.md        # Current decisions, evidence and operational state
 │   ├── roteiro-apresentacao-streaming.md  # Editable presenter talk track
@@ -68,7 +67,6 @@ responsibility table. The short version:
 │   │   ├── components/          # DemoFlow, QueryBlock
 │   │   └── pages/               # One component per module
 │   └── vite.config.js           # Proxies /api to :8002
-├── docker-compose.streaming.yml # Redpanda + Connect + console (Docker path)
 ├── live_monitor.py              # Terminal latency monitor
 └── docs/screenshots/
 ```

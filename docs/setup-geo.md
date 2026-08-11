@@ -17,11 +17,25 @@ python scripts/seed_geo.py --ensure   # keep if current; recreate if stale/incom
 ./scripts/create_search_index_geo.sh  # create/update and wait until READY
 ```
 
+⚠️ **`--drop` deletes the collection, and the Atlas Search index goes with it.**
+Always run `./scripts/create_search_index_geo.sh` afterwards, or panel 02 opens
+as `nao_configurado` on stage.
+
 The generator is seeded with a fixed value and carries a dataset version, so every `endToEndId` is stable and
 the unique index rejects re-inserts: running the seed twice leaves 150k
 documents, not 300k. Points are gaussian clusters around 40 real Brazilian
 municipalities weighted by population — uniformly random coordinates inside the
 country's bounding box look obviously fake on a projector.
+
+**Dataset v5 — the planted cases.** Forty clients carry a planted
+impossible-travel pair, listed in `backend/data/fraud_seeds.json` so the screen
+can label each result `plantado` or `emergente`. Each pair derives its interval
+from a **target speed** (uniform 1,100–9,000 km/h) applied to the real distance
+between the two cities — never the other way round. Sampling minutes directly
+produced 16,000–42,000 km/h, twenty times any real cloned-card pattern, and a
+fixed 5-minute gap made all forty rows identical on screen. Position in the
+client's sequence and destination are randomised too, inside the same fixed RNG
+seed, so the dataset stays reproducible.
 
 Location is never presented as a PIX field. Every point in this dataset is a
 card-present purchase, and its coordinate belongs to the acquirer's terminal —
