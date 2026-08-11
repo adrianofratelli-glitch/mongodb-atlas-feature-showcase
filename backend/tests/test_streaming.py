@@ -23,6 +23,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from bson import Decimal128
+from datetime import timedelta
+from fastapi import HTTPException
 from pydantic import ValidationError
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -668,8 +671,13 @@ def test_purge_reutiliza_cliente_ja_conectado_sem_nova_resolucao_srv(monkeypatch
             self.tentativas += 1
             return SimpleNamespace(deleted_count=7)
 
-        def estimated_document_count(self):
+        def count_documents(self, filtro, limit=None):
+            assert filtro == {}
+            assert limit == 1
             return 0
+
+        def estimated_document_count(self):
+            raise AssertionError("metadado defasado não pode decidir se a coleção ficou vazia")
 
     alvo = ColecaoFake()
     monkeypatch.setattr(streaming, "sdb", {"transacoes": alvo})
@@ -678,6 +686,54 @@ def test_purge_reutiliza_cliente_ja_conectado_sem_nova_resolucao_srv(monkeypatch
 
     assert (removidos, restantes) == (7, 0)
     assert alvo.tentativas == 1
+
+
+def test_purge_confirma_vazio_com_contagem_exata_e_nao_com_estimativa(monkeypatch):
+    """`estimated_document_count` ainda devolve o total antigo logo após o delete.
+
+    Confiar nele fazia o Reset responder 503 com a coleção já vazia, e o Play
+    era abortado sem mensagem no meio da apresentação.
+    """
+    class ColecaoDefasada:
+        def delete_many(self, _filtro):
+            return SimpleNamespace(deleted_count=2_000)
+
+        def count_documents(self, _filtro, limit=None):
+            return 0            # a verdade
+
+        def estimated_document_count(self):
+            return 2_000        # o metadado que ainda não atualizou
+
+    monkeypatch.setattr(streaming, "sdb", {"transacoes": ColecaoDefasada()})
+
+    removidos, restantes = streaming._purge("transacoes")
+
+    assert removidos == 2_000
+    assert restantes == 0
+
+
+def test_diagnostico_de_entrega_atribui_o_limite_a_rede_quando_o_ack_domina(monkeypatch):
+    """TPS entregue muito abaixo do alvo precisa dizer de quem é o limite.
+
+    Sem isto, apresentar por VPN mostra "medido 64 · alvo 2.000" e a plateia lê
+    capacidade do Atlas onde o gargalo é o round-trip do notebook.
+    """
+    monkeypatch.setattr(streaming, "generator",
+                        type("G", (), {"running": True, "tps_alvo": 2_000})())
+
+    lento = streaming._diagnostico_entrega(64.0, {"p50": 366.0})
+    assert lento["estado"] == "abaixo_do_alvo"
+    assert lento["limitador"] == "rede_do_apresentador"
+
+    local = streaming._diagnostico_entrega(64.0, {"p50": 3.0})
+    assert local["limitador"] == "cliente_local"
+
+    no_alvo = streaming._diagnostico_entrega(1_900.0, {"p50": 3.0})
+    assert no_alvo["estado"] == "no_alvo"
+
+    monkeypatch.setattr(streaming, "generator",
+                        type("G", (), {"running": False, "tps_alvo": 0})())
+    assert streaming._diagnostico_entrega(0.0, {"p50": None})["estado"] == "sem_execucao"
 
 
 def test_preflight_reprova_indice_de_reconciliacao_ausente_ou_ttl_divergente(monkeypatch):
@@ -824,34 +880,58 @@ def test_janelas_asp_filtram_duas_horas_e_ordenam(monkeypatch):
     assert resultado["total"] == 1
 
 
+class CountCollection:
+    """Coleção mínima para a reconciliação: contagem, agregação e find."""
+
+    def __init__(self, count=0, aggregate_result=None, docs=None):
+        self.count = count
+        self.aggregate_result = aggregate_result or []
+        self.docs = docs or []
+
+    def count_documents(self, _filter):
+        return self.count
+
+    def aggregate(self, _pipeline):
+        return iter(self.aggregate_result)
+
+    def find(self, _filter, _projection=None):
+        return iter(self.docs)
+
+
+def _sdb_reconciliacao(monkeypatch, *, fonte_centavos=30_000, asp_volume=200.0,
+                       docs=None, processadas=2, dlq=1):
+    docs = docs if docs is not None else [{"endToEndId": e} for e in ("E1", "E2", "E3")]
+    monkeypatch.setattr(streaming, "sdb", {
+        streaming.COL_TX: CountCollection(
+            count=3,
+            aggregate_result=[{
+                "documentos": 3, "centavos": fonte_centavos, "nao_numericos": 0,
+            }],
+            docs=docs,
+        ),
+        streaming.COL_WINDOWS: CountCollection(
+            aggregate_result=[{
+                "processadas": processadas, "alertas_valor_alto": 1,
+                "volume": asp_volume, "janelas": 2,
+            }]
+        ),
+        streaming.COL_DLQ: CountCollection(count=dlq, docs=[
+            {"doc": {"fullDocument": {"valor": Decimal128("100.00")}}}
+        ] * dlq),
+        streaming.COL_DLQ_AUDIT: CountCollection(count=0),
+    })
+
+
 def test_reconciliacao_fecha_quando_todos_os_caminhos_contabilizam(monkeypatch):
-    class CountCollection:
-        def __init__(self, count=0, aggregate_result=None):
-            self.count = count
-            self.aggregate_result = aggregate_result or []
-
-        def count_documents(self, _filter):
-            return self.count
-
-        def aggregate(self, _pipeline):
-            return iter(self.aggregate_result)
-
     tracker = streaming.RunTracker()
     for channel in ("change_streams", "kafka"):
         for e2e in ("E1", "E2", "E3"):
-            tracker.record(channel, "run-ok", e2e)
+            tracker.record(channel, "run-ok", e2e, Decimal128("100.00"))
 
     generator = type("GeneratorFake", (), {"running": False, "run_id": "run-ok"})()
     monkeypatch.setattr(streaming, "generator", generator)
     monkeypatch.setattr(streaming, "run_tracker", tracker)
-    monkeypatch.setattr(streaming, "sdb", {
-        streaming.COL_TX: CountCollection(count=3),
-        streaming.COL_WINDOWS: CountCollection(
-            aggregate_result=[{"processadas": 2, "alertas_valor_alto": 1}]
-        ),
-        streaming.COL_DLQ: CountCollection(count=1),
-        streaming.COL_DLQ_AUDIT: CountCollection(count=0),
-    })
+    _sdb_reconciliacao(monkeypatch)
 
     result = streaming._reconcile_run("run-ok")
 
@@ -859,6 +939,71 @@ def test_reconciliacao_fecha_quando_todos_os_caminhos_contabilizam(monkeypatch):
     assert result["change_streams"]["reconciliado"]
     assert result["kafka"]["reconciliado"]
     assert result["asp"]["contabilizadas"] == 3
+    # Contagem, valor e conjunto conferidos — não só a quantidade.
+    assert result["change_streams"]["valor_confere"] is True
+    assert result["change_streams"]["digest_confere"] is True
+    assert result["fonte"]["valor"] == 300.00
+
+
+def test_reconciliacao_acusa_valor_divergente_com_contagem_igual(monkeypatch):
+    """Contagem igual e valor diferente é transformação errada, não perda.
+
+    É o caso que a versão anterior — só contagem — deixava passar como verde.
+    """
+    tracker = streaming.RunTracker()
+    for channel in ("change_streams", "kafka"):
+        for e2e in ("E1", "E2", "E3"):
+            tracker.record(channel, "run-x", e2e, Decimal128("99.00"))
+
+    monkeypatch.setattr(streaming, "generator",
+                        type("G", (), {"running": False, "run_id": "run-x"})())
+    monkeypatch.setattr(streaming, "run_tracker", tracker)
+    _sdb_reconciliacao(monkeypatch)
+
+    result = streaming._reconcile_run("run-x")
+
+    assert result["change_streams"]["contagem_confere"] is True
+    assert result["change_streams"]["valor_confere"] is False
+    assert result["final"] == "em_processamento"
+
+
+def test_reconciliacao_acusa_documento_trocado_pelo_digest(monkeypatch):
+    """Mesma contagem, mesmo valor, um documento trocado por outro.
+
+    Só o digest do conjunto pega este caso.
+    """
+    tracker = streaming.RunTracker()
+    for e2e in ("E1", "E2", "E3"):
+        tracker.record("change_streams", "run-y", e2e, Decimal128("100.00"))
+    # O Kafka viu um documento diferente, com o mesmo valor.
+    for e2e in ("E1", "E2", "E9"):
+        tracker.record("kafka", "run-y", e2e, Decimal128("100.00"))
+
+    monkeypatch.setattr(streaming, "generator",
+                        type("G", (), {"running": False, "run_id": "run-y"})())
+    monkeypatch.setattr(streaming, "run_tracker", tracker)
+    _sdb_reconciliacao(monkeypatch)
+
+    result = streaming._reconcile_run("run-y")
+
+    assert result["kafka"]["contagem_confere"] is True
+    assert result["kafka"]["valor_confere"] is True
+    assert result["kafka"]["digest_confere"] is False
+    assert result["change_streams"]["digest_confere"] is True
+    assert result["final"] == "em_processamento"
+
+
+def test_centavos_de_ignora_valor_nao_numerico():
+    """O evento inválido injetado de propósito conta como documento, não como valor."""
+    assert streaming.centavos_de(Decimal128("10.55")) == 1055
+    assert streaming.centavos_de(10.55) == 1055
+    assert streaming.centavos_de(3) == 300
+    assert streaming.centavos_de("isto-nao-e-um-numero") is None
+    assert streaming.centavos_de(None) is None
+    # JSON estendido vindo do connector.
+    assert streaming.centavos_de(streaming._valor_json({"$numberDecimal": "12.30"})) == 1230
+    assert streaming.centavos_de(streaming._valor_json("12.30")) == 1230
+    assert streaming.centavos_de(streaming._valor_json("nao-numero")) is None
 
 
 def test_api_rejeita_carga_acima_do_teto_da_poc():
@@ -1001,3 +1146,87 @@ def test_insert_um_grava_uma_transacao_e_mede_o_ack(monkeypatch):
     assert colecao.docs[0]["ts"] is not None
     assert g.inserted == 1
     assert streaming.meter_write_ack.snapshot()["amostras"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Failover de primary e contrato do evento
+# ---------------------------------------------------------------------------
+def test_failover_exige_carga_em_andamento(monkeypatch):
+    """Uma eleição sem carga rodando não demonstra retomada de nada."""
+    # `settings` é um dataclass congelado: troca-se o objeto inteiro.
+    monkeypatch.setattr(streaming, "settings", SimpleNamespace(atlas_configured=True))
+    monkeypatch.setattr(streaming, "generator",
+                        type("G", (), {"running": False, "run_id": None})())
+
+    with pytest.raises(HTTPException) as erro:
+        asyncio.run(streaming.falha_failover())
+
+    assert erro.value.status_code == 409
+
+
+def test_failover_exige_credenciais_do_atlas(monkeypatch):
+    monkeypatch.setattr(streaming, "settings", SimpleNamespace(atlas_configured=False))
+
+    with pytest.raises(HTTPException) as erro:
+        asyncio.run(streaming.falha_failover())
+
+    assert erro.value.status_code == 503
+
+
+def test_estender_empurra_o_fim_da_execucao():
+    """A eleição dura mais que a janela de 30 s; sem esticar, o stop automático
+    fecharia a rodada no meio do evento."""
+    g = streaming.Generator()
+    g.run_id = "run-f"
+    g.started_at = streaming._now()
+    g.duration_s = 30
+    g.ends_at = g.started_at + timedelta(seconds=30)
+    g.task = SimpleNamespace(done=lambda: False)
+
+    async def cenario():
+        return g.estender(150)
+
+    novo_fim = asyncio.run(cenario())
+
+    assert g.duration_s == 180
+    assert (novo_fim - g.started_at).total_seconds() == pytest.approx(180, abs=1)
+
+
+def test_estender_ignora_execucao_parada():
+    g = streaming.Generator()
+    assert g.estender(150) is None
+
+
+def test_evento_fora_do_contrato_perde_o_campo_obrigatorio(monkeypatch):
+    """A mudança incompatível é o campo obrigatório renomeado, não um lixo
+    qualquer: é o que um Schema Registry recusaria no registro."""
+    class ColecaoAsync:
+        def __init__(self):
+            self.docs = []
+
+        async def insert_one(self, doc):
+            self.docs.append(doc)
+
+    colecao = ColecaoAsync()
+    monkeypatch.setattr(streaming, "acol_tx", lambda: colecao)
+    monkeypatch.setattr(streaming, "generator",
+                        type("G", (), {"run_id": "run-c"})())
+
+    resposta = asyncio.run(streaming.falha_schema_incompativel())
+    doc = colecao.docs[0]
+
+    assert resposta["injetado"] is True
+    assert "valor" not in doc and doc["amount"] == 123.45
+    # Continua sendo um documento legítimo da coleção: entra na contagem da
+    # fonte e a reconciliação tem de fechar mesmo assim, via DLQ.
+    assert doc["run_id"] == "run-c" and doc["endToEndId"].startswith("S")
+    # E fora da soma de valores, como o outro evento inválido.
+    assert streaming.centavos_de(doc.get("valor")) is None
+
+
+def test_contrato_publicado_lista_os_campos_obrigatorios_do_validate():
+    contrato = asyncio.run(streaming.contrato())
+    obrigatorios = {c["campo"] for c in contrato["campos"] if c["obrigatorio"]}
+
+    assert obrigatorios == {"endToEndId", "run_id", "valor", "tipo", "uf"}
+    assert "dlq" in contrato["fonte"]

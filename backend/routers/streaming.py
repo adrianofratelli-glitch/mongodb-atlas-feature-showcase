@@ -19,6 +19,7 @@ não produzir um benchmark ou sizing de produção.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ import time
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
@@ -259,12 +261,18 @@ _CASA_CLIENTE = [
 
 
 def _municipio_distante(origem: int, minimo_km: float = 700.0) -> int:
-    """Índice de um município a pelo menos `minimo_km` — mesma regra do módulo 08."""
+    """Índice de um município a pelo menos `minimo_km` — mesma regra do módulo 08.
+
+    Sorteia entre TODOS os candidatos válidos: devolver sempre o primeiro fazia
+    quase todo par plantado terminar na mesma cidade, e a coluna de trajeto da
+    tela virava uma lista repetida.
+    """
     base = _MUNICIPIOS[origem]
-    for i, m in enumerate(_MUNICIPIOS):
-        if i != origem and _haversine_km(base["lat"], base["lng"], m["lat"], m["lng"]) >= minimo_km:
-            return i
-    return (origem + 1) % len(_MUNICIPIOS)
+    candidatos = [
+        i for i, m in enumerate(_MUNICIPIOS)
+        if i != origem and _haversine_km(base["lat"], base["lng"], m["lat"], m["lng"]) >= minimo_km
+    ]
+    return random.choice(candidatos) if candidatos else (origem + 1) % len(_MUNICIPIOS)
 
 
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -539,8 +547,64 @@ class IngestaoServidor:
 ingestao_servidor = IngestaoServidor()
 
 
+def centavos_de(valor: Any) -> int | None:
+    """Valor monetário em centavos inteiros, ou None se não for numérico.
+
+    Centavo inteiro, e não float, porque a conferência de valor da reconciliação
+    precisa ser uma igualdade exata: somar 60 mil doubles em três caminhos
+    diferentes produz resíduo na última casa, e um resíduo na tela é
+    indistinguível de divergência real.
+
+    None é resposta legítima: o evento inválido injetado de propósito grava
+    `valor` como texto. Ele conta no total de documentos, não na soma.
+    """
+    if isinstance(valor, Decimal128):
+        valor = valor.to_decimal()
+    if isinstance(valor, bool) or valor is None:
+        return None
+    if isinstance(valor, (int, Decimal, float)):
+        try:
+            return int((Decimal(str(valor)) * 100).to_integral_value(rounding=ROUND_HALF_UP))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _valor_json(valor: Any) -> Any:
+    """Normaliza o `valor` que chega pelo Kafka para algo que `centavos_de` entenda.
+
+    O connector serializa `Decimal128` em JSON estendido (`{"$numberDecimal": …}`)
+    ou como string decimal, conforme o modo de saída configurado. Os dois viram
+    Decimal aqui. O que não for número continua não sendo — é assim que o evento
+    inválido injetado de propósito segue fora da soma, e não por acidente.
+    """
+    if isinstance(valor, dict):
+        valor = valor.get("$numberDecimal", valor.get("$numberDouble", valor.get("$numberLong")))
+    if isinstance(valor, str):
+        try:
+            return Decimal(valor)
+        except InvalidOperation:
+            return None
+    return valor
+
+
+def _digest_de(end_to_end_id: str) -> int:
+    """8 bytes de blake2b do identificador, para XOR acumulado."""
+    return int.from_bytes(hashlib.blake2b(end_to_end_id.encode(), digest_size=8).digest(), "big")
+
+
 class RunTracker:
-    """Contagem idempotente, por execução, dos caminhos observados pela PoV."""
+    """Contagem idempotente, por execução, dos caminhos observados pela PoV.
+
+    Além da contagem, acumula duas evidências que contagem sozinha não dá:
+
+    * soma em centavos — contagem igual com valor diferente é transformação
+      errada no caminho, não perda; um banco confere o valor antes do volume.
+    * digest XOR dos identificadores — é comutativo e associativo, então
+      independe da ordem de chegada, e só bate quando os dois caminhos viram
+      exatamente o mesmo *conjunto*. Contagem igual com um documento trocado por
+      outro passa despercebida; o digest não.
+    """
 
     MAX_IDS_PER_CHANNEL = 500_000
 
@@ -549,8 +613,17 @@ class RunTracker:
         self._ids: dict[str, dict[str, set[str]]] = {}
         self._duplicates: dict[str, dict[str, int]] = {}
         self._truncated: set[tuple[str, str]] = set()
+        self._cents: dict[str, dict[str, int]] = {}
+        self._nao_numericos: dict[str, dict[str, int]] = {}
+        self._digests: dict[str, dict[str, int]] = {}
 
-    def record(self, channel: str, run_id: str | None, end_to_end_id: str | None) -> None:
+    def record(
+        self,
+        channel: str,
+        run_id: str | None,
+        end_to_end_id: str | None,
+        valor: Any = None,
+    ) -> None:
         if not run_id or not end_to_end_id:
             return
         with self._lock:
@@ -564,16 +637,31 @@ class RunTracker:
                 self._truncated.add((run_id, channel))
                 return
             ids.add(end_to_end_id)
+            cents = centavos_de(valor)
+            if cents is None:
+                nao_num = self._nao_numericos.setdefault(run_id, {})
+                nao_num[channel] = nao_num.get(channel, 0) + 1
+            else:
+                soma = self._cents.setdefault(run_id, {})
+                soma[channel] = soma.get(channel, 0) + cents
+            digests = self._digests.setdefault(run_id, {})
+            digests[channel] = digests.get(channel, 0) ^ _digest_de(end_to_end_id)
 
     def snapshot(self, run_id: str) -> dict[str, Any]:
         with self._lock:
             channels = self._ids.get(run_id, {})
             duplicates = self._duplicates.get(run_id, {})
+            cents = self._cents.get(run_id, {})
+            nao_num = self._nao_numericos.get(run_id, {})
+            digests = self._digests.get(run_id, {})
             return {
                 channel: {
                     "unicos": len(ids),
                     "duplicados": duplicates.get(channel, 0),
                     "completo_em_memoria": (run_id, channel) not in self._truncated,
+                    "centavos": cents.get(channel, 0),
+                    "nao_numericos": nao_num.get(channel, 0),
+                    "digest": digests.get(channel, 0),
                 }
                 for channel, ids in channels.items()
             }
@@ -583,6 +671,9 @@ class RunTracker:
             self._ids.clear()
             self._duplicates.clear()
             self._truncated.clear()
+            self._cents.clear()
+            self._nao_numericos.clear()
+            self._digests.clear()
 
 
 run_tracker = RunTracker()
@@ -721,7 +812,16 @@ def _par_impossivel(run_id: str, sequencia: int | None) -> list[dict[str, Any]]:
     origem = _CASA_CLIENTE[cliente]
     destino = _municipio_distante(origem)
     agora = _now()
-    minutos = random.uniform(4, 9)
+    # O intervalo sai da velocidade desejada, não o contrário. Sorteando minutos
+    # direto, a velocidade implícita ficava na casa das dezenas de milhares de
+    # km/h — ordens de grandeza além de qualquer padrão real de cartão clonado.
+    # Entre 1.100 e 9.000 km/h os casos nascem na faixa em que fraude acontece,
+    # incluindo os limítrofes logo acima do limiar configurado.
+    origem_mun, destino_mun = _MUNICIPIOS[origem], _MUNICIPIOS[destino]
+    km_par = _haversine_km(
+        origem_mun["lat"], origem_mun["lng"], destino_mun["lat"], destino_mun["lng"],
+    )
+    minutos = (km_par / random.uniform(1_100.0, 9_000.0)) * 60
     return [
         _ponto_cartao(cliente, origem, agora - timedelta(minutes=minutos), run_id, sequencia, "plantado"),
         _ponto_cartao(cliente, destino, agora, run_id, sequencia, "plantado"),
@@ -798,6 +898,9 @@ class Generator:
         self._auto_stop_task: asyncio.Task | None = None
         self.stopping = False
         self._stop_depth = 0
+        # Escritas que falharam mesmo depois da retentativa do driver. É a
+        # evidência quantitativa do failover: o número costuma ser 0.
+        self.write_errors = 0
         self.modo = MODO_ESCRITA_PADRAO
         self.workers_ativos = 0
         self._sequence = 0
@@ -857,6 +960,24 @@ class Generator:
         self.task = asyncio.create_task(self._run())
         if duration_s:
             self._auto_stop_task = asyncio.create_task(self._stop_after(duration_s))
+
+    def estender(self, segundos: int) -> datetime | None:
+        """Empurra o fim da execução, mantendo o auto-stop coerente.
+
+        Uma eleição de primary leva mais que a janela de 30 s da demo: sem
+        esticar a carga, o `stop` automático fecharia a execução no meio do
+        evento e a retomada seria demonstrada com o gerador já parado — o que
+        não prova nada.
+        """
+        if not self.running or not self.ends_at:
+            return self.ends_at
+        self.ends_at = self.ends_at + timedelta(seconds=segundos)
+        self.duration_s = (self.duration_s or 0) + segundos
+        restante = (self.ends_at - _now()).total_seconds()
+        if self._auto_stop_task and not self._auto_stop_task.done():
+            self._auto_stop_task.cancel()
+        self._auto_stop_task = asyncio.create_task(self._stop_after(max(1, int(restante))))
+        return self.ends_at
 
     async def _stop_after(self, duration_s: int) -> None:
         current = asyncio.current_task()
@@ -931,6 +1052,7 @@ class Generator:
         self.duration_s = None
         self.ends_at = None
         self._sequence = 0
+        self.write_errors = 0
         meter_write_ack.reset()
 
     def _insert_batch(self, docs: list[dict[str, Any]]) -> None:
@@ -957,6 +1079,7 @@ class Generator:
         try:
             await asyncio.to_thread(self._insert_batch, docs)
         except PyMongoError:
+            self.write_errors += 1
             logger.exception("Falha ao inserir micro-batch do gerador")
 
     # ── Modo PIX individual ────────────────────────────────────────────────
@@ -1014,6 +1137,12 @@ class Generator:
             try:
                 await self._insert_um(doc)
             except PyMongoError:
+                # Durante uma eleição de primary o driver reabsorve a escrita
+                # sozinho (retryWrites). O que chega aqui é o que nem a
+                # retentativa salvou: conta como erro e some do fluxo, sem ser
+                # persistido — a reconciliação compara contra o que está na
+                # coleção, então continua fechando.
+                self.write_errors += 1
                 logger.exception("Falha ao inserir PIX individual")
             proximo += intervalo_s
             await asyncio.sleep(max(0.0, proximo - time.monotonic()))
@@ -1154,6 +1283,57 @@ async def generator_status():
             "microbatches_s": write_ack["eventos_s"],
         },
         "ingestao_servidor": await asyncio.to_thread(ingestao_servidor.medir),
+        "entrega": _diagnostico_entrega(medido, write_ack),
+        "escritas_rejeitadas": generator.write_errors,
+        # Vai junto do status para a tela não abrir mais um poll só por causa
+        # de um evento que dura dois minutos.
+        "failover": failover_tracker.snapshot(),
+    }
+
+
+# Abaixo desta fração do alvo a entrega deixa de ser "quase o alvo" e passa a
+# precisar de explicação na tela. 70% é onde uma variação normal de rede acaba e
+# um gargalo começa.
+ENTREGA_OK = 0.70
+# Um round-trip acima disto domina o tempo de cada escrita: com um insert por
+# PIX, o TPS entregue vira 1/RTT por worker, independentemente do cluster.
+ACK_DOMINADO_POR_REDE_MS = 40.0
+
+
+def _diagnostico_entrega(medido: float, write_ack: dict[str, Any]) -> dict[str, Any]:
+    """Por que o TPS entregue ficou abaixo do alvo — dito pela própria tela.
+
+    Sem isto, apresentar por VPN mostra "medido 64 · alvo 2.000" sem contexto, e
+    a plateia lê capacidade do Atlas onde o gargalo é o round-trip do notebook
+    que apresenta. O servidor mede as mesmas escritas em poucos milissegundos, e
+    esse número já está ao lado; aqui fica apenas a atribuição do limite.
+    """
+    alvo = generator.tps_alvo or 0
+    ack_p50 = write_ack.get("p50")
+    if not alvo:
+        # Fora de uma execução o alvo volta a zero e não há o que atribuir.
+        return {"estado": "sem_execucao"}
+    if medido >= alvo * ENTREGA_OK:
+        return {
+            "estado": "no_alvo",
+            "fracao_do_alvo": round(medido / alvo, 3) if alvo else None,
+            "limitador": None,
+        }
+    rede = ack_p50 is not None and ack_p50 >= ACK_DOMINADO_POR_REDE_MS
+    return {
+        "estado": "abaixo_do_alvo",
+        "fracao_do_alvo": round(medido / alvo, 3) if alvo else None,
+        "limitador": "rede_do_apresentador" if rede else "cliente_local",
+        "ack_p50_ms": ack_p50,
+        "detalhe": (
+            f"O ACK do cliente está em {ack_p50:.0f} ms: com um insert por PIX, cada worker "
+            f"entrega no máximo {1000 / ack_p50:.1f} escritas/s, e o teto da carga passa a ser o "
+            f"round-trip até o cluster — não o Atlas, que gravou as mesmas escritas em poucos "
+            f"milissegundos. Rede corporativa, VPN ou saída por outra região reproduzem isto."
+            if rede else
+            "A carga não atingiu o alvo por limite do processo gerador local (CPU do notebook "
+            "que apresenta), não por limite do cluster. O tempo medido pelo servidor está ao lado."
+        ),
     }
 
 
@@ -1640,6 +1820,21 @@ def _drop_and_recreate() -> int:
     return total
 
 
+def _resto_exato(target) -> int:
+    """Sobrou algo? Contagem exata, limitada a 1 documento.
+
+    `estimated_document_count` lê metadado da coleção, que ainda não reflete um
+    `delete_many` recém-executado: o Reset acusava resíduo que não existia,
+    respondia 503 e o Play era abortado sem explicação na tela. O `limit=1`
+    mantém a checagem barata — a pergunta é "está vazia?", não "quantos são".
+    """
+    try:
+        return target.count_documents({}, limit=1)
+    except PyMongoError:
+        logger.warning("Não foi possível confirmar se a coleção ficou vazia")
+        return 0
+
+
 def _purge(col: str) -> tuple[int, int]:
     """
     Esvazia a coleção reutilizando o cliente já conectado da aplicação.
@@ -1665,10 +1860,10 @@ def _purge(col: str) -> tuple[int, int]:
             except PyMongoError:
                 logger.warning("Purga de %s falhou (tentativa %d), repetindo", col, tentativa + 1)
                 time.sleep(2)
-        return removed, target.estimated_document_count()
+        return removed, _resto_exato(target)
     except PyMongoError:
         logger.exception("Falha ao esvaziar %s", col)
-        return removed, sdb[col].estimated_document_count()
+        return removed, _resto_exato(sdb[col])
 
 
 @router.post("/reset")
@@ -1737,9 +1932,11 @@ async def reset(finalizar: bool = False):
     resultados_purge = await asyncio.gather(*(
         asyncio.to_thread(_purge, col) for col in alvos
     ))
+    restantes_por_colecao: dict[str, int] = {}
     for col, (removed, left) in zip(alvos, resultados_purge, strict=True):
         deleted[col] = removed
         restantes += left
+        restantes_por_colecao[col] = left
     # Somente o drop invalida o change stream do connector. Reiniciá-lo em toda
     # rodada limpa adicionava segundos ao Play e perturbava uma task saudável.
     if not finalizar and grande > DROP_ACIMA_DE:
@@ -1759,6 +1956,7 @@ async def reset(finalizar: bool = False):
         logger.warning("Não foi possível limpar %s.%s", GEO_DB_NOME, COL_SINAIS)
 
     generator.reset_counters()
+    failover_tracker.reset()
     cs_worker.reset_counters()
     kafka_consumer.reset_counters()
     run_tracker.reset()
@@ -1769,14 +1967,22 @@ async def reset(finalizar: bool = False):
     meter_asp.reset()
     for hub in (hub_cs, hub_kafka, hub_asp):
         hub.publish({"type": "reset"})
-    # `restantes` só é > 0 se o orçamento de tempo acabou antes de esvaziar tudo;
-    # não é seguro iniciar uma rodada misturada com o resíduo anterior.
-    if restantes:
+    # Só resíduo na coleção de origem impede começar: é ela que a reconciliação
+    # conta como fonte. Janela ou DLQ que aparecem depois da purga são o
+    # processor terminando de fechar a rodada anterior — um evento normal, e
+    # tudo abaixo é filtrado por `run_id` de qualquer forma. Tratar esse
+    # atraso como falha derrubava o Play com 503 de vez em quando, sem que
+    # nada estivesse errado.
+    if restantes_por_colecao.get(COL_TX):
         raise HTTPException(
             status_code=503,
-            detail=f"Preparação incompleta: {restantes} documento(s) ainda presentes. Tente Reset novamente.",
+            detail=(
+                f"Preparação incompleta: {restantes_por_colecao[COL_TX]} documento(s) ainda em "
+                f"{COL_TX}. Tente Reset novamente."
+            ),
         )
     return {"reset": True, "removidos": deleted, "restantes": restantes,
+            "restantes_por_colecao": restantes_por_colecao,
             "via_drop": grande > DROP_ACIMA_DE, "asp_reiniciado": asp_reiniciado,
             "asp_parado": asp_parado, "kafka_reiniciado": kafka_reiniciado,
             "finalizado": finalizar}
@@ -2013,7 +2219,7 @@ class ChangeStreamWorker:
             self.recovered += 1
 
         e2e = doc.get("endToEndId")
-        run_tracker.record("change_streams", doc.get("run_id"), e2e)
+        run_tracker.record("change_streams", doc.get("run_id"), e2e, doc.get("valor"))
         if e2e:
             if e2e in self._vistos_set:
                 self.duplicados += 1
@@ -2248,7 +2454,11 @@ class KafkaConsumer:
                 latency_ms = round((_now() - ts).total_seconds() * 1000, 1) if ts else None
                 self.messages += 1
                 self.last_offset = msg.offset
-                run_tracker.record("kafka", doc.get("run_id"), doc.get("endToEndId"))
+                # O connector publica JSON: `valor` chega como número ou como
+                # `{"$numberDecimal": "..."}`, dependendo do modo de saída.
+                run_tracker.record(
+                    "kafka", doc.get("run_id"), doc.get("endToEndId"), _valor_json(doc.get("valor")),
+                )
                 meter_kafka.record(latency_ms)      # percentis sobre 100% das mensagens
 
                 agora = time.monotonic()
@@ -2419,6 +2629,284 @@ class FalhaConnector(BaseModel):
     segundos: float = Field(default=8, ge=1, le=30)
 
 
+# ── Failover de primary ─────────────────────────────────────────────────────
+#
+# A única falha desta PoV que atinge o MongoDB, e não um terceiro. O Atlas
+# expõe o teste de failover como operação suportada: ele força uma eleição no
+# replica set do cluster de demonstração. A carga continua correndo, o driver
+# reabsorve as escritas (`retryWrites` é o padrão), o cursor retoma pelo resume
+# token e o connector pelo offset — e a reconciliação tem de fechar em contagem,
+# valor e conjunto no fim.
+#
+# A eleição leva bem mais que a janela de 30 s da demo, então a injeção estica a
+# execução. Sem isso o stop automático fecharia a rodada no meio do evento.
+FAILOVER_EXTENSAO_S = 150
+# Enquanto o cluster não volta para IDLE a eleição ainda está em curso.
+FAILOVER_TIMEOUT_S = 600
+# Mesma versão usada pelos outros consumidores da Admin API nesta PoV.
+ATLAS_ACCEPT_VERSION = "application/vnd.atlas.2025-03-12+json"
+
+
+class FailoverTracker:
+    """Estado do teste de failover, para a tela narrar o evento enquanto ocorre."""
+
+    def __init__(self) -> None:
+        self.estado = "ocioso"        # ocioso | em_curso | concluido | falhou
+        self.iniciado_em: datetime | None = None
+        self.concluido_em: datetime | None = None
+        self.detalhe = ""
+        self.run_id: str | None = None
+        self.erros_no_inicio = 0
+        self.erros_durante = 0
+        self.eventos_cs_no_inicio = 0
+        self.inseridos_no_inicio = 0
+
+    def snapshot(self) -> dict[str, Any]:
+        duracao = None
+        if self.iniciado_em:
+            fim = self.concluido_em or _now()
+            duracao = round((fim - self.iniciado_em).total_seconds(), 1)
+        return {
+            "estado": self.estado,
+            "detalhe": self.detalhe,
+            "run_id": self.run_id,
+            "iniciado_em": self.iniciado_em.isoformat() if self.iniciado_em else None,
+            "duracao_s": duracao,
+            "escritas_rejeitadas": self.erros_durante,
+            "escritas_confirmadas": max(generator.inserted - self.inseridos_no_inicio, 0),
+            "eventos_apos_eleicao": max(cs_worker.events - self.eventos_cs_no_inicio, 0),
+        }
+
+    def reset(self) -> None:
+        self.__init__()
+
+
+failover_tracker = FailoverTracker()
+
+
+def _atlas_test_failover_sync() -> str:
+    """Dispara o teste de failover pela Atlas Admin API.
+
+    O recurso mudou de forma entre as versões da API e um projeto pode estar em
+    qualquer uma delas, então as formas conhecidas são tentadas em ordem. Só um
+    405/404 faz passar para a próxima: erro de credencial ou de access list é
+    definitivo e precisa chegar à tela como está, sem ser mascarado pela
+    tentativa seguinte.
+    """
+    import requests
+    from requests.auth import HTTPDigestAuth
+
+    auth = HTTPDigestAuth(settings.atlas_public_key, settings.atlas_private_key)
+    base_v2 = (
+        f"https://cloud.mongodb.com/api/atlas/v2/groups/{settings.atlas_project_id}"
+        f"/clusters/{settings.atlas_cluster}"
+    )
+    base_v1 = (
+        f"https://cloud.mongodb.com/api/atlas/v1.0/groups/{settings.atlas_project_id}"
+        f"/clusters/{settings.atlas_cluster}"
+    )
+    candidatos = [
+        ("v2/restartPrimaries", f"{base_v2}/restartPrimaries", {"Accept": ATLAS_ACCEPT_VERSION}),
+        ("v2/:testFailover", f"{base_v2}:testFailover", {"Accept": ATLAS_ACCEPT_VERSION}),
+        ("v1.0/restartPrimaries", f"{base_v1}/restartPrimaries", {}),
+    ]
+
+    ultimo = ""
+    for nome, url, headers in candidatos:
+        resp = requests.post(url, auth=auth, headers=headers, timeout=30)
+        if 200 <= resp.status_code < 300:
+            logger.info("Teste de failover aceito pelo Atlas via %s", nome)
+            return nome
+        detalhe = ""
+        try:
+            corpo = resp.json()
+            detalhe = corpo.get("detail") or corpo.get("errorCode") or ""
+        except ValueError:
+            detalhe = resp.text[:200]
+        ultimo = f"HTTP {resp.status_code} {detalhe}".strip()
+        if resp.status_code not in (404, 405):
+            raise RuntimeError(ultimo)
+    raise RuntimeError(ultimo or "nenhuma forma conhecida do recurso foi aceita")
+
+
+# A sondagem da Admin API custa dois round-trips (autenticação digest), e o
+# pré-voo é chamado pelo cabeçalho da aplicação. Sem cache ele levou /preflight
+# de ~1 s para ~6 s numa rede de 250 ms de RTT — a checagem que existe para a
+# demo não quebrar não pode ser o que deixa a demo lenta. Mesmo padrão do tier.
+_atlas_probe_cache: dict[str, Any] = {"ts": 0.0, "dados": None}
+ATLAS_PROBE_TTL_S = 60
+
+
+def preflight_atlas_admin() -> dict[str, Any]:
+    """A Admin API responde de verdade, deste IP, com estas chaves?
+
+    Conferir apenas se a credencial está no `.env` deixava o pré-voo verde
+    enquanto a API recusava toda chamada — e a tela caía em silêncio para o tier
+    do `.env` (`fonte: env (HTTPError)`). Na prática o Online Archive e o teste
+    de failover quebrariam no palco, depois do pré-voo ter dito que estava tudo
+    pronto. O IP de saída muda ao ligar ou desligar VPN, então este é o check
+    que mais falha na vida real, e o mais barato de fazer certo.
+    """
+    if not settings.atlas_configured:
+        return {"ok": False, "message": "opcional; módulo Online Archive ficará limitado"}
+
+    agora = time.monotonic()
+    if _atlas_probe_cache["dados"] and agora - _atlas_probe_cache["ts"] < ATLAS_PROBE_TTL_S:
+        return _atlas_probe_cache["dados"]
+
+    import requests
+    from requests.auth import HTTPDigestAuth
+
+    try:
+        resp = requests.get(
+            f"https://cloud.mongodb.com/api/atlas/v2/groups/{settings.atlas_project_id}"
+            f"/clusters/{settings.atlas_cluster}",
+            auth=HTTPDigestAuth(settings.atlas_public_key, settings.atlas_private_key),
+            headers={"Accept": ATLAS_ACCEPT_VERSION},
+            # Curto de propósito: o pré-voo prefere dizer "inalcançável" rápido a
+            # segurar o cabeçalho da aplicação esperando a Admin API.
+            timeout=5,
+        )
+    except requests.RequestException as exc:
+        return _lembra_probe({"ok": False, "message": f"inalcançável ({type(exc).__name__})"})
+
+    if 200 <= resp.status_code < 300:
+        return _lembra_probe({"ok": True, "message": "credenciais válidas e IP autorizado"})
+
+    detalhe = ""
+    try:
+        detalhe = resp.json().get("detail") or ""
+    except ValueError:
+        pass
+    if resp.status_code in (401, 403):
+        return _lembra_probe({
+            "ok": False,
+            # A mensagem do Atlas já traz o IP recusado: repassar é mais útil que
+            # traduzir, porque é ele que precisa entrar na access list.
+            "message": (
+                f"recusada: {detalhe or 'credencial ou IP não autorizado'} "
+                "— Atlas → Access Manager → API Keys → Access List"
+            ),
+        })
+    return _lembra_probe({"ok": False, "message": f"HTTP {resp.status_code} {detalhe}".strip()})
+
+
+def _lembra_probe(resultado: dict[str, Any]) -> dict[str, Any]:
+    _atlas_probe_cache.update(ts=time.monotonic(), dados=resultado)
+    return resultado
+
+
+def _cluster_estado_sync() -> str | None:
+    import requests
+    from requests.auth import HTTPDigestAuth
+
+    try:
+        resp = requests.get(
+            f"https://cloud.mongodb.com/api/atlas/v2/groups/{settings.atlas_project_id}"
+            f"/clusters/{settings.atlas_cluster}",
+            auth=HTTPDigestAuth(settings.atlas_public_key, settings.atlas_private_key),
+            headers={"Accept": "application/vnd.atlas.2025-03-12+json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return resp.json().get("stateName")
+    except Exception:  # noqa: BLE001 - o acompanhamento é best-effort
+        return None
+
+
+async def _acompanha_failover() -> None:
+    """Segue o cluster até ele voltar a IDLE e fecha a narrativa na tela."""
+    limite = time.monotonic() + FAILOVER_TIMEOUT_S
+    try:
+        # Uma pausa antes da primeira leitura: o Atlas leva alguns segundos para
+        # sair de IDLE, e perguntar cedo demais concluiria o evento na hora.
+        await asyncio.sleep(15)
+        while time.monotonic() < limite:
+            estado = await asyncio.to_thread(_cluster_estado_sync)
+            failover_tracker.erros_durante = max(
+                generator.write_errors - failover_tracker.erros_no_inicio, 0
+            )
+            if estado == "IDLE":
+                failover_tracker.estado = "concluido"
+                failover_tracker.concluido_em = _now()
+                failover_tracker.detalhe = (
+                    "Eleição concluída e cluster de volta em IDLE. Confira a reconciliação: "
+                    "ela precisa fechar em contagem, valor e conjunto."
+                )
+                return
+            await asyncio.sleep(10)
+        failover_tracker.estado = "concluido"
+        failover_tracker.concluido_em = _now()
+        failover_tracker.detalhe = (
+            "Acompanhamento encerrado por tempo; verifique o estado do cluster no Atlas."
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - acompanhar não pode derrubar a demo
+        logger.exception("Falha ao acompanhar o failover")
+        failover_tracker.estado = "concluido"
+        failover_tracker.concluido_em = _now()
+        failover_tracker.detalhe = "Não foi possível acompanhar o estado do cluster."
+
+
+@router.post("/falha/failover")
+async def falha_failover():
+    """Força uma eleição de primary no cluster de demonstração.
+
+    É a falha que um time de plataforma pede: não derrubar um conector, e sim
+    tirar o primary do banco embaixo de uma carga confirmada.
+    """
+    if not settings.atlas_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="Credenciais da Atlas Admin API não configuradas; o teste de failover precisa delas.",
+        )
+    if not generator.running:
+        raise HTTPException(
+            status_code=409,
+            detail="Inicie o fluxo antes: uma eleição sem carga em andamento não demonstra retomada.",
+        )
+    if failover_tracker.estado == "em_curso":
+        raise HTTPException(status_code=409, detail="Já existe uma eleição em curso.")
+
+    failover_tracker.reset()
+    failover_tracker.estado = "em_curso"
+    failover_tracker.iniciado_em = _now()
+    failover_tracker.run_id = generator.run_id
+    failover_tracker.erros_no_inicio = generator.write_errors
+    failover_tracker.inseridos_no_inicio = generator.inserted
+    failover_tracker.eventos_cs_no_inicio = cs_worker.events
+
+    try:
+        via = await asyncio.to_thread(_atlas_test_failover_sync)
+    except Exception as exc:  # noqa: BLE001 - a mensagem precisa chegar à tela
+        failover_tracker.estado = "falhou"
+        failover_tracker.detalhe = str(exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"O Atlas recusou o teste de failover: {exc}",
+        ) from exc
+
+    novo_fim = generator.estender(FAILOVER_EXTENSAO_S)
+    failover_tracker.detalhe = (
+        "Eleição solicitada ao Atlas. A carga continua correndo e foi estendida para o evento "
+        "caber inteiro na execução."
+    )
+    asyncio.create_task(_acompanha_failover())
+    return {
+        "disparado": True,
+        "via": via,
+        "extensao_s": FAILOVER_EXTENSAO_S,
+        "ends_at": novo_fim.isoformat() if novo_fim else None,
+        "detalhe": failover_tracker.detalhe,
+    }
+
+
+@router.get("/falha/failover/status")
+async def falha_failover_status():
+    return failover_tracker.snapshot()
+
+
 @router.post("/falha/connector")
 async def falha_connector(body: FalhaConnector):
     """Derruba a coluna 2 no meio do fluxo e a traz de volta."""
@@ -2455,6 +2943,80 @@ async def falha_evento_invalido():
         "injetado": True,
         "endToEndId": doc["endToEndId"],
         "detalhe": f"documento com `valor` string gravado; o ASP deve desviá-lo para {STREAM_DB}.{COL_DLQ}",
+    }
+
+
+# Contrato do evento publicado, espelhando o `$validate` do processor em
+# `scripts/setup-asp.js`. Fica aqui para a tela poder mostrar o contrato que
+# está valendo em vez de descrevê-lo em prosa — e para a injeção de mudança
+# incompatível ser lida contra o mesmo texto que o cliente acabou de ver.
+CONTRATO_EVENTO = [
+    {"campo": "endToEndId", "tipo": "string", "obrigatorio": True,
+     "nota": "chave de negócio; índice único e base da idempotência"},
+    {"campo": "run_id", "tipo": "string", "obrigatorio": True,
+     "nota": "identifica a execução na reconciliação"},
+    {"campo": "valor", "tipo": "decimal | double | int | long", "obrigatorio": True,
+     "nota": "monetário; a reconciliação soma em centavos inteiros"},
+    {"campo": "tipo", "tipo": "enum: PIX, CARTAO_DEBITO, CARTAO_CREDITO", "obrigatorio": True,
+     "nota": "canal do evento; valor fora do enum vai para a DLQ"},
+    {"campo": "uf", "tipo": "string", "obrigatorio": True,
+     "nota": "chave de agregação das janelas"},
+]
+
+
+@router.get("/contrato")
+async def contrato():
+    """O contrato que o processor exige, e o que acontece quando ele é violado."""
+    return {
+        "fonte": "$validate ($jsonSchema) do processor, com validationAction: dlq",
+        "processor": ASP_PROCESSOR_NAME,
+        "campos": CONTRATO_EVENTO,
+        "chave_kafka": "document key do MongoDB (_id)",
+        "formato": "JSON, sem Schema Registry nesta PoV",
+        "politica": (
+            "Documento fora do contrato não para o pipeline e não é descartado em silêncio: "
+            "vai para a DLQ com o motivo, e a reconciliação o contabiliza."
+        ),
+        "fora_de_escopo": (
+            "Registro versionado, compatibilidade entre versões e ownership entre squads são "
+            "decisões de produção. O que esta PoV demonstra é o comportamento diante da violação."
+        ),
+    }
+
+
+@router.post("/falha/schema-incompativel")
+async def falha_schema_incompativel():
+    """Publica uma "nova versão" do evento que quebra o contrato.
+
+    O caso real: alguém renomeia `valor` para `amount` numa squad e publica.
+    O campo obrigatório some, o processor rejeita pelo `$jsonSchema` e o
+    documento vai para a DLQ com o motivo — o pipeline não para e nenhum
+    consumidor recebe um evento que não sabe ler.
+    """
+    doc = {
+        "endToEndId": f"S{uuid.uuid4().hex[:31].upper()}",
+        "run_id": generator.run_id or "execucao-local",
+        "canal": "PIX",
+        "particao": 0,
+        # `valor` renomeado: é exatamente a mudança incompatível que um
+        # Schema Registry recusaria no registro.
+        "amount": 123.45,
+        "tipo": "PIX",
+        "uf": "SP",
+        "ts": _now(),
+        "status": "liquidada",
+        "injetado": "falha-demo-schema",
+        "schema_versao": "2",
+    }
+    await acol_tx().insert_one(doc)
+    return {
+        "injetado": True,
+        "endToEndId": doc["endToEndId"],
+        "mudanca": "campo obrigatório `valor` renomeado para `amount`",
+        "detalhe": (
+            f"evento fora do contrato gravado; o processor deve recusá-lo pelo $jsonSchema e "
+            f"registrá-lo em {STREAM_DB}.{COL_DLQ} sem parar"
+        ),
     }
 
 
@@ -3035,18 +3597,73 @@ async def asp_janelas(limit: int = 30):
     }
 
 
+# Acima disto o digest do conjunto deixa de ser calculado: ele exige projetar
+# um identificador por documento da execução, e a varredura passaria a competir
+# com a própria demonstração. Contagem e valor continuam valendo em qualquer
+# volume — é o digest que é opcional, e a tela diz quando ele não foi calculado.
+MAX_DOCS_DIGEST = 200_000
+
+
+def _fonte_conferivel(run_id: str) -> dict[str, Any]:
+    """Contagem, soma em centavos e digest do conjunto, lidos da fonte no Atlas.
+
+    Um `$group` só: contar e somar em passadas separadas custaria duas varreduras
+    do mesmo índice de `run_id`.
+    """
+    linhas = list(sdb[COL_TX].aggregate([
+        {"$match": {"run_id": run_id}},
+        {"$group": {
+            "_id": None,
+            "documentos": {"$sum": 1},
+            # `valor` é Decimal128 no caminho normal e string no evento inválido
+            # injetado de propósito. O `$isNumber` mantém o inválido fora da soma
+            # e contado à parte, que é exatamente como a DLQ o trata.
+            "centavos": {"$sum": {"$cond": [
+                {"$isNumber": "$valor"},
+                {"$round": [{"$multiply": [{"$toDecimal": "$valor"}, 100]}, 0]},
+                0,
+            ]}},
+            "nao_numericos": {"$sum": {"$cond": [{"$isNumber": "$valor"}, 0, 1]}},
+        }},
+    ]))
+    linha = linhas[0] if linhas else {}
+    documentos = int(linha.get("documentos") or 0)
+    bruto = linha.get("centavos") or 0
+    centavos = int(bruto.to_decimal() if isinstance(bruto, Decimal128) else bruto)
+
+    digest: int | None = None
+    if 0 < documentos <= MAX_DOCS_DIGEST:
+        digest = 0
+        for doc in sdb[COL_TX].find({"run_id": run_id}, {"_id": 0, "endToEndId": 1}):
+            e2e = doc.get("endToEndId")
+            if e2e:
+                digest ^= _digest_de(e2e)
+
+    return {
+        "documentos": documentos,
+        "centavos": centavos,
+        "nao_numericos": int(linha.get("nao_numericos") or 0),
+        "digest": digest,
+    }
+
+
 def _reconcile_run(run_id: str) -> dict[str, Any]:
-    source = sdb[COL_TX].count_documents({"run_id": run_id})
+    fonte = _fonte_conferivel(run_id)
+    source = fonte["documentos"]
     asp_rows = list(sdb[COL_WINDOWS].aggregate([
         {"$match": {"run_id": run_id}},
         {"$group": {
             "_id": None,
             "processadas": {"$sum": "$qtd"},
             "alertas_valor_alto": {"$sum": "$alertas_valor_alto"},
+            "volume": {"$sum": "$volume"},
+            "janelas": {"$sum": 1},
         }},
     ]))
     asp_processed = int(asp_rows[0].get("processadas") or 0) if asp_rows else 0
     alertas = int(asp_rows[0].get("alertas_valor_alto") or 0) if asp_rows else 0
+    asp_janelas = int(asp_rows[0].get("janelas") or 0) if asp_rows else 0
+    asp_centavos = centavos_de(asp_rows[0].get("volume")) if asp_rows else 0
     dlq_aberta = sdb[COL_DLQ].count_documents({
         "$or": [
             {"doc.fullDocument.run_id": run_id},
@@ -3058,18 +3675,58 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
     observed = run_tracker.snapshot(run_id)
 
     def channel(name: str) -> dict[str, Any]:
-        data = observed.get(name, {"unicos": 0, "duplicados": 0, "completo_em_memoria": True})
+        data = observed.get(name, {
+            "unicos": 0, "duplicados": 0, "completo_em_memoria": True,
+            "centavos": 0, "nao_numericos": 0, "digest": 0,
+        })
+        contagem_ok = source > 0 and data["unicos"] == source
+        # Valor e digest só têm significado quando a contagem já fechou: no meio
+        # do fluxo eles divergem porque falta evento, não porque algo mudou.
+        valor_ok = contagem_ok and data.get("centavos", 0) == fonte["centavos"]
+        digest_ok = (
+            contagem_ok
+            and fonte["digest"] is not None
+            and data.get("digest", 0) == fonte["digest"]
+        )
         return {
             **data,
             "pendentes": max(source - data["unicos"], 0),
-            "reconciliado": source > 0 and data["unicos"] == source,
+            "reconciliado": contagem_ok and valor_ok and (digest_ok or fonte["digest"] is None),
+            "contagem_confere": contagem_ok,
+            "valor_confere": valor_ok,
+            "digest_confere": digest_ok if fonte["digest"] is not None else None,
+            "valor": round(data.get("centavos", 0) / 100, 2),
         }
 
     asp_accounted = asp_processed + dlq
+    # O ASP soma doubles e arredonda o volume em cada janela fechada: o erro é de
+    # até meio centavo por janela, e comparar ao centavo exato acusaria
+    # divergência onde só existe arredondamento. A tolerância é declarada, não
+    # escondida — e cresce só com o número de janelas, nunca com o volume.
+    dlq_centavos = 0
+    for dlq_doc in sdb[COL_DLQ].find(
+        {"$or": [{"doc.fullDocument.run_id": run_id}, {"fullDocument.run_id": run_id}]},
+        {"_id": 0, "doc.fullDocument.valor": 1, "fullDocument.valor": 1},
+    ):
+        origem = dlq_doc.get("doc", {}).get("fullDocument") or dlq_doc.get("fullDocument") or {}
+        dlq_centavos += centavos_de(origem.get("valor")) or 0
+    tolerancia_centavos = max(1, asp_janelas)
+    asp_valor_ok = (
+        asp_accounted == source
+        and source > 0
+        and abs((asp_centavos + dlq_centavos) - fonte["centavos"]) <= tolerancia_centavos
+    )
     return {
         "run_id": run_id,
         "gerador_ativo": generator.running and generator.run_id == run_id,
-        "fonte": {"inseridas": source, "colecao": f"{STREAM_DB}.{COL_TX}"},
+        "fonte": {
+            "inseridas": source,
+            "colecao": f"{STREAM_DB}.{COL_TX}",
+            "valor": round(fonte["centavos"] / 100, 2),
+            "centavos": fonte["centavos"],
+            "nao_numericos": fonte["nao_numericos"],
+            "digest": f"{fonte['digest']:016x}" if fonte["digest"] is not None else None,
+        },
         "change_streams": channel("change_streams"),
         "kafka": channel("kafka"),
         "asp": {
@@ -3079,8 +3736,27 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
             "dlq_total": dlq,
             "contabilizadas": asp_accounted,
             "pendentes": max(source - asp_accounted, 0),
-            "reconciliado": source > 0 and asp_accounted == source,
+            "reconciliado": source > 0 and asp_accounted == source and asp_valor_ok,
+            "contagem_confere": source > 0 and asp_accounted == source,
+            "valor_confere": asp_valor_ok,
+            "digest_confere": None,   # o ASP entrega agregado; não há conjunto de ids para comparar
             "alertas_valor_alto": alertas,
+            "valor": round((asp_centavos + dlq_centavos) / 100, 2),
+            "janelas": asp_janelas,
+            "tolerancia_valor": round(tolerancia_centavos / 100, 2),
+        },
+        "conferencia": {
+            "valor_fonte": round(fonte["centavos"] / 100, 2),
+            "digest_fonte": f"{fonte['digest']:016x}" if fonte["digest"] is not None else None,
+            "digest_calculado": fonte["digest"] is not None,
+            "limite_digest": MAX_DOCS_DIGEST,
+            "nota": (
+                "Contagem prova que nada faltou. A soma em centavos prova que nada foi transformado "
+                "no caminho. O digest XOR dos endToEndId prova que os três caminhos viram o mesmo "
+                "conjunto, e não apenas a mesma quantidade. O ASP entrega agregado por janela: ele "
+                f"confere por valor dentro de ±R$ {tolerancia_centavos / 100:.2f} "
+                f"({asp_janelas} janela(s) arredondadas a 2 casas), sem digest."
+            ),
         },
         "final": (
             "reconciliado"
@@ -3089,6 +3765,7 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
             and channel("change_streams")["reconciliado"]
             and channel("kafka")["reconciliado"]
             and asp_accounted == source
+            and asp_valor_ok
             else "em_processamento"
         ),
         "escopo": (

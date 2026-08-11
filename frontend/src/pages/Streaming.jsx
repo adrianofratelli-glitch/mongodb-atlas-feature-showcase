@@ -157,6 +157,9 @@ export default function Streaming() {
   const base = replay ? '/replay' : ''
   const [sessaoLive, setSessaoLive] = useState(false)
   const [preparando, setPreparando] = useState(false)
+  // Por que o Play não começou. Um botão que não faz nada é o pior desfecho
+  // possível numa apresentação.
+  const [avisoPlay, setAvisoPlay] = useState('')
   const [manifest, setManifest] = useState(null)
 
   useEffect(() => {
@@ -214,8 +217,17 @@ export default function Streaming() {
       // Toda rodada começa isolada. Sem isto, documentos/janelas e o run_id da
       // rodada anterior podiam aparecer durante o novo Play e a reconciliação
       // comparava snapshots de duas execuções diferentes.
+      // Reset que falha aborta o Play. Sem mensagem, o botão parece morto no
+      // meio da apresentação — o operador clica de novo e nada acontece.
+      setAvisoPlay('')
       const reset = await call('/streaming/reset', { method: 'POST', timeoutMs: 220_000 })
-      if (!reset?.reset) return
+      if (!reset?.reset) {
+        setAvisoPlay(
+          'A limpeza da rodada anterior não concluiu, então o Play foi cancelado para não misturar '
+          + 'duas execuções. Clique em ↺ Reset e tente o Play de novo.',
+        )
+        return
+      }
       window.dispatchEvent(new Event('preflight-refresh'))
       genRequestSeq.current += 1 // invalida um /status antigo ainda em voo
       activeRunRef.current = null
@@ -246,7 +258,11 @@ export default function Streaming() {
       }
       genRequestSeq.current += 1
       activeRunRef.current = started.run_id
-      setGen(started)
+      // Mesclar, não substituir: a resposta do start traz só a identificação da
+      // execução, e trocar o objeto inteiro por ela apagava TTL, write_ack e o
+      // diagnóstico de entrega até o próximo /status. Na tela isso aparecia como
+      // "TTL de —" e um alerta falso de backend desatualizado logo após o Play.
+      setGen((prev) => ({ ...(prev || {}), ...started }))
       refreshGen()
     } finally {
       setPreparando(false)
@@ -268,6 +284,24 @@ export default function Streaming() {
     setFalhaMsg(d?.derrubado
       ? `connector fora por ${d.segundos}s e retomado pelo offset — confira a reconciliação fechar`
       : (d?.detalhe || 'não foi possível derrubar o connector'))
+  }
+
+  const forcarFailover = async () => {
+    setFalha('failover'); setFalhaMsg('')
+    const d = await call('/streaming/falha/failover', { method: 'POST', timeoutMs: 60_000 })
+    setFalha(null)
+    setFalhaMsg(d?.disparado
+      ? `eleição solicitada ao Atlas — a carga foi estendida em ${d.extensao_s}s para o evento caber na execução`
+      : 'não foi possível iniciar o teste de failover (veja o aviso da API)')
+  }
+
+  const injetarSchemaIncompativel = async () => {
+    setFalha('schema'); setFalhaMsg('')
+    const d = await call('/streaming/falha/schema-incompativel', { method: 'POST' })
+    setFalha(null)
+    setFalhaMsg(d?.injetado
+      ? `versão incompatível publicada (${d.mudanca}) — deve aparecer na DLQ com o motivo`
+      : 'não foi possível publicar a versão incompatível')
   }
 
   const injetarInvalido = async () => {
@@ -371,6 +405,10 @@ export default function Streaming() {
   }, [call, base])
   useEffect(() => { lerAspStatus() }, [lerAspStatus])
   useIntervaloVisivel(lerAspStatus, 5000, observar)
+
+  // Contrato do evento: estático durante a sessão, então uma leitura só.
+  const [contrato, setContrato] = useState(null)
+  useEffect(() => { call('/streaming/contrato').then((d) => d && setContrato(d)) }, [call])
 
   // ── Evidências de confiabilidade ─────────────────────────────────────────
   const [oplog, setOplog] = useState(null)
@@ -517,7 +555,11 @@ export default function Streaming() {
           </span>
         </div>
       )}
-      {!replay && gen && !Object.prototype.hasOwnProperty.call(gen, 'write_ack') && (
+      {/* Só um payload de /status responde por `write_ack`. Avaliar a ausência
+          dele em qualquer outro payload — o do /start, por exemplo — acendia um
+          alerta vermelho de backend desatualizado no meio de uma demo saudável. */}
+      {!replay && gen && Object.prototype.hasOwnProperty.call(gen, 'tps_medido')
+        && !Object.prototype.hasOwnProperty.call(gen, 'write_ack') && (
         <div className="str-selo-linha">
           <span className="str-selo-tag str-selo-tag-alerta">backend desatualizado</span>
           <span className="str-selo-txt">reinicie o <code>overview</code> para habilitar ACK Atlas e o cenário padrão de 8.000 TPS</span>
@@ -550,6 +592,47 @@ export default function Streaming() {
           </div>
         </div>
 
+        {avisoPlay && (
+          <div className="str-alert" style={{ marginBottom: 10 }}>{avisoPlay}</div>
+        )}
+
+        {/* O evento precisa ser narrado enquanto acontece: uma eleição leva mais
+            de um minuto, e sem estes números a tela fica só "esperando". O que
+            convence não é a eleição, é a contagem de escritas rejeitadas ao lado
+            das confirmadas — normalmente zero, porque o driver reabsorve. */}
+        {!replay && gen?.failover && gen.failover.estado !== 'ocioso' && (
+          <div className={`str-failover str-failover-${gen.failover.estado}`}>
+            <div className="str-failover-head">
+              <strong>
+                {gen.failover.estado === 'em_curso' && '◌ Eleição de primary em curso'}
+                {gen.failover.estado === 'concluido' && '✓ Failover concluído — cluster de volta em IDLE'}
+                {gen.failover.estado === 'falhou' && '⚠ O Atlas recusou o teste de failover'}
+              </strong>
+              {gen.failover.duracao_s != null && <span>{gen.failover.duracao_s}s</span>}
+            </div>
+            <div className="str-failover-nums">
+              <div>
+                <span style={{ color: gen.failover.escritas_rejeitadas ? '#f97316' : '#00ED64' }}>
+                  {num(gen.failover.escritas_rejeitadas)}
+                </span>
+                <small>escritas rejeitadas · o driver reabsorve com <code>retryWrites</code></small>
+              </div>
+              <div>
+                <span style={{ color: '#00ED64' }}>{num(gen.failover.escritas_confirmadas)}</span>
+                <small>escritas confirmadas desde o início da eleição</small>
+              </div>
+              <div>
+                <span style={{ color: '#00ED64' }}>{num(gen.failover.eventos_apos_eleicao)}</span>
+                <small>eventos entregues ao change stream no mesmo período</small>
+              </div>
+            </div>
+            <div className="str-note" style={{ marginTop: 8 }}>
+              {gen.failover.detalhe} O que fecha o argumento não é o cluster voltar: é a
+              reconciliação abaixo fechar em <strong>contagem, valor e conjunto</strong> depois disto.
+            </div>
+          </div>
+        )}
+
         {/* Injeção de falha: a evidência que o caminho feliz não dá. Só ao
             vivo — em replay não há o que derrubar, a execução já terminou. */}
         {!replay && (
@@ -563,6 +646,17 @@ export default function Streaming() {
             <button className="btn btn-xs" onClick={injetarInvalido} disabled={falha === 'evento'}
               title="Grava uma transação com `valor` em texto. O ASP desvia para a DLQ e segue rodando.">
               {falha === 'evento' ? '◌ enviando…' : '☠ Injetar evento inválido → DLQ'}
+            </button>
+            <button className="btn btn-xs" onClick={injetarSchemaIncompativel} disabled={falha === 'schema'}
+              title="Publica uma versão do evento com o campo obrigatório `valor` renomeado para `amount` — a mudança incompatível que um Schema Registry recusaria.">
+              {falha === 'schema' ? '◌ publicando…' : '⇄ Publicar versão incompatível do schema'}
+            </button>
+            {/* A única falha que atinge o MongoDB. Fica por último de propósito:
+                é a mais cara de repetir e a de maior efeito. */}
+            <button className="btn btn-xs" onClick={forcarFailover}
+              disabled={falha === 'failover' || !gen?.running || gen?.failover?.estado === 'em_curso'}
+              title="Força uma eleição de primary no cluster de demonstração pela Atlas Admin API. A carga continua e é estendida para o evento caber na execução.">
+              {falha === 'failover' ? '◌ solicitando eleição…' : '🔻 Forçar failover de primary'}
             </button>
             {falhaMsg && <span className="str-falhas-msg">{falhaMsg}</span>}
             {!gen?.running && (
@@ -601,6 +695,21 @@ export default function Streaming() {
               sub="stop automático + reconciliação" />
           </div>
         </div>
+        {/* Entrega abaixo do alvo tem de ser explicada na hora em que aparece.
+            "medido 64 · alvo 2.000" sem atribuição é lido como limite do
+            Atlas; o limite costuma ser o round-trip da máquina que apresenta. */}
+        {!replay && gen?.entrega?.estado === 'abaixo_do_alvo' && (
+          <div className="str-alert" style={{ marginTop: 12 }}>
+            <strong>
+              Entrega em {Math.round((gen.entrega.fracao_do_alvo ?? 0) * 100)}% do alvo —
+              {gen.entrega.limitador === 'rede_do_apresentador'
+                ? ' limitada pela rede desta máquina'
+                : ' limitada pelo processo gerador local'}.
+            </strong>
+            <div style={{ marginTop: 4, fontSize: 11.5, lineHeight: 1.5 }}>{gen.entrega.detalhe}</div>
+          </div>
+        )}
+
         {/* O número de destaque é o do servidor; a rede fica ao lado como
             contexto. Sem essa separação a plateia lê latência de rede como se
             fosse tempo de banco. */}
@@ -770,9 +879,10 @@ export default function Streaming() {
                 title="Kafka não configurado"
                 detalhe={kafkaStatus.connector?.detalhe || kafkaStatus.consumidor?.detalhe}
                 passos={[
-                  <>Suba a infra local: <code>docker compose -f docker-compose.streaming.yml up -d</code></>,
+                  <>Suba broker e Connect: <code>./scripts/kafka-local.sh up</code></>,
                   <>Registre o connector: <code>./scripts/setup-kafka-connector.sh</code></>,
                   <>Confirme <code>KAFKA_BROKERS</code> e <code>CONNECT_URL</code> em <code>backend/.env</code></>,
+                  <>Ou simplesmente: <code>./bin/overview</code>, que faz os dois</>,
                 ]}
               >
                 <div className="str-note" style={{ marginTop: 10 }}>
@@ -947,6 +1057,34 @@ export default function Streaming() {
               <strong> watermark avança</strong>; se a fonte ficar ociosa, a última janela pode permanecer aberta.
               Documento que chega tarde demais é contabilizado na DLQ, não silenciosamente descartado.
             </div>
+            {/* O contrato fica onde ele é aplicado. Mostrá-lo antes da injeção
+                é o que transforma "foi para a DLQ" em "foi para a DLQ porque
+                violou ISTO, que você acabou de ler". */}
+            {contrato && (
+              <details className="str-note-details">
+                <summary>Contrato do evento publicado <span>e o que acontece quando ele é violado</span></summary>
+                <div style={{ overflowX: 'auto' }}>
+                  <table className="str-contrato">
+                    <thead><tr><th>campo</th><th>tipo</th><th>papel</th></tr></thead>
+                    <tbody>
+                      {contrato.campos.map((c) => (
+                        <tr key={c.campo}>
+                          <td><code>{c.campo}</code>{c.obrigatorio && ' *'}</td>
+                          <td><code>{c.tipo}</code></td>
+                          <td>{c.nota}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="str-note" style={{ marginTop: 8 }}>
+                  Aplicado pelo <code>$validate</code> do processor <code>{contrato.processor}</code>,
+                  com <code>validationAction: dlq</code>. {contrato.politica} Chave no Kafka:{' '}
+                  {contrato.chave_kafka} · {contrato.formato}.
+                </div>
+                <div className="str-note">{contrato.fora_de_escopo}</div>
+              </details>
+            )}
             <div className="str-note">
               <strong>Valores altos</strong> é um sinal operacional simples (PIX ≥ R$ 5 mil), não um motor antifraude.
               Ele prova que o mesmo pipeline pode manter estado de janela e produzir indicadores acionáveis sem mover o fluxo para batch.
@@ -992,6 +1130,15 @@ export default function Streaming() {
               <small>perdidas · conferido nos três caminhos</small>
             </div>
             <div>
+              <span style={{ color: '#00ED64' }}>R$ {fmtBRL(reconciliacao.fonte.valor)}</span>
+              <small>
+                valor conferido ao centavo
+                {reconciliacao.conferencia?.digest_calculado
+                  ? <> · mesmo conjunto (<code>{reconciliacao.conferencia.digest_fonte}</code>)</>
+                  : null}
+              </small>
+            </div>
+            <div>
               <span>{cenario?.ambiente?.cluster || '—'}{aspStatus?.tier ? ` + ${aspStatus.tier}` : ''}</span>
               <small>tier em que esta execução rodou</small>
             </div>
@@ -1002,15 +1149,37 @@ export default function Streaming() {
             {[
               ['Fonte Atlas', reconciliacao.fonte.inseridas, 0,
                 reconciliacao.final === 'reconciliado',
-                reconciliacao.gerador_ativo ? 'escritas confirmadas até agora' : 'total persistido da execução'],
-              ['Change Streams', reconciliacao.change_streams.unicos, reconciliacao.change_streams.pendentes, reconciliacao.change_streams.reconciliado],
-              ['Kafka', reconciliacao.kafka.unicos, reconciliacao.kafka.pendentes, reconciliacao.kafka.reconciliado],
-              ['ASP + DLQ', reconciliacao.asp.contabilizadas, reconciliacao.asp.pendentes, reconciliacao.asp.reconciliado],
-            ].map(([label, value, pending, ok, status]) => (
+                reconciliacao.gerador_ativo ? 'escritas confirmadas até agora' : 'total persistido da execução',
+                reconciliacao.fonte],
+              ['Change Streams', reconciliacao.change_streams.unicos, reconciliacao.change_streams.pendentes, reconciliacao.change_streams.reconciliado, null, reconciliacao.change_streams],
+              ['Kafka', reconciliacao.kafka.unicos, reconciliacao.kafka.pendentes, reconciliacao.kafka.reconciliado, null, reconciliacao.kafka],
+              ['ASP + DLQ', reconciliacao.asp.contabilizadas, reconciliacao.asp.pendentes, reconciliacao.asp.reconciliado, null, reconciliacao.asp],
+            ].map(([label, value, pending, ok, status, canal]) => (
               <div className="str-neg-c" key={label}>
                 <div className="str-neg-k">{label}</div>
                 <div className="str-neg-v" style={ok ? { color: '#00ED64' } : undefined}>{num(value)}</div>
                 <div className="str-neg-s">{status || (ok ? 'contagem fechada' : `${num(pending)} ainda pendente(s)`)}</div>
+                {/* Contagem sozinha não prova integridade: um documento trocado
+                    por outro mantém o total. Valor e digest ficam ao lado do
+                    número, não num rodapé — é o que um time de pagamentos
+                    confere antes de acreditar no volume. */}
+                {canal?.valor != null && (
+                  <div className="str-neg-conf">
+                    <span className={canal.valor_confere ? 'ok' : 'pend'}>
+                      R$ {fmtBRL(canal.valor)}
+                    </span>
+                    {canal.digest_confere != null && (
+                      <span className={canal.digest_confere ? 'ok' : 'pend'} title="XOR dos endToEndId: só bate quando o conjunto é o mesmo">
+                        {canal.digest_confere ? '✓ conjunto' : '○ conjunto'}
+                      </span>
+                    )}
+                    {label === 'ASP + DLQ' && canal.tolerancia_valor != null && (
+                      <span className="tol" title="O ASP arredonda o volume em cada janela fechada">
+                        ±R$ {fmtBRL(canal.tolerancia_valor)}
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             <div className="str-neg-c">
@@ -1032,6 +1201,25 @@ export default function Streaming() {
         {/* Um arquiteto de pagamentos precisa desta linha ANTES de qualquer
             número de throughput: entrega ao menos uma vez é a semântica real, e
             a chave única é o que a torna segura. Estava só num rodapé. */}
+        {/* Três perguntas diferentes, e só a primeira é sobre quantidade.
+            Contagem igual com valor diferente é transformação errada no
+            caminho; contagem e valor iguais com conjunto diferente é troca de
+            documento. Um banco pergunta as três. */}
+        <div className="str-garantia">
+          <span className="str-garantia-tag">o que é conferido</span>
+          <span>
+            <strong>Contagem</strong> — nada faltou. <strong>Valor</strong> — a soma em centavos
+            inteiros é idêntica nos três caminhos, então nada foi transformado no meio.{' '}
+            <strong>Conjunto</strong> — o XOR dos <code>endToEndId</code> só coincide quando os
+            caminhos viram exatamente os mesmos documentos, e não apenas a mesma quantidade
+            {reconciliacao?.conferencia?.digest_calculado === false
+              ? <> (não calculado acima de {num(reconciliacao.conferencia.limite_digest)} documentos)</>
+              : null}.
+            O ASP entrega agregado por janela: confere por valor, dentro do arredondamento
+            declarado de cada janela, e não tem conjunto de identificadores para comparar.
+          </span>
+        </div>
+
         <div className="str-garantia">
           <span className="str-garantia-tag">semântica de entrega</span>
           <span>

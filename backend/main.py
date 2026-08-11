@@ -108,10 +108,7 @@ def preflight():
     checks = {
         "mongo_uri": {"ok": bool(settings.mongo_uri), "message": "configurada" if settings.mongo_uri else "ausente"},
         "mongodb": {"ok": mongo_ok, "message": mongo_message},
-        "atlas_admin_api": {
-            "ok": settings.atlas_configured,
-            "message": "configurada" if settings.atlas_configured else "opcional; módulo Online Archive ficará limitado",
-        },
+        "atlas_admin_api": streaming.preflight_atlas_admin(),
         "mutation_guard": {
             "ok": True,
             "message": "token obrigatório" if settings.demo_admin_token else "somente localhost/origens permitidas",
