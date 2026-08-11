@@ -903,7 +903,7 @@ language.
 Validated after the current implementation:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 146 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 157 passed
 npm --prefix frontend run build                    # Vite build passed
 git diff --check                                   # passed
 ```
