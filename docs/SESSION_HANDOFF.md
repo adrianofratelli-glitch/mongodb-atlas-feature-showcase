@@ -1,6 +1,58 @@
 # Current implementation handoff
 
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
+
+## Whose ceiling was it? The run's cost on the cluster (2026-08-11)
+
+The throughput figure was the weakest number in module 07 — not because it is
+low, but because alone it never says **whose** limit it is. A payments architect
+reads "2,000 TPS" as an Atlas capacity claim; the generator is a CPython process
+on the presenter's laptop and usually saturates first.
+
+`GET /streaming/folga` reads the primary's CPU from the Atlas Admin API, cut to
+the run's own window, and reports it next to the peak TPS that produced it.
+Verdicts: `sem_execucao`, `metricas_pendentes`, `cluster_com_folga`,
+`cluster_participando`, `cluster_no_limite`.
+
+Measured on M20, sa-east-1, WARP off (RTT 7.5 ms): ~1,600 TPS sustained for
+120 s at **28.6% and 53.0% CPU on two identical runs**. Burst runs of 30 s reach
+~2,400 TPS.
+
+Four defects were found by measuring, and each is now a test:
+
+1. **Atlas publishes process metrics one to two minutes late.** The first
+   version queried right after a 30 s run and concluded "cluster idle" from
+   points that predated the load — the right answer from the wrong evidence.
+   The series is cut at `started_at`; with no point covering the run the answer
+   is `metricas_pendentes`, never a number.
+2. **A run shorter than the publish interval is diluted.** The rest of the
+   minute (cluster idle) is averaged in: the same workload read 43% when it
+   landed inside a bucket and 15% when it straddled two. Below 120 s the
+   response sets `cpu_subestimada` and drops the "plenty of headroom" claim.
+   `duration_s` maxes at 120, which is exactly the clean threshold.
+3. **The peak only existed if someone was watching.** `tps_pico` was updated
+   inside `measured_tps()`, which only runs when the UI polls status. A run with
+   nobody on the page ended with peak 0, and the panel compared cluster CPU with
+   no TPS at all. It is now computed in `_record()`, on the write path.
+4. **`.replace(",", ".")` on the finished sentence ate the prose commas** —
+   "trabalho real. ainda com folga." on screen. The same mistake was already
+   committed and documented in `routers/geo.py`. The number is formatted in
+   isolation.
+
+The endpoint never returns the Atlas hostname: it carries the cluster name,
+which is usually the customer's name, and this field reaches the screen and the
+screenshots of a public repository. A test asserts it.
+
+## What leaves the design (2026-08-11)
+
+The second gap was that the PoV proved the technology works without saying what
+it **replaces** — a team that already runs Kafka does not buy one more place for
+the data to pass through. A new panel in module 07 compares the components each
+path requires, who operates them, and where reconciliation happens. It is
+deliberately factual and estimates no saving: an invented cost number is the
+first thing to be dismantled in the room, and the Kafka row stays correct
+whenever the event must reach systems outside Atlas — which is why it is in the
+demo, working.
 
 ## Panel 02 stopped being a catalogue search (2026-08-10)
 

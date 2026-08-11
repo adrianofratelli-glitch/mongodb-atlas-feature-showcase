@@ -281,3 +281,28 @@ The number to actually trust is the reconciliation described above. Throughput
 varies with your laptop, your region and your tier; whether the events all
 arrived does not.
 
+### Whose ceiling was it?
+
+`GET /streaming/folga` reads the primary's CPU from the Atlas Admin API and puts
+it next to the peak TPS of the same run, so the throughput figure stops being
+ambiguous: a modest TPS with the cluster near idle means the limit was the
+generator or the network, and the panel says which.
+
+Three things about this reading, all found by measuring:
+
+- **Atlas publishes process metrics one to two minutes late.** Queried right
+  after a 30 s run, the series still describes the cluster *before* the load.
+  The endpoint cuts the series at the run's `started_at` and answers
+  `metricas_pendentes` rather than concluding from stale points. Wait a minute
+  and refresh.
+- **Runs shorter than the one-minute publish interval read low.** The rest of
+  that minute — with the cluster idle — is averaged in. The same workload showed
+  43% when the run landed inside a bucket and 15% when it straddled two. Below
+  120 s the response sets `cpu_subestimada` and the text says to read the number
+  as a floor. Use `duration_s: 120` for the capacity conversation.
+- **Repeat runs vary.** Two identical 120 s runs at ~1,600 TPS read 28.6% and
+  53.0%. Quote the range, or quote the run on screen — not a remembered number.
+
+None of this is sizing. It answers who hit the ceiling in *this* run; a
+production volume needs a measurement at production volume.
+

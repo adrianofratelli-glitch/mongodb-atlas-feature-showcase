@@ -485,6 +485,24 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 @media (max-width: 1100px) { .str-veredito { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .str-veredito { grid-template-columns: 1fr; } }
 
+/* Custo da execução no cluster. Fica ao lado do veredito, não dentro dele: o
+   veredito é sobre integridade (nada se perdeu) e este bloco é sobre
+   capacidade (o que isso custou). Misturar os dois faz a plateia ler o TPS
+   como garantia. Borda neutra de propósito — não é um número comemorativo. */
+.str-folga { margin-top: 12px; padding: 13px 16px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.025); }
+.str-folga-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.str-folga-nums > div { min-width: 0; text-align: center; }
+.str-folga-nums span { display: block; font-family: var(--font-mono); font-size: 23px;
+  font-weight: 800; line-height: 1.1; color: var(--text-primary); }
+.str-folga-nums small { display: block; margin-top: 4px; color: var(--text-secondary);
+  font-size: 10.5px; line-height: 1.35; }
+.str-folga-detalhe { margin: 12px 0 0; font-size: 12px; line-height: 1.55;
+  color: var(--text-primary); }
+.str-folga-nota { margin: 7px 0 0; font-size: 10.5px; line-height: 1.5;
+  color: var(--text-secondary); }
+@media (max-width: 640px) { .str-folga-nums { grid-template-columns: 1fr; } }
+
 /* Failover: o evento é narrado enquanto acontece, então o bloco muda de cor
    entre "em curso" e "concluído" sem trocar de lugar na página. */
 .str-failover { margin: 12px 0 10px; padding: 12px 14px; border-radius: 10px;

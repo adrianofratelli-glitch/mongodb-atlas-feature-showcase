@@ -415,6 +415,16 @@ export default function Streaming() {
   const [leitura, setLeitura] = useState(null)
   const [dlqResumo, setDlqResumo] = useState(null)
   const [reconciliacao, setReconciliacao] = useState(null)
+  // Custo da execução no cluster. Poll lento e de propósito: as métricas de
+  // processo do Atlas são publicadas com um a dois minutos de atraso, então
+  // consultar a cada segundo só repetiria a mesma resposta — e o painel
+  // continua atualizando depois do run, que é quando o número finalmente chega.
+  const [folga, setFolga] = useState(null)
+  useIntervaloVisivel(useCallback(async () => {
+    if (replay) return
+    const d = await call(`${base}/streaming/folga`)
+    if (d) setFolga(d)
+  }, [call, base, replay]), 15000, !replay && Boolean(gen?.run_id))
   useIntervaloVisivel(useCallback(async () => {
     const [o, l, d] = await Promise.all([
       call(`${base}/streaming/oplog`), call(`${base}/streaming/leitura`), call(`${base}/streaming/asp/dlq/resumo`),
@@ -1144,6 +1154,36 @@ export default function Streaming() {
             </div>
           </div>
         )}
+        {/* O que a execução custou no cluster. Sem esta linha, "2.400 TPS" é
+            lido como teto do Atlas, quando o teto costuma estar no gerador ou
+            na rede do apresentador. Com ela, o par (TPS, %CPU, tier) é o único
+            número desta tela que sobrevive a uma conversa de capacidade — e
+            mesmo assim não é sizing, o que está dito na própria tela. */}
+        {!replay && folga?.estado === 'ok' && folga.veredito !== 'sem_execucao' && (
+          <div className="str-folga">
+            <div className="str-folga-nums">
+              <div>
+                <span>{folga.tps_pico ? num(Math.round(folga.tps_pico)) : '—'}</span>
+                <small>TPS entregues (pico medido)</small>
+              </div>
+              <div>
+                <span style={{
+                  color: folga.cpu_max_pct == null ? undefined
+                    : folga.cpu_max_pct < 30 ? '#00ED64' : folga.cpu_max_pct < 70 ? '#f5c518' : '#ff6960',
+                }}>
+                  {folga.cpu_max_pct != null ? `${folga.cpu_max_pct.toFixed(1)}%` : '—'}
+                </span>
+                <small>CPU do primário, pico na execução</small>
+              </div>
+              <div>
+                <span>{folga.tier || '—'}</span>
+                <small>tier que absorveu esta carga</small>
+              </div>
+            </div>
+            <p className="str-folga-detalhe">{folga.detalhe}</p>
+            <p className="str-folga-nota">{folga.nota}</p>
+          </div>
+        )}
         {reconciliacao?.fonte && (
           <div className="str-neg" style={{ marginTop: 14 }}>
             {[
@@ -1245,6 +1285,60 @@ export default function Streaming() {
           </div>
         </details>
       </div>
+
+      {/* A pergunta que vem depois de "funciona": o que sai do desenho atual.
+          Um time que já tem Kafka não compra "mais um lugar onde o dado passa";
+          compra a remoção de peças. A tabela é deliberadamente factual — o que
+          cada caminho exige como componente — e não estima economia: o custo
+          de cada instituição é dela, e um número inventado aqui seria o
+          primeiro a ser desmontado na sala. */}
+      <details className="card str-tech-details">
+        <summary>O que sai do desenho <span>peças que deixam de existir</span></summary>
+        <div className="str-note" style={{ marginBottom: 12 }}>
+          Esta PoV não propõe trocar o Kafka de quem já o tem. O que ela mostra é onde o
+          processamento pode acontecer <strong>sem uma esteira intermediária</strong>: os três caminhos
+          consomem o mesmo <code>oplog</code>, e a escolha entre eles muda quantos componentes
+          precisam existir, ser operados e ser reconciliados.
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="lg-table">
+            <thead>
+              <tr>
+                <th>Para reagir a uma escrita</th>
+                <th>Componentes que precisam existir</th>
+                <th>Quem opera</th>
+                <th>Onde a reconciliação acontece</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Change Streams</strong><br /><small>no próprio serviço</small></td>
+                <td>Nenhum além do cluster e do seu serviço. O cursor retomável é o checkpoint.</td>
+                <td>Quem já opera a aplicação</td>
+                <td>No mesmo banco onde o dado foi escrito — sem cópia para conferir</td>
+              </tr>
+              <tr>
+                <td><strong>Atlas Stream Processing</strong><br /><small>agregação em event time</small></td>
+                <td>Um processor declarado. Sem cluster de processamento, sem job para empacotar e implantar.</td>
+                <td>Gerenciado pelo Atlas</td>
+                <td>No mesmo banco: o <code>$merge</code> devolve o resultado para uma coleção</td>
+              </tr>
+              <tr>
+                <td><strong>Kafka Connector</strong><br /><small>quando o evento tem de sair</small></td>
+                <td>Broker, Kafka Connect, o conector, o tópico e a política de retenção.</td>
+                <td>Time de plataforma</td>
+                <td>Entre dois sistemas, com offsets e um consumidor idempotente do outro lado</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="str-note" style={{ marginTop: 12 }}>
+          A leitura honesta: a terceira linha continua sendo a certa quando o evento precisa
+          alimentar sistemas fora do Atlas — e é por isso que ela está na demo, funcionando.
+          As duas primeiras existem para os casos em que a esteira foi construída apenas para
+          levar o dado de um lugar do Atlas a outro. Essa é a peça que sai.
+        </div>
+      </details>
 
       {/* Referência técnica sob demanda: mantém a narrativa principal compacta. */}
       <details className="card str-tech-details">

@@ -905,6 +905,7 @@ class Generator:
         self.workers_ativos = 0
         self._sequence = 0
         self._recent: list[tuple[float, int]] = []   # (monotonic, docs) p/ TPS medido
+        self.tps_pico = 0.0                          # maior TPS observado na execução
         self._start_mono: float | None = None
         self._lock = threading.Lock()                # _recent/_inserted são tocados pelas threads de insert
         self._inflight: set[asyncio.Task] = set()
@@ -915,8 +916,21 @@ class Generator:
 
     def _record(self, docs: int) -> None:
         with self._lock:
+            agora = time.monotonic()
             self.inserted += docs
-            self._recent.append((time.monotonic(), docs))
+            self._recent.append((agora, docs))
+            # O pico é apurado AQUI, na escrita, e não em measured_tps(): aquele
+            # só roda quando alguém consulta o status, então uma execução sem
+            # ninguém na tela terminava com pico 0 e o painel de custo comparava
+            # a CPU do cluster com TPS nenhum. A evidência não pode depender de
+            # haver um espectador.
+            inicio = self._start_mono
+            if inicio is not None:
+                recentes = [(t, n) for t, n in self._recent if t >= agora - self.JANELA_TPS_S]
+                janela = min(self.JANELA_TPS_S, max(agora - inicio, 0.001))
+                tps = round(sum(n for _, n in recentes) / janela, 1)
+                if tps > self.tps_pico:
+                    self.tps_pico = tps
 
     JANELA_TPS_S = 5.0
 
@@ -949,6 +963,7 @@ class Generator:
         self.run_id = f"pix-{self.started_at:%Y%m%dT%H%M%S}-{uuid.uuid4().hex[:6]}"
         self._sequence = 0
         self._recent = []
+        self.tps_pico = 0.0
         self._start_mono = time.monotonic()
         meter_write_ack.reset()
         # Definido aqui, e não em `_run_individual`: a resposta do /start é
@@ -1051,6 +1066,7 @@ class Generator:
         self.started_at = None
         self.duration_s = None
         self.ends_at = None
+        self.tps_pico = 0.0
         self._sequence = 0
         self.write_errors = 0
         meter_write_ack.reset()
@@ -1573,6 +1589,245 @@ async def oplog():
 @router.get("/cluster")
 async def cluster():
     return await asyncio.to_thread(_cluster_info_sync)
+
+
+# Acima disto o cluster deixa de ser espectador da carga e passa a ser parte da
+# conta. Abaixo, dizer "o gargalo não é o Atlas" é medição, não retórica.
+CPU_COM_FOLGA_PCT = 30.0
+# A partir daqui o tier vira o próximo assunto: ainda há folga, mas a curva já é
+# do cluster e não adianta procurar o limite no gerador.
+CPU_TIER_EM_DISCUSSAO_PCT = 70.0
+_folga_cache: dict[str, Any] = {"ts": 0.0, "dados": None}
+
+# Métricas de processo lidas da Admin API. Nomes divergem entre versões da API e
+# entre tiers; pedir uma lista e tolerar ausência evita que uma métrica
+# renomeada derrube o painel inteiro.
+#
+# OPCOUNTER_INSERT fica de fora do veredito de propósito: numa carga de
+# insert_many ele volta zerado (o contador segue outro caminho), e um número que
+# lê 0 durante 45 mil escritas destrói a confiança no painel inteiro.
+FOLGA_METRICAS = (
+    "SYSTEM_NORMALIZED_CPU_USER",
+    "PROCESS_NORMALIZED_CPU_USER",
+    "CONNECTIONS",
+)
+
+
+def _atlas_get(caminho: str, params: dict[str, Any] | None = None) -> Any:
+    import requests
+    from requests.auth import HTTPDigestAuth
+
+    resp = requests.get(
+        f"https://cloud.mongodb.com/api/atlas/v2/groups/{settings.atlas_project_id}{caminho}",
+        auth=HTTPDigestAuth(settings.atlas_public_key, settings.atlas_private_key),
+        headers={"Accept": "application/vnd.atlas.2025-03-12+json"},
+        params=params,
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _dp_ts(ponto: dict[str, Any]) -> datetime | None:
+    bruto = ponto.get("timestamp")
+    if not bruto:
+        return None
+    try:
+        return datetime.fromisoformat(bruto.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _serie_resumo(medicao: dict[str, Any], desde: datetime | None = None) -> dict[str, Any] | None:
+    """Máximo e último ponto de uma série, ignorando os buracos.
+
+    A Admin API devolve `value: null` para minutos sem amostra, e um `max()`
+    ingênuo estoura em TypeError no primeiro buraco — que aparece sempre no
+    minuto corrente, ainda em formação.
+
+    `desde` recorta a série na janela da execução. Sem esse recorte o painel
+    resume dez minutos, e num run de 30 s o pico da carga fica diluído entre
+    nove minutos de cluster parado: mediu-se ociosidade e chamou-se de folga.
+    """
+    pontos: list[tuple[datetime | None, float]] = []
+    for ponto in medicao.get("dataPoints") or []:
+        if ponto.get("value") is None:
+            continue
+        ts = _dp_ts(ponto)
+        if desde is not None and (ts is None or ts < desde):
+            continue
+        pontos.append((ts, ponto["value"]))
+    if not pontos:
+        return None
+    valores = [v for _, v in pontos]
+    ultimo_ts = pontos[-1][0]
+    return {
+        "unidade": medicao.get("units"),
+        "max": round(max(valores), 2),
+        "ultimo": round(valores[-1], 2),
+        "amostras": len(valores),
+        "ate": ultimo_ts.isoformat() if ultimo_ts else None,
+    }
+
+
+def _folga_cluster_sync() -> dict[str, Any]:
+    """
+    Quanto do cluster a carga desta PoV realmente consumiu.
+
+    O TPS entregue por esta demo é modesto e sozinho convida à leitura errada:
+    "então o Atlas só aguenta isso". Sem o custo em CPU ao lado, o número não
+    diz de quem é o teto — do gerador, da rede ou do cluster.
+
+    Duas armadilhas, ambas encontradas medindo:
+
+    1. As métricas de processo da Admin API são publicadas com um a dois
+       minutos de atraso. Consultadas logo depois de uma execução de 30 s, elas
+       ainda descrevem o cluster PARADO — e o painel concluía "ocioso" a partir
+       de dados anteriores à carga. Por isso a série é recortada em
+       `started_at` e, se nenhum ponto cobrir a execução, o veredito é
+       `metricas_pendentes` em vez de um número.
+    2. Resumir dez minutos dilui um run curto em nove minutos de ociosidade.
+       O recorte na janela resolve os dois.
+
+    O que se transfere para produção não é o TPS: é o par (TPS, %CPU) no tier
+    declarado. Sizing de verdade exige medir no volume de verdade.
+    """
+    if not settings.atlas_configured:
+        return {"estado": "nao_configurado",
+                "motivo": "Admin API não configurada; a folga do cluster não pode ser medida."}
+
+    agora = time.monotonic()
+    if _folga_cache["dados"] and agora - _folga_cache["ts"] < 30:
+        return _folga_cache["dados"]
+
+    try:
+        processos = _atlas_get("/processes").get("results") or []
+        alvo = next(
+            (p for p in processos
+             if p.get("typeName") == "REPLICA_PRIMARY" and settings.atlas_cluster in (p.get("userAlias") or p.get("hostname") or "")),
+            None,
+        )
+        # Um cluster com nome que não bate (alias diferente do informado no .env)
+        # ainda tem um primário: preferir o primeiro a devolver "sem dados".
+        if alvo is None:
+            alvo = next((p for p in processos if p.get("typeName") == "REPLICA_PRIMARY"), None)
+        if alvo is None:
+            return {"estado": "indisponivel", "motivo": "Nenhum primário retornado pela Admin API."}
+
+        medicoes = _atlas_get(
+            f"/processes/{alvo['id']}/measurements",
+            params=[("granularity", "PT1M"), ("period", "PT10M"), *[("m", m) for m in FOLGA_METRICAS]],
+        )
+    except Exception as exc:  # noqa: BLE001 - Admin API é opcional em toda a PoV
+        return {"estado": "indisponivel", "motivo": f"{type(exc).__name__} ao consultar a Admin API."}
+
+    # Janela da execução: sem execução conhecida não há recorte e o painel não
+    # conclui nada. `started_at` sobrevive ao fim do run (só o /reset o limpa),
+    # que é justamente quando as métricas atrasadas finalmente chegam.
+    inicio_run = generator.started_at
+    tps_pico = generator.tps_pico
+    series = {}
+    for medicao in medicoes.get("measurements") or []:
+        resumo = _serie_resumo(medicao, desde=inicio_run)
+        if resumo:
+            series[medicao["name"]] = resumo
+
+    # CPU normalizada do sistema é a leitura honesta (já dividida pelos núcleos);
+    # a do processo entra só como reserva quando o tier não expõe a primeira.
+    cpu = series.get("SYSTEM_NORMALIZED_CPU_USER") or series.get("PROCESS_NORMALIZED_CPU_USER")
+    cpu_max = cpu["max"] if cpu else None
+
+    entrega = _diagnostico_entrega(generator.measured_tps(), meter_write_ack.snapshot())
+    limitador = entrega.get("limitador")
+    tier = _cluster_info_sync().get("tier")
+
+    # A Admin API publica em baldes de 1 minuto. Uma execução mais curta que
+    # isso quase nunca cai inteira dentro de um balde: ela é somada com o
+    # cluster parado do resto do minuto e a CPU sai diluída. Medido: o MESMO
+    # perfil de carga leu 43% num run alinhado ao balde e 15% num run partido
+    # entre dois. O número continua válido como PISO, e é assim que a tela o
+    # apresenta — um run de 2 min ou mais elimina a ressalva.
+    duracao = generator.duration_s
+    subestimado = bool(duracao and duracao < 120)
+    # Formatado isolado, e não com um replace na frase pronta: trocar "," por
+    # "." no texto inteiro comia a pontuação das orações ("trabalho real. ainda
+    # com folga."). O mesmo erro já estava documentado em routers/geo.py.
+    pico_fmt = f"{tps_pico:,.0f}".replace(",", ".")
+
+    if inicio_run is None or not tps_pico:
+        veredito, detalhe = "sem_execucao", (
+            "Nenhuma execução para atribuir. Uma leitura de CPU só significa alguma coisa ao "
+            "lado do TPS que a produziu — rode o gerador e volte a esta tela."
+        )
+    elif cpu_max is None:
+        veredito, detalhe = "metricas_pendentes", (
+            "A execução terminou, mas o Atlas ainda não publicou as métricas do processo para "
+            "essa janela — elas saem com um a dois minutos de atraso. A tela prefere dizer isto "
+            "a concluir com o número anterior à carga."
+        )
+    elif cpu_max < CPU_COM_FOLGA_PCT:
+        veredito = "cluster_com_folga"
+        detalhe = (
+            f"{pico_fmt} TPS entregues com o primário {tier or 'do tier atual'} em "
+            f"{cpu_max:.1f}% de CPU. O teto desta execução "
+            f"{'foi o ' + limitador.replace('_', ' ') if limitador else 'não foi o cluster'}"
+            # Sob diluição, "sobra folga" é exatamente a conclusão que o número
+            # não sustenta: parte do minuto é cluster parado.
+            + ("." if subestimado else ": há folga de sobra no tier de entrada.")
+        )
+    elif cpu_max < CPU_TIER_EM_DISCUSSAO_PCT:
+        veredito = "cluster_participando"
+        detalhe = (
+            f"{pico_fmt} TPS entregues com o primário {tier or 'do tier atual'} em "
+            f"{cpu_max:.1f}% de CPU. Este é o número honesto para levar a uma conversa de "
+            f"capacidade: o cluster está fazendo trabalho real, ainda com folga, e a alavanca "
+            f"para o volume seguinte é o tier — com a conta visível, não estimada."
+        )
+    else:
+        veredito = "cluster_no_limite"
+        detalhe = (
+            f"{pico_fmt} TPS levaram o primário {tier or 'do tier atual'} a {cpu_max:.1f}% "
+            f"de CPU. Perto do teto do tier: daqui em diante o assunto é dimensionamento, e "
+            f"nenhum número desta tela deve ser extrapolado."
+        )
+
+    if subestimado and cpu_max is not None:
+        detalhe += (
+            f" Leia como PISO: a execução durou {duracao}s e o Atlas publica em intervalos de "
+            f"1 minuto, então o resto do minuto — com o cluster parado — entra na média. "
+            f"Uma execução de 2 minutos ou mais dá o número cheio."
+        )
+
+    dados = {
+        "estado": "ok",
+        # Só o papel do nó, nunca o hostname: o host do Atlas carrega o nome do
+        # cluster, e o nome do cluster costuma ser o nome do cliente. Este campo
+        # vai para a tela e para os prints de um repositório público.
+        "processo": "primário do replica set",
+        "tier": tier,
+        "cpu_subestimada": subestimado,
+        "duracao_execucao_s": duracao,
+        "janela": "execução atual" if inicio_run else "PT10M",
+        "inicio_execucao": inicio_run.isoformat() if inicio_run else None,
+        "series": series,
+        "cpu_max_pct": cpu_max,
+        "tps_pico": tps_pico,
+        "limitador_entrega": limitador,
+        "veredito": veredito,
+        "detalhe": detalhe,
+        "nota": (
+            "Utilização do primário lida da Atlas Admin API, não estimada. Ela responde de quem "
+            "é o teto nesta execução — não é sizing: um volume de produção precisa de medição no "
+            "volume de produção."
+        ),
+    }
+    _folga_cache.update(ts=agora, dados=dados)
+    return dados
+
+
+@router.get("/folga")
+async def folga():
+    return await asyncio.to_thread(_folga_cluster_sync)
 
 
 def _medir_rtt(amostras: int = 5) -> dict[str, Any]:

@@ -88,6 +88,7 @@ the consumers — expiry indistinguishable from loss.
 |---|---|---|
 | `GET` | `/streaming/cenario` | Returns presets for the active write mode. The default individual path exposes 1,000 TPS as the customer reference, 2,000 TPS as the sustained stage target, and 12,000 TPS in batch mode as tier headroom. The endpoint also returns `modo_escrita`, `default_tps` and the individual ceiling. These are comparison and stage evidence, not sizing or certified capacity. |
 | `GET` | `/streaming/rede` | Median RTT app ↔ cluster, measured with `ping`. Without it the columns' latency reads as change-stream cost when a large part is distance. |
+| `GET` | `/streaming/folga` | What the run cost the cluster: primary CPU read from the Atlas Admin API, cut to the run's own window, next to the peak TPS that produced it. Answers whose ceiling was reached — the generator, the presenter's network, or the cluster. Verdicts: `sem_execucao`, `metricas_pendentes`, `cluster_com_folga`, `cluster_participando`, `cluster_no_limite`. Measured, not sizing. |
 
 **Generator**
 

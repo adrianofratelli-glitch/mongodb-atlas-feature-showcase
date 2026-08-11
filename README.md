@@ -66,6 +66,10 @@ Then watch reconciliation close anyway — and it checks three things, not one: 
 
 Delivery is at-least-once, stated above the numbers, not in a footnote: after a resume the same event can arrive twice, and the unique index on `endToEndId` is what makes that safe. Ordering holds inside a partition, not across them.
 
+**What did it cost?** A throughput number alone invites the wrong reading — *so that's all Atlas does?* — because it never says whose ceiling was hit. The page reads the primary's CPU from the Atlas Admin API, cut to the run's own window, and puts it next to the TPS that produced it: **~1,600 TPS sustained over two minutes on an M20, at 29–53% primary CPU across runs** (the panel always shows the run in front of you, never a stored number). Two traps live here, and both were found by measuring rather than assuming. Atlas publishes process metrics one to two minutes late, so a panel queried right after a 30s run describes the cluster *before* the load — it now says `metricas_pendentes` instead of concluding. And a run shorter than the one-minute publish interval is averaged with the idle remainder of that minute: the same workload read 43% when it landed inside a bucket and 15% when it straddled two, so short runs are labelled a floor.
+
+The last panel answers the question that follows *does it work?* — **what leaves the design**. It compares the components each path requires, without inventing a saving: the Kafka row stays right whenever the event must reach systems outside Atlas, and that is why it is in the demo, working.
+
 ## Module 08 — the signal, while it happens
 
 A second processor reads the same change stream, groups the card channel by cardholder in a 30s hopping window and runs haversine in MQL. Impossible travel surfaces in event time, not from a scan someone remembers to run.

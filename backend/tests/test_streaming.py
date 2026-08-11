@@ -1230,3 +1230,192 @@ def test_contrato_publicado_lista_os_campos_obrigatorios_do_validate():
 
     assert obrigatorios == {"endToEndId", "run_id", "valor", "tipo", "uf"}
     assert "dlq" in contrato["fonte"]
+
+
+# --- Folga do cluster --------------------------------------------------------
+#
+# Estes testes existem por causa de um erro cometido durante a construção: o
+# painel concluiu "cluster ocioso" lendo métricas publicadas ANTES da carga. As
+# métricas de processo do Atlas saem com um a dois minutos de atraso, então o
+# recorte na janela da execução é a única coisa que separa medição de retórica.
+
+def _medicao(nome, pontos, unidade="PERCENT"):
+    return {"name": nome, "units": unidade,
+            "dataPoints": [{"timestamp": ts, "value": v} for ts, v in pontos]}
+
+
+def test_serie_resumo_ignora_buracos_e_recorta_na_janela_da_execucao():
+    from datetime import datetime, timezone
+
+    medicao = _medicao("SYSTEM_NORMALIZED_CPU_USER", [
+        ("2026-01-01T10:00:00Z", 7.0),     # antes do run: tem de sair da conta
+        ("2026-01-01T10:01:00Z", None),    # buraco: max() ingênuo estourava aqui
+        ("2026-01-01T10:05:00Z", 43.0),    # durante o run
+        ("2026-01-01T10:06:00Z", 12.0),
+    ])
+    inicio = datetime(2026, 1, 1, 10, 4, tzinfo=timezone.utc)
+
+    recortado = streaming._serie_resumo(medicao, desde=inicio)
+    assert recortado["max"] == 43.0 and recortado["amostras"] == 2
+
+    # Sem recorte, os dez minutos diluem o pico e o 7.0 anterior entra na conta.
+    assert streaming._serie_resumo(medicao)["amostras"] == 3
+
+
+def test_serie_resumo_sem_ponto_na_janela_devolve_none():
+    from datetime import datetime, timezone
+
+    medicao = _medicao("SYSTEM_NORMALIZED_CPU_USER", [("2026-01-01T10:00:00Z", 7.0)])
+    assert streaming._serie_resumo(medicao, desde=datetime(2026, 1, 1, 10, 4, tzinfo=timezone.utc)) is None
+
+
+def _folga_com(monkeypatch, medicoes, generator_fake):
+    # settings é dataclass congelada: troca-se o objeto, não o campo.
+    monkeypatch.setattr(streaming, "settings",
+                        SimpleNamespace(atlas_configured=True, atlas_project_id="p",
+                                        atlas_public_key="k", atlas_private_key="s",
+                                        atlas_cluster="demo"))
+    monkeypatch.setattr(streaming, "_folga_cache", {"ts": 0.0, "dados": None})
+    monkeypatch.setattr(streaming, "_cluster_info_sync", lambda: {"tier": "M20"})
+    monkeypatch.setattr(streaming, "generator", generator_fake)
+
+    def atlas_get(caminho, params=None):
+        if caminho == "/processes":
+            return {"results": [{"id": "host:27017", "typeName": "REPLICA_PRIMARY",
+                                 "userAlias": "cliente-shard-00-01.mongodb.net"}]}
+        return {"measurements": medicoes}
+
+    monkeypatch.setattr(streaming, "_atlas_get", atlas_get)
+    return streaming._folga_cluster_sync()
+
+
+def test_folga_nao_conclui_enquanto_as_metricas_do_run_nao_foram_publicadas(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    inicio = datetime.now(timezone.utc)
+    anterior = (inicio - timedelta(minutes=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gen = SimpleNamespace(started_at=inicio, tps_pico=2382.2, duration_s=180,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+
+    dados = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER", [(anterior, 7.0)])], gen)
+
+    # O bug original: com a série anterior à carga, o painel dizia "ocioso".
+    assert dados["veredito"] == "metricas_pendentes"
+    assert dados["cpu_max_pct"] is None
+
+
+def test_folga_atribui_o_custo_quando_a_serie_cobre_a_execucao(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    inicio = datetime.now(timezone.utc) - timedelta(minutes=2)
+    durante = (inicio + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gen = SimpleNamespace(started_at=inicio, tps_pico=2382.2, duration_s=180,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+
+    dados = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER", [(durante, 43.0)])], gen)
+
+    assert dados["veredito"] == "cluster_participando"
+    assert dados["cpu_max_pct"] == 43.0
+    # O pico sobrevive ao fim do run: sem isso o painel compara 43% com 0 TPS.
+    assert dados["tps_pico"] == 2382.2
+    assert "M20" in dados["detalhe"]
+
+
+def test_folga_sem_execucao_nao_transforma_ociosidade_em_folga(monkeypatch):
+    gen = SimpleNamespace(started_at=None, tps_pico=0.0, duration_s=None,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+    dados = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER",
+                                              [("2026-01-01T10:00:00Z", 3.0)])], gen)
+
+    assert dados["veredito"] == "sem_execucao"
+
+
+def test_folga_nunca_expoe_o_hostname_do_cluster(monkeypatch):
+    """O host do Atlas carrega o nome do cluster, que costuma ser o do cliente.
+
+    Este campo vai para a tela e para prints de um repositório público.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    inicio = datetime.now(timezone.utc) - timedelta(minutes=2)
+    durante = (inicio + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gen = SimpleNamespace(started_at=inicio, tps_pico=100.0, duration_s=180,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+
+    dados = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER", [(durante, 5.0)])], gen)
+
+    assert "cliente" not in str(dados) and "mongodb.net" not in str(dados)
+
+
+def test_folga_degrada_sem_admin_api(monkeypatch):
+    monkeypatch.setattr(streaming, "settings", SimpleNamespace(atlas_configured=False))
+    monkeypatch.setattr(streaming, "_folga_cache", {"ts": 0.0, "dados": None})
+
+    assert streaming._folga_cluster_sync()["estado"] == "nao_configurado"
+
+
+def test_folga_marca_piso_quando_a_execucao_e_menor_que_o_balde_de_publicacao(monkeypatch):
+    """Run de 30 s cai partido entre dois intervalos de 1 min e sai diluído.
+
+    Medido com o mesmo perfil de carga: 43% num run alinhado ao balde, 15% num
+    run partido. Sem esta marcação, o segundo número vira "sobra folga".
+    """
+    from datetime import datetime, timedelta, timezone
+
+    inicio = datetime.now(timezone.utc) - timedelta(minutes=2)
+    durante = (inicio + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gen = SimpleNamespace(started_at=inicio, tps_pico=2163.8, duration_s=30,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+
+    dados = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER", [(durante, 15.0)])], gen)
+
+    assert dados["cpu_subestimada"] is True
+    assert "PISO" in dados["detalhe"]
+    assert "folga de sobra" not in dados["detalhe"]
+
+
+def test_folga_nao_marca_piso_em_execucao_longa(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    inicio = datetime.now(timezone.utc) - timedelta(minutes=4)
+    durante = (inicio + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gen = SimpleNamespace(started_at=inicio, tps_pico=2400.0, duration_s=180,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+
+    dados = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER", [(durante, 43.0)])], gen)
+
+    assert dados["cpu_subestimada"] is False
+    assert "PISO" not in dados["detalhe"]
+
+
+def test_pico_de_tps_e_apurado_na_escrita_e_nao_depende_de_alguem_consultar():
+    """Sem espectador, o pico ficava 0 e o painel comparava CPU com TPS nenhum."""
+    gen = streaming.Generator()
+    gen._start_mono = time.monotonic()
+
+    for _ in range(10):
+        gen._record(200)
+
+    # measured_tps() NUNCA foi chamado — é justamente o cenário do bug.
+    assert gen.tps_pico > 0
+    assert gen.inserted == 2000
+
+
+def test_folga_nao_troca_a_pontuacao_da_frase_pelo_separador_de_milhar(monkeypatch):
+    """O replace na frase pronta comia as vírgulas das orações.
+
+    Saía "trabalho real. ainda com folga. e a alavanca" na tela. O mesmo erro já
+    havia sido cometido e documentado em routers/geo.py.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    inicio = datetime.now(timezone.utc) - timedelta(minutes=3)
+    durante = (inicio + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gen = SimpleNamespace(started_at=inicio, tps_pico=1613.8, duration_s=120,
+                          measured_tps=lambda: 0.0, tps_alvo=0)
+
+    detalhe = _folga_com(monkeypatch, [_medicao("SYSTEM_NORMALIZED_CPU_USER",
+                                                [(durante, 53.0)])], gen)["detalhe"]
+
+    assert "1.614 TPS" in detalhe            # separador aplicado ao número
+    assert "trabalho real, ainda com folga," in detalhe   # e só a ele
