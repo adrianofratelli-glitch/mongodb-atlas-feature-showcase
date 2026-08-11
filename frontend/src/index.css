@@ -366,6 +366,31 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .geo-live-contagem span { font-family: var(--font-mono); font-size: 26px; font-weight: 700; line-height: 1; }
 .geo-live-contagem small { font-size: 11px; color: var(--text-secondary); }
 
+/* Volume operacional do sinal retrospectivo: o denominador ao lado do número
+   de casos. É o que um time de risco pergunta antes da qualidade da regra. */
+.geo-seletividade { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px; margin: 14px 0 8px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.02); }
+.geo-seletividade > div { min-width: 0; }
+.geo-seletividade span { display: block; font-family: var(--font-mono); font-size: 21px;
+  font-weight: 800; line-height: 1.15; color: var(--text-primary); }
+.geo-seletividade small { display: block; margin-top: 3px; font-size: 10.5px;
+  color: var(--text-secondary); line-height: 1.35; }
+.geo-nota-seletividade { font-size: 11.5px; color: var(--text-secondary);
+  line-height: 1.5; margin: 0 0 12px; }
+
+/* A compra contestada: ponto de partida da investigação, e por isso fica acima
+   dos resultados, não perdida entre eles. */
+.geo-ancora { margin: 12px 0; padding: 11px 13px; border-radius: 10px;
+  border: 1px solid rgba(168,85,247,.35); background: rgba(168,85,247,.07); }
+.geo-ancora-linha { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline;
+  font-size: 12.5px; color: var(--text-primary); }
+.geo-ancora-linha code { font-size: 11px; }
+.geo-ancora-nota { margin-top: 6px; font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
+/* O mesmo terminal aparece na vizinhança: marcá-lo evita confundi-lo com um
+   estabelecimento vizinho. */
+.result-row.geo-e-ancora { border-left: 2px solid #a855f7; padding-left: 8px; }
+
 /* Texto secundário atrás de um clique: mantém a evidência no alto da tela.
    O <details> dentro do card não repete a borda — quem desenha é o .str-note. */
 .str-note-details > summary,
@@ -445,8 +470,9 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   text-transform: uppercase; letter-spacing: .05em; }
 .str-capability dd { color: var(--text-secondary); font-size: 10px; line-height: 1.4; }
 
-/* Veredito da execução: os três números que o cliente leva da sala. */
-.str-veredito { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+/* Veredito da execução: os números que o cliente leva da sala. O valor
+   conferido entrou junto porque contagem sozinha não convence pagamentos. */
+.str-veredito { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
   margin-top: 14px; padding: 14px 16px; border-radius: 10px;
   border: 1px solid rgba(0,237,100,.28); background: rgba(0,237,100,.05); }
 .str-veredito > div { min-width: 0; text-align: center; }
@@ -454,7 +480,49 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   font-weight: 800; line-height: 1.1; color: var(--text-primary); }
 .str-veredito small { display: block; margin-top: 4px; color: var(--text-secondary);
   font-size: 10.5px; line-height: 1.35; }
+/* R$ e digest não cabem em 26px sem estourar a coluna. */
+.str-veredito > div:nth-child(n+3) span { font-size: 19px; }
+@media (max-width: 1100px) { .str-veredito { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .str-veredito { grid-template-columns: 1fr; } }
+
+/* Failover: o evento é narrado enquanto acontece, então o bloco muda de cor
+   entre "em curso" e "concluído" sem trocar de lugar na página. */
+.str-failover { margin: 12px 0 10px; padding: 12px 14px; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.02); }
+.str-failover-em_curso { border-color: rgba(249,115,22,.45); background: rgba(249,115,22,.07); }
+.str-failover-concluido { border-color: rgba(0,237,100,.35); background: rgba(0,237,100,.05); }
+.str-failover-falhou { border-color: rgba(255,105,96,.45); background: rgba(255,105,96,.07); }
+.str-failover-head { display: flex; justify-content: space-between; align-items: baseline;
+  gap: 10px; font-size: 13px; }
+.str-failover-head span { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
+.str-failover-nums { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px; margin-top: 10px; }
+.str-failover-nums > div { min-width: 0; }
+.str-failover-nums span { display: block; font-family: var(--font-mono); font-size: 21px;
+  font-weight: 800; line-height: 1.15; }
+.str-failover-nums small { display: block; margin-top: 3px; font-size: 10.5px;
+  color: var(--text-secondary); line-height: 1.35; }
+@media (max-width: 760px) { .str-failover-nums { grid-template-columns: 1fr; } }
+
+/* Contrato publicado: tabela curta, para o cliente ler o contrato antes de ver
+   a violação sendo rejeitada. */
+.str-contrato { width: 100%; border-collapse: collapse; font-size: 10.5px; margin-top: 6px; }
+.str-contrato th { text-align: left; color: var(--text-secondary); font-weight: 600;
+  padding: 3px 6px 3px 0; text-transform: uppercase; letter-spacing: .04em; font-size: 9.5px; }
+.str-contrato td { padding: 3px 6px 3px 0; vertical-align: top; color: var(--text-primary);
+  border-top: 1px solid rgba(255,255,255,.06); }
+.str-contrato td code { font-size: 10px; }
+.str-contrato td:last-child { color: var(--text-secondary); }
+
+/* Conferência por canal, colada ao número: valor ao centavo e igualdade de
+   conjunto. Verde só quando a contagem já fechou — no meio do fluxo os dois
+   divergem por falta de evento, não por divergência real. */
+.str-neg-conf { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.str-neg-conf span { font-family: var(--font-mono); font-size: 9.5px; line-height: 1;
+  padding: 3px 5px; border-radius: 4px; border: 1px solid transparent; }
+.str-neg-conf .ok { color: #00ED64; border-color: rgba(0,237,100,.35); background: rgba(0,237,100,.07); }
+.str-neg-conf .pend { color: var(--text-secondary); border-color: rgba(255,255,255,.12); }
+.str-neg-conf .tol { color: var(--text-disabled); border-color: rgba(255,255,255,.08); }
 
 .str-latency-context { padding: 7px 9px; border-radius: 7px; border-left: 3px solid;
   background: rgba(255,255,255,.018); }
