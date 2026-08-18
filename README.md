@@ -32,10 +32,10 @@ cd backend && python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # MONGO_URI, opcionalmente as chaves da Atlas API
 python seed_data.py           # 100 mil produtos + 20 mil avaliações
-uvicorn main:app --reload --port 8002
-
-cd ../frontend && npm install && npm run dev   # http://localhost:5174
+cd .. && ./start.sh            # API :8002 + UI :5174
 ```
+
+O launcher usa backend sem reload e build otimizado do frontend por padrão. Para desenvolver com reload/HMR, rode `POV_DEV=1 ./start.sh`; o build só é refeito quando fontes, lockfile ou configuração mudam.
 
 Rode `curl http://localhost:8002/preflight` antes de apresentar — ele checa URI, cluster, coleções, chaves do Atlas e a guarda de mutação.
 

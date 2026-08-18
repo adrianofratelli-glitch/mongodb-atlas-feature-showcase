@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "check": "vite build"
+    "check": "vite build",
+    "preview": "vite preview"
   },
   "keywords": ["mongodb", "atlas", "pov"],
   "author": "Adriano Fratelli",

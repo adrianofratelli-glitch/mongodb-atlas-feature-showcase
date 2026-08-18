@@ -1,13 +1,14 @@
-import React, { useCallback, useState, useEffect } from 'react'
+import React, { lazy, Suspense, useCallback, useState, useEffect } from 'react'
 import { useIntervaloVisivel } from './hooks/usePolling'
-import Reindexacao from './pages/Reindexacao'
-import HotCold from './pages/HotCold'
-import Aggregations from './pages/Aggregations'
-import SchemaValidation from './pages/SchemaValidation'
-import ChangeStreams from './pages/ChangeStreams'
-import Transactions from './pages/Transactions'
-import Streaming from './pages/Streaming'
-import Geo from './pages/Geo'
+
+const Reindexacao = lazy(() => import('./pages/Reindexacao'))
+const HotCold = lazy(() => import('./pages/HotCold'))
+const Aggregations = lazy(() => import('./pages/Aggregations'))
+const SchemaValidation = lazy(() => import('./pages/SchemaValidation'))
+const ChangeStreams = lazy(() => import('./pages/ChangeStreams'))
+const Transactions = lazy(() => import('./pages/Transactions'))
+const Streaming = lazy(() => import('./pages/Streaming'))
+const Geo = lazy(() => import('./pages/Geo'))
 
 const MODULES = [
   { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Hybrid build sem bloqueio prolongado',            color: '#00ED64', component: Reindexacao },
@@ -271,7 +272,9 @@ export default function App() {
                 letterSpacing: '-.03em', lineHeight: 1.1,
               }}>{mod.title}</h1>
             </div>
-            <Component />
+            <Suspense fallback={<div className="card">Carregando módulo…</div>}>
+              <Component />
+            </Suspense>
           </div>
         </main>
       </div>

@@ -1,6 +1,7 @@
 import logging
 import re
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -26,7 +27,18 @@ from settings import settings
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("showcase.api")
 
-app = FastAPI(title="MongoDB Atlas Feature Showcase", version="1.1.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    try:
+        yield
+    finally:
+        # O gerador do módulo 07 abre um cliente assíncrono próprio; feche-o
+        # com o event loop ainda vivo (substitui o FastAPI on_event deprecado).
+        await streaming.fechar_cliente_async()
+
+
+app = FastAPI(title="MongoDB Atlas Feature Showcase", version="1.1.0", lifespan=lifespan)
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 app.add_middleware(ApiHardeningMiddleware)
@@ -77,13 +89,6 @@ app.include_router(transactions.router)
 app.include_router(streaming.router)
 app.include_router(geo.router)
 app.include_router(replay.router)
-
-
-@app.on_event("shutdown")
-async def _encerrar_cliente_async():
-    """O gerador do módulo 07 abre um cliente assíncrono próprio para escrever
-    PIX individuais; ele precisa ser fechado com o event loop ainda vivo."""
-    await streaming.fechar_cliente_async()
 
 
 @app.get("/")

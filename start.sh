@@ -43,7 +43,9 @@ echo "=================================="
 # Backend
 echo "▶ Iniciando backend (porta 8002)..."
 cd "$BASE/backend"
-venv/bin/uvicorn main:app --host 127.0.0.1 --port 8002 --reload > "$BACKEND_LOG" 2>&1 &
+UVICORN_ARGS=(main:app --host 127.0.0.1 --port 8002)
+[[ "${POV_DEV:-0}" == "1" ]] && UVICORN_ARGS+=(--reload)
+venv/bin/uvicorn "${UVICORN_ARGS[@]}" > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
 echo "  PID: $BACKEND_PID"
 
@@ -57,7 +59,21 @@ fi
 # Frontend
 echo "▶ Iniciando frontend (porta 5174)..."
 cd "$BASE/frontend"
-npm run dev -- --host 127.0.0.1 > "$FRONTEND_LOG" 2>&1 &
+if [[ "${POV_DEV:-0}" != "1" ]] && {
+  [[ ! -f dist/index.html ]] ||
+  [[ -n "$(find src -type f -newer dist/index.html -print -quit)" ]] ||
+  [[ package-lock.json -nt dist/index.html ]] ||
+  [[ vite.config.js -nt dist/index.html ]];
+}; then
+  echo "  Gerando frontend otimizado..."
+  npm run build > "$FRONTEND_LOG" 2>&1 || fail "Build do frontend falhou; veja $FRONTEND_LOG."
+fi
+if [[ "${POV_DEV:-0}" == "1" ]]; then
+  FRONTEND_CMD=(node_modules/.bin/vite --host 127.0.0.1 --port 5174 --strictPort)
+else
+  FRONTEND_CMD=(node_modules/.bin/vite preview --host 127.0.0.1 --port 5174 --strictPort)
+fi
+"${FRONTEND_CMD[@]}" > "$FRONTEND_LOG" 2>&1 &
 FRONTEND_PID=$!
 echo "  PID: $FRONTEND_PID"
 
