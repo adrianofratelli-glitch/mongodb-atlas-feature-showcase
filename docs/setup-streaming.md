@@ -1,308 +1,308 @@
-# Streaming module — setup
+# Módulo de streaming — setup
 
-Everything the Streaming module (`/#streaming`) needs before a live run: the
-local Kafka broker, the MongoDB source connector and the two Atlas Stream
-Processing jobs. The recorded fallback (`overview --replay`) needs none of it.
+Tudo o que o módulo de streaming (`/#streaming`) precisa antes de uma execução ao vivo: o
+broker Kafka local, o source connector do MongoDB e os dois jobs de Atlas Stream
+Processing. O fallback gravado (`overview --replay`) não precisa de nada disso.
 
-Back to the [README](../README.md).
+Voltar para o [README](../README.md).
 
-## 1. Start Kafka locally
+## 1. Suba o Kafka localmente
 
-Two ways to do it, pick one.
+Duas formas de fazer isso, escolha uma.
 
-*Native (no Docker required, recommended on a laptop):*
+*Nativo (sem Docker, recomendado em notebook):*
 
 ```bash
-brew install kafka          # once
-./scripts/kafka-local.sh up # broker (KRaft) + Kafka Connect + MongoDB plugin
+brew install kafka          # uma vez
+./scripts/kafka-local.sh up # broker (KRaft) + Kafka Connect + plugin do MongoDB
 ./scripts/kafka-local.sh status
 ./scripts/kafka-local.sh down
 ```
 
-The `mongodb-kafka-connect` plugin is downloaded on the first run only and
-cached locally, so later runs work offline. The broker listens on
-`localhost:9092`, which is what `KAFKA_BROKERS` in `backend/.env` must point to.
+O plugin `mongodb-kafka-connect` é baixado só na primeira execução e fica
+cacheado localmente, então execuções seguintes funcionam offline. O broker escuta em
+`localhost:9092`, que é para onde o `KAFKA_BROKERS` do `backend/.env` precisa apontar.
 
-There is deliberately **one** way to run the broker. A Docker path existed and
-was removed: two ways to start the same dependency doubled the setup surface for
-no demo value, and a container publishing `9093` on the host silently stole the
-port from Kafka's own KRaft controller — the broker then accepted TCP on the
-controller port and timed out on every registration, which reads exactly like a
-corrupted Kafka install.
+Existe deliberadamente **uma** forma de rodar o broker. Havia um caminho por Docker e ele
+foi removido: duas formas de subir a mesma dependência dobravam a superfície de setup sem
+valor nenhum para a demo, e um container publicando a `9093` no host roubava em silêncio a
+porta do próprio controller KRaft do Kafka — o broker então aceitava TCP na porta do
+controller e estourava timeout em todo registro, o que parece exatamente uma
+instalação corrompida do Kafka.
 
-## 2. Register the source connectors
+## 2. Registre os source connectors
 
-Reads `MONGO_URI` from `backend/.env`:
+Lê o `MONGO_URI` do `backend/.env`:
 
 ```bash
-./scripts/setup-kafka-connector.sh      # one connector (default)
-./scripts/setup-kafka-connector.sh 2    # optional experiment with disjoint filters
+./scripts/setup-kafka-connector.sh      # um connector (padrão)
+./scripts/setup-kafka-connector.sh 2    # experimento opcional com filtros disjuntos
 ```
 
-It PUTs a `MongoSourceConnector` config on the Connect REST API
-(`http://localhost:8083`) with `database=pix`, `collection=transacoes`,
-`publish.full.document.only=true`, `startup.mode=latest`, heartbeats and
-`topic.prefix=atlas`, producing the topic `atlas.pix.transacoes`.
-On the Docker path a console at http://localhost:8085 lets you inspect the topic
-live; the native path has no UI, so use `./scripts/kafka-local.sh status`.
+Ele faz PUT de uma configuração de `MongoSourceConnector` na API REST do Connect
+(`http://localhost:8083`) com `database=pix`, `collection=transacoes`,
+`publish.full.document.only=true`, `startup.mode=latest`, heartbeats e
+`topic.prefix=atlas`, produzindo o tópico `atlas.pix.transacoes`.
+No caminho Docker, um console em http://localhost:8085 permite inspecionar o tópico
+ao vivo; o caminho nativo não tem UI, então use `./scripts/kafka-local.sh status`.
 
-Before registering, the script stops each stale connector, deletes its offsets
-and only then deletes the connector. Deleting a connector does **not** delete
-its offsets — Connect keeps the resume token in `connect-offsets` keyed by
-connector name, and `startup.mode=latest` applies only when no offset is stored.
-Because `overview up` drops `pix.transacoes`, that stored token points at an
-oplog position that no longer exists, and the task fails with
-`ChangeStreamHistoryLost` while the connector still reports `RUNNING`. If you
-ever see `RUNNING · FAILED`, that is the cause; the offsets endpoint needs
+Antes de registrar, o script para cada connector antigo, apaga os offsets dele
+e só então apaga o connector. Apagar um connector **não** apaga
+os offsets — o Connect guarda o resume token em `connect-offsets` chaveado pelo
+nome do connector, e o `startup.mode=latest` só vale quando não há offset armazenado.
+Como o `overview up` dropa `pix.transacoes`, esse token armazenado aponta para uma
+posição do oplog que não existe mais, e a task falha com
+`ChangeStreamHistoryLost` enquanto o connector ainda reporta `RUNNING`. Se você
+algum dia vir `RUNNING · FAILED`, a causa é essa; o endpoint de offsets exige
 Kafka Connect 3.6+.
 
-## 3. Create the Stream Processing Instance
+## 3. Crie a Stream Processing Instance
 
-In the Atlas UI, under Stream Processing, create an SPI in the same region
-as the cluster. The processor reads the cluster's change stream, so keeping them together saves a cross-region hop on
-every window. Add an *Atlas Database* connection named `atlasCluster`, then:
+Na UI do Atlas, em Stream Processing, crie uma SPI na mesma região
+do cluster. O processor lê o change stream do cluster, então mantê-los juntos evita um salto entre regiões a
+cada janela. Adicione uma conexão *Atlas Database* chamada `atlasCluster`, e então:
 
 ```bash
-# in backend/.env: ASP_ENABLED=true and ASP_CONNECTION_STRING=<SPI connection string>
+# em backend/.env: ASP_ENABLED=true e ASP_CONNECTION_STRING=<connection string da SPI>
 mongosh "$ASP_CONNECTION_STRING" --file scripts/setup-asp.js
 mongosh "$ASP_CONNECTION_STRING" --file scripts/setup-asp-geo.js
 ```
 
-There are two processors because a deployed pipeline has exactly one terminal
-sink. `pixJanelas5s` ends in `pix.metricas_janela`; `geoSinais30s` ends in
-`geo.sinais_ao_vivo`. They are two independent consumers of the same change
-stream, which happens to be the module's own argument. `scripts/ambiente.sh`
-provisions and stops both.
+São dois processors porque um pipeline implantado tem exatamente um sink
+terminal. O `pixJanelas5s` termina em `pix.metricas_janela`; o `geoSinais30s` termina em
+`geo.sinais_ao_vivo`. São dois consumidores independentes do mesmo change
+stream, o que por acaso é o próprio argumento do módulo. O `scripts/ambiente.sh`
+provisiona e para os dois.
 
-The script preserves an existing processor and its checkpoint by default. To
-replace the definition intentionally, run it once with `ASP_RECREATE=true`;
-that destructive choice is printed explicitly.
+O script preserva por padrão um processor existente e seu checkpoint. Para
+substituir a definição de propósito, rode uma vez com `ASP_RECREATE=true`;
+essa escolha destrutiva é impressa explicitamente.
 
-The processor reads the change stream of `pix.transacoes`, sends malformed
-documents to a DLQ, aggregates 5-second event-time windows by `run_id`, `uf`
-and `tipo` (count, volume, ticket and a simple high-value signal), and `$merge`s each closed window into
-`pix.metricas_janela`. The backend surfaces those windows by watching that
-collection with a change stream, so the stream processing result reaches the
-screen through the same mechanism as column 1.
+O processor lê o change stream de `pix.transacoes`, manda documentos
+malformados para uma DLQ, agrega janelas de tempo de evento de 5 segundos por `run_id`, `uf`
+e `tipo` (contagem, volume, ticket e um sinal simples de alto valor), e faz `$merge` de cada janela fechada em
+`pix.metricas_janela`. O backend expõe essas janelas observando aquela
+coleção com um change stream, então o resultado do stream processing chega à
+tela pelo mesmo mecanismo da coluna 1.
 
-Tear everything down with `./scripts/ambiente.sh down` (or `./bin/overview down`,
-which also stops the app and cleans the PIX collections).
+Derrube tudo com `./scripts/ambiente.sh down` (ou `./bin/overview down`,
+que também para a aplicação e limpa as coleções do PIX).
 
-**Cleaning up between runs.** `POST /streaming/reset` (the **Reset** button)
-clears the current source, windows, DLQ and audit while keeping the environment
-ready for another run. `POST /streaming/reset?finalizar=true`, used by
-`overview down`, first stops the processor and also removes application
-checkpoints. `scripts/ambiente.sh down` performs a second direct, scoped cleanup
-before stopping the local integration services, so an interrupted API call does
-not leave demo data behind. It never pauses or resizes the Atlas cluster.
+**Limpeza entre execuções.** O `POST /streaming/reset` (o botão **Reset**)
+limpa a origem atual, as janelas, a DLQ e a auditoria mantendo o ambiente
+pronto para outra execução. O `POST /streaming/reset?finalizar=true`, usado pelo
+`overview down`, primeiro para o processor e também remove os checkpoints da
+aplicação. O `scripts/ambiente.sh down` faz uma segunda limpeza direta e com escopo
+antes de parar os serviços locais de integração, para que uma chamada de API interrompida
+não deixe dados de demo para trás. Ele nunca pausa nem redimensiona o cluster Atlas.
 
-Reset preserves the three source contracts: unique `endToEndId`, TTL on `ts`
-and `run_id_reconciliacao`. It reuses the application's connected MongoDB
-topology and clears independent collections concurrently. Above
-`STREAMING_DROP_ACIMA_DE` (25,000 documents by default), it uses a controlled
-drop/recreate and then recovers ASP/Kafka instead of spending the stage pause on
-`delete_many`; measured preparation was 6.43 s after a 59k-document run and
-1.33 s on an initially clean run. A routine cleanup does not restart Kafka.
+O Reset preserva os três contratos da origem: `endToEndId` único, TTL em `ts`
+e `run_id_reconciliacao`. Ele reaproveita a topologia MongoDB já conectada da
+aplicação e limpa coleções independentes em paralelo. Acima de
+`STREAMING_DROP_ACIMA_DE` (25.000 documentos por padrão), ele usa um
+drop/recreate controlado e então recupera ASP/Kafka em vez de gastar a pausa do palco com
+`delete_many`; a preparação medida foi de 6,43 s depois de uma execução de 59 mil documentos e
+1,33 s numa execução partindo do zero.
+Uma limpeza de rotina não reinicia o Kafka.
 
-The 5-minute TTL index on `ts` (`STREAMING_TTL_SEGUNDOS`) is the safety net for
-when you forget to reset, not the main mechanism. In steady state the TTL
-deleter removes at the same rate you insert, whatever the window; what the
-window actually decides is the size of the **live set**. At 1800 s the
-collection settled near a million documents — data plus indexes larger than an
-M20's WiredTiger cache, which on its own sustained the memory pressure that
-triggers auto-scaling. A 60-second TTL was deliberately rejected for the stage
-run: after the first minute it would delete at roughly the ingest rate, add
-oplog pressure and could remove source documents before reconciliation. The
-30-second finite run plus **Reset** is the cleanup path; 300 seconds is only the
-fallback window.
+O índice TTL de 5 minutos em `ts` (`STREAMING_TTL_SEGUNDOS`) é a rede de segurança para
+quando você esquece de resetar, não o mecanismo principal. Em regime permanente, o
+apagador de TTL remove na mesma taxa em que você insere, seja qual for a janela; o que a
+janela de fato decide é o tamanho do **conjunto vivo**. A 1800 s a
+coleção estabilizou perto de um milhão de documentos — dados mais índices maiores que o
+cache do WiredTiger de um M20, o que por si só sustentou a pressão de memória que
+dispara o auto-scaling. Um TTL de 60 segundos foi rejeitado de propósito para a
+execução de palco: depois do primeiro minuto ele apagaria mais ou menos na taxa de ingestão, somaria
+pressão no oplog e poderia remover documentos de origem antes da reconciliação. A
+execução finita de 30 segundos mais o **Reset** são o caminho de limpeza; 300 segundos é só a
+janela de reserva.
 
-**The Streaming page defaults to live.** It opens the three observer paths only
-when the operator starts a session, measures the requested and achieved TPS,
-and stops Atlas-facing polling once a finite run reconciles. The alternate
-**Replay de segurança** mode reads `backend/data/replay_streaming.json` through
-`/replay/*`; it never writes to MongoDB and remains permanently labelled.
+**A página de streaming usa o modo ao vivo por padrão.** Ela abre os três caminhos de observação apenas
+quando o operador inicia uma sessão, mede o TPS pedido e o alcançado,
+e para o polling contra o Atlas assim que uma execução finita reconcilia. O modo alternativo
+**Replay de segurança** lê `backend/data/replay_streaming.json` por
+`/replay/*`; ele nunca escreve no MongoDB e fica permanentemente rotulado.
 
-The shell's normal state is green `Pronto`. `Pré-voo pendente` means an actual
-required check failed; it replaced the ambiguous `Verificar` badge. The
-presenter-oriented React/Distribute/Transform decision panel was intentionally
-removed from the customer screen and moved to the presentation guide,
+O estado normal da casca é o verde `Pronto`. `Pré-voo pendente` significa que uma checagem
+obrigatória de fato falhou; substituiu o selo ambíguo `Verificar`. O
+painel de decisão React/Distribute/Transform, voltado ao apresentador, foi intencionalmente
+removido da tela do cliente e movido para o guia de apresentação,
 `docs/roteiro-apresentacao-streaming.md`.
 
-The window moved from 10 s to 5 s. The semantics are unchanged — tumbling, no
-overlap — but at 10 s column 3 went mute for ten seconds at a time, and an
-audience watching twenty seconds of the demo saw at most two bursts. The
-recording also keeps rolling for 25 s after the run reconciles: stopping at the
-moment of reconciliation left the final green state alive for only the last few
-seconds of a ~106 s loop, so the payoff vanished into the rewind.
+A janela passou de 10 s para 5 s. A semântica não mudou — tumbling, sem
+sobreposição — mas a 10 s a coluna 3 ficava muda por dez segundos seguidos, e uma
+plateia assistindo vinte segundos da demo via no máximo duas rajadas. A
+gravação também continua rodando por 25 s depois que a execução reconcilia: parar no
+momento da reconciliação deixava o estado verde final vivo apenas nos últimos segundos
+de um loop de ~106 s, então a recompensa sumia no rebobinar.
 
-The live page keeps the earlier relative-CPU lesson: do not leave it observing
-after the run, and always finish with `overview down`.
+A página ao vivo mantém a lição anterior sobre CPU relativa: não a deixe observando
+depois da execução, e sempre termine com `overview down`.
 
-**Open the live capture page before starting the generator.** The Change Stream
-and Kafka consumers start lazily on the first SSE subscription. The observer
-uses `auto.offset.reset=earliest`, while the source connector itself uses
-`startup.mode=latest` when it has no stored offset. Waiting for the Kafka column
-to report `consumindo` before writing keeps the capture boundary explicit and
-avoids measuring consumer startup as backlog.
+**Abra a página de captura ao vivo antes de iniciar o gerador.** Os consumidores de Change Stream
+e de Kafka sobem de forma preguiçosa na primeira assinatura SSE. O observador
+usa `auto.offset.reset=earliest`, enquanto o próprio source connector usa
+`startup.mode=latest` quando não tem offset armazenado. Esperar a coluna do Kafka
+reportar `consumindo` antes de escrever mantém a fronteira da captura explícita e
+evita medir a subida do consumidor como backlog.
 
-![Replay mode with the run reconciled](screenshots/07c-streaming-replay.png)
+![Modo de replay com a execução reconciliada](screenshots/07c-streaming-replay.png)
 
-The on-screen origin badge is permanent and names the recorded `run_id` and
-timestamp. The generator card also says that playback does not touch the
-database, and a separate warning appears when the recording file is absent. The
-figures are real measurements, not a live execution. In the shot the four paths
-agree at 12,200 with zero observed duplicates and an empty DLQ.
+O selo de origem na tela é permanente e nomeia o `run_id` gravado e o
+timestamp. O card do gerador também diz que o playback não toca o
+banco, e um aviso separado aparece quando o arquivo de gravação está ausente. Os
+números são medições reais, não uma execução ao vivo. Na captura, os quatro caminhos
+concordam em 12.200, com zero duplicatas observadas e DLQ vazia.
 
-Actions that would act on a real environment (connector restart, DLQ injection,
-checkpoint restart) stay visible but disabled — the capability is part of the
-story, but there is nothing to act on during a replay.
+Ações que atuariam sobre um ambiente real (restart de connector, injeção na DLQ,
+restart de checkpoint) permanecem visíveis, mas desabilitadas — a capacidade faz parte
+da história, mas não há sobre o que agir durante um replay.
 
-**ASP and Kafka are provisioned by default for the live page.** `overview`
-verifies the materialized assets, starts ASP/Kafka/backend/frontend and does not
-resize the cluster. The processor bills per second, so `overview down` is part
-of the demo runbook. To capture or refresh the fallback recording:
+**ASP e Kafka são provisionados por padrão para a página ao vivo.** O `overview`
+verifica os ativos materializados, sobe ASP/Kafka/backend/frontend e não
+redimensiona o cluster. O processor cobra por segundo, então o `overview down` faz parte
+do runbook da demo. Para capturar ou atualizar a gravação de reserva:
 
 ```bash
 overview                      # preflight + ASP + Kafka + backend + frontend
 python scripts/capture_replay.py
 ```
 
-Record a run with the environment up:
+Grave uma execução com o ambiente no ar:
 
 ```bash
-python scripts/capture_replay.py                    # 60 s of real writes at 200 TPS
+python scripts/capture_replay.py                    # 60 s de escritas reais a 200 TPS
 python scripts/capture_replay.py --segundos 90 --tps 200
 ```
 
-The capture subscribes to the same SSE streams and polls the same endpoints the
-page consumes live, storing each payload with its timestamp. **The replayed
-numbers are measurements, not simulation** — the recorder does not synthesise
-anything. Because that distinction only holds if the audience can see it, the
-page shows a permanent badge naming the recorded `run_id` and its date, every
-replay payload carries `replay: true`, and actions that act on the real
-environment (connector restart, DLQ injection and checkpoint restart) are
-disabled. Do not present a replay as a live run.
+A captura assina os mesmos fluxos SSE e consulta os mesmos endpoints que a
+página consome ao vivo, armazenando cada payload com seu timestamp. **Os números
+reproduzidos são medições, não simulação** — o gravador não sintetiza
+nada. Como essa distinção só se sustenta se a plateia puder vê-la, a
+página mostra um selo permanente nomeando o `run_id` gravado e sua data, todo
+payload de replay carrega `replay: true`, e ações que atuam sobre o ambiente
+real (restart de connector, injeção na DLQ e restart de checkpoint) ficam
+desabilitadas. Não apresente um replay como execução ao vivo.
 
-Why it exists: M20/M30 are burstable instances, and Atlas compute auto-scaling
-fires on **relative** CPU (`NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75`), not
-absolute. Measured on this project, 17.6% absolute CPU registered as 88%
-relative and scaled the cluster to M30 — with the generator already stopped, on
-dashboard polling alone. Replay removes that cost entirely for the parts of the
-demo that only need to show the mechanics.
+Por que ele existe: M20/M30 são instâncias burstable, e o auto-scaling de compute do Atlas
+dispara por CPU **relativa** (`NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75`), não
+absoluta. Medido neste projeto, 17,6% de CPU absoluta registrou como 88%
+relativa e escalou o cluster para M30 — com o gerador já parado, só pelo
+polling do dashboard. O replay elimina esse custo por completo nas partes da
+demo que só precisam mostrar a mecânica.
 
-**Stage calibration.** The live path is calibrated for a finite 30-second run;
-it is not a production benchmark or a sustained-capacity statement:
+**Calibração de palco.** O caminho ao vivo é calibrado para uma execução finita de 30 segundos;
+não é um benchmark de produção nem uma declaração de capacidade sustentada:
 
-- `run_id` is indexed. The reconciliation panel counts the source every few
-  seconds; without that index the count is a full collection scan repeated in a
-  loop, and it was by far the largest consumer of cluster CPU and cache.
-- The reconciliation poll runs every 5 s and **stops** once the run is final —
-  it no longer re-queries Atlas for an answer that cannot change.
-- **Play** defaults to individual mode at 2,000 TPS for 30 seconds. The async
-  driver issues one acknowledged `insert_one` per PIX, which matches the bank
-  path and makes ACK latency interpretable per transaction. At 2,000 TPS the
-  measured run delivered 2,037 TPS with Atlas p50 3.07 ms, client ACK p50
-  17.6 ms, Change Streams p50 21.9 ms and Kafka p50 32.1 ms.
-- Batch mode remains available for the volume story. The generator ceiling is
-  15,000 TPS and four disjoint Change Stream observers expose consumer
-  headroom; neither is a production capacity claim. The full 4k→12k batch ramp
-  reconciled on M20 + **SP10** with DLQ 0; the local Kafka observer degraded
-  before Atlas Stream Processing.
-- The 2026-08-07 live acceptance run produced 59,896 documents and reconciled
-  Atlas, Change Streams, Kafka and ASP/DLQ with zero loss. Final state arrived
-  in 41.09 s including the 30-second generation window.
-- `/preflight`'s `cluster_tier` check now **passes** on the entry tier and fails
-  when the cluster has scaled above it. It previously did the opposite: it
-  failed on M20 and told the operator to run load until the cluster scaled up,
-  which encoded "scale up before demoing" as a prerequisite.
-- Cluster state and tier are operator-owned. `overview` reports application
-  readiness but never pauses, resumes, resizes or changes auto-scaling.
+- O `run_id` é indexado. O painel de reconciliação conta a origem a cada poucos
+  segundos; sem esse índice a contagem é uma varredura completa da coleção repetida em
+  loop, e ela era de longe o maior consumidor de CPU e cache do cluster.
+- O polling de reconciliação roda a cada 5 s e **para** quando a execução é final —
+  ele não consulta mais o Atlas em busca de uma resposta que não pode mudar.
+- O **Play** usa por padrão o modo individual a 2.000 TPS por 30 segundos. O driver
+  assíncrono emite um `insert_one` confirmado por PIX, o que corresponde ao caminho
+  bancário e torna a latência de ACK interpretável por transação. A 2.000 TPS a
+  execução medida entregou 2.037 TPS com p50 de 3,07 ms no Atlas, p50 de ACK do cliente de
+  17,6 ms, p50 de Change Streams de 21,9 ms e p50 de Kafka de 32,1 ms.
+- O modo em lote continua disponível para a história de volume. O teto do gerador é
+  15.000 TPS e quatro observadores disjuntos de Change Stream expõem folga de
+  consumo; nenhum dos dois é alegação de capacidade de produção. A rampa completa de lote 4k→12k
+  reconciliou em M20 + **SP10** com DLQ 0; o observador Kafka local degradou
+  antes do Atlas Stream Processing.
+- A execução de aceitação ao vivo de 2026-08-07 produziu 59.896 documentos e reconciliou
+  Atlas, Change Streams, Kafka e ASP/DLQ com zero perda. O estado final chegou
+  em 41,09 s, incluindo a janela de geração de 30 segundos.
+- A checagem `cluster_tier` do `/preflight` agora **passa** no tier de entrada e falha
+  quando o cluster escalou acima dele. Antes fazia o contrário: falhava
+  em M20 e mandava o operador rodar carga até o cluster escalar,
+  o que codificava "escale antes de demonstrar" como pré-requisito.
+- Estado e tier do cluster pertencem ao operador. O `overview` reporta prontidão da
+  aplicação, mas nunca pausa, retoma, redimensiona ou muda o auto-scaling.
 
-Two Atlas rules are worth knowing before touching this, because both fail with
-HTTP 400: compute auto-scaling requires `minInstanceSize` **strictly** less than
-`maxInstanceSize` — so "pin the cluster to M20 while keeping auto-scaling on" is
-not expressible — and every tier has a maximum disk size, so a 150 GB cluster
-cannot take an M10 floor (M10 tops out at 128 GB).
+Duas regras do Atlas vale conhecer antes de mexer nisso, porque as duas falham com
+HTTP 400: o auto-scaling de compute exige `minInstanceSize` **estritamente** menor que
+`maxInstanceSize` — então "fixar o cluster em M20 mantendo o auto-scaling ligado" não é
+exprimível — e cada tier tem um tamanho máximo de disco, então um cluster de 150 GB
+não pode ter piso M10 (o M10 vai até 128 GB).
 
-Relevant environment variables: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
+Variáveis de ambiente relevantes: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL`,
 `CONNECT_CONNECTOR_NAME`, `ASP_ENABLED`, `ASP_CONNECTION_STRING`,
 `ASP_CONNECTION_NAME`, `ASP_PROCESSOR_NAME`, `ASP_GEO_PROCESSOR_NAME`
-(`geoSinais30s`), `ASP_TIER` (stage default `SP10`),
-`STREAMING_CARTAO_PCT` (18 — share of the stream on the card channel; at 0 the
-stream is PIX-only and module 08's event-time panel stays empty),
+(`geoSinais30s`), `ASP_TIER` (padrão de palco `SP10`),
+`STREAMING_CARTAO_PCT` (18 — fatia do fluxo no canal de cartão; em 0 o
+fluxo é só PIX e o painel de tempo de evento do módulo 08 fica vazio),
 `STREAMING_SINAL_KMH` (900), `STREAMING_SINAL_MIN_KM` (200),
 `STREAMING_SINAL_MIN_MIN` (1),
 `STREAMING_MODO_ESCRITA` (`individual`), `STREAMING_DEMO_TPS_INDIVIDUAL`
-(2,000), `STREAMING_DEMO_TPS` (8,000 for batch mode),
-`STREAMING_CS_PARTICOES` (default 4), `STREAMING_TTL_SEGUNDOS` (default 300),
-`STREAMING_DROP_ACIMA_DE` (default 25,000), `STREAMING_DEMO_DURATION_S` (30),
-`STREAMING_CONCEPT_TPS` (200; API ceiling 15,000),
-`ATLAS_TIER_INICIAL` (preflight expectation only), `ATLAS_MIN_TIER`
-(documentation only) and `KAFKA_CONSUMER_GROUP`.
+(2.000), `STREAMING_DEMO_TPS` (8.000 para o modo em lote),
+`STREAMING_CS_PARTICOES` (padrão 4), `STREAMING_TTL_SEGUNDOS` (padrão 300),
+`STREAMING_DROP_ACIMA_DE` (padrão 25.000), `STREAMING_DEMO_DURATION_S` (30),
+`STREAMING_CONCEPT_TPS` (200; teto de API 15.000),
+`ATLAS_TIER_INICIAL` (só a expectativa do preflight), `ATLAS_MIN_TIER`
+(apenas documentação) e `KAFKA_CONSUMER_GROUP`.
 
-## Transaction values
+## Valores das transações
 
-Real payment traffic is lopsided: lots of small transfers and a few big ones that
-carry most of the money. Drawing values uniformly loses that, and the average
-ticket comes out wrong. `PERFIS_VALORES` declares weighted value bands per
-transaction type instead. Pick one with `STREAMING_PERFIL_VALORES`:
+O tráfego real de pagamentos é desbalanceado: muitas transferências pequenas e algumas grandes que
+carregam a maior parte do dinheiro. Sortear valores de forma uniforme perde isso, e o ticket
+médio sai errado. O `PERFIS_VALORES` declara faixas de valor ponderadas por tipo de
+transação. Escolha uma com `STREAMING_PERFIL_VALORES`:
 
-| Profile | Median | Mean | Mean ÷ median | Top 1% of volume |
+| Perfil | Mediana | Média | Média ÷ mediana | Top 1% do volume |
 |---|---|---|---|---|
-| `varejo` (default) | R$ 91 | R$ 559 | 6.2× | 36% |
-| `corpo_medio` | R$ 500 | R$ 1,252 | 2.5× | 18% |
+| `varejo` (padrão) | R$ 91 | R$ 559 | 6,2× | 36% |
+| `corpo_medio` | R$ 500 | R$ 1.252 | 2,5× | 18% |
 
-Both keep the long tail. We tried a flat draw between R$ 100 and R$ 2,000: the
-mean lands almost on the median (1.4×) and the top 1% ends up carrying 3% of the
-volume, which is not what a payments flow looks like.
+Os dois mantêm a cauda longa. Tentamos um sorteio uniforme entre R$ 100 e R$ 2.000: a
+média cai quase em cima da mediana (1,4×) e o top 1% acaba carregando 3% do
+volume, o que não é a cara de um fluxo de pagamentos.
 
-`GET /streaming/perfil-valores` returns the declared bands next to percentiles
-measured with `$percentile` on the live collection — a nice way to see an
-aggregation operator answer a question about data that is being written as you
-ask.
+O `GET /streaming/perfil-valores` retorna as faixas declaradas ao lado dos percentis
+medidos com `$percentile` sobre a coleção ao vivo — uma boa forma de ver um
+operador de agregação responder a uma pergunta sobre dados que estão sendo escritos enquanto você
+pergunta.
 
-## Reading the numbers
+## Como ler os números
 
-The throughput and latency on screen describe this run, on this cluster, from
-wherever you are sitting. They are not a capacity figure for MongoDB, and the
-default presets stay modest on purpose so the whole thing runs on a small,
-cheap tier.
+A vazão e a latência na tela descrevem esta execução, neste cluster, a partir de
+onde você está sentado. Não são um número de capacidade do MongoDB, e os
+presets padrão são modestos de propósito, para que tudo rode em um tier pequeno
+e barato.
 
-Two things worth knowing before you read a latency number:
+Duas coisas que vale saber antes de ler um número de latência:
 
-- It includes the round trip to the cluster, printed above the columns. Running
-  from Brazil against a US cluster adds roughly 200 ms of pure distance to
-  everything.
-- The per-event feeds redraw once every 120 ms, because no browser tab draws
-  thousands of rows per second. The counters and percentiles behind them still
-  count every single event.
+- Ele inclui a ida e volta até o cluster, impressa acima das colunas. Rodar
+  do Brasil contra um cluster nos EUA soma cerca de 200 ms de distância pura a
+  tudo.
+- Os feeds por evento se redesenham a cada 120 ms, porque nenhuma aba de navegador desenha
+  milhares de linhas por segundo. Os contadores e percentis por trás deles ainda
+  contam todo evento.
 
-The number to actually trust is the reconciliation described above. Throughput
-varies with your laptop, your region and your tier; whether the events all
-arrived does not.
+O número em que de fato confiar é a reconciliação descrita acima. A vazão
+varia com o seu notebook, a sua região e o seu tier; se os eventos todos
+chegaram, não.
 
-### Whose ceiling was it?
+### De quem era o teto?
 
-`GET /streaming/folga` reads the primary's CPU from the Atlas Admin API and puts
-it next to the peak TPS of the same run, so the throughput figure stops being
-ambiguous: a modest TPS with the cluster near idle means the limit was the
-generator or the network, and the panel says which.
+O `GET /streaming/folga` lê a CPU do primário pela Atlas Admin API e a coloca
+ao lado do TPS de pico da mesma execução, para que o número de vazão deixe de ser
+ambíguo: um TPS modesto com o cluster quase ocioso significa que o limite foi o
+gerador ou a rede, e o painel diz qual.
 
-Three things about this reading, all found by measuring:
+Três coisas sobre essa leitura, todas achadas medindo:
 
-- **Atlas publishes process metrics one to two minutes late.** Queried right
-  after a 30 s run, the series still describes the cluster *before* the load.
-  The endpoint cuts the series at the run's `started_at` and answers
-  `metricas_pendentes` rather than concluding from stale points. Wait a minute
-  and refresh.
-- **Runs shorter than the one-minute publish interval read low.** The rest of
-  that minute — with the cluster idle — is averaged in. The same workload showed
-  43% when the run landed inside a bucket and 15% when it straddled two. Below
-  120 s the response sets `cpu_subestimada` and the text says to read the number
-  as a floor. Use `duration_s: 120` for the capacity conversation.
-- **Repeat runs vary.** Two identical 120 s runs at ~1,600 TPS read 28.6% and
-  53.0%. Quote the range, or quote the run on screen — not a remembered number.
+- **O Atlas publica métricas de processo com um a dois minutos de atraso.** Consultada logo
+  depois de uma execução de 30 s, a série ainda descreve o cluster *antes* da carga.
+  O endpoint corta a série no `started_at` da execução e responde
+  `metricas_pendentes` em vez de concluir a partir de pontos velhos. Espere um minuto
+  e atualize.
+- **Execuções menores que o intervalo de publicação de um minuto leem baixo.** O resto
+  daquele minuto — com o cluster ocioso — entra na média. A mesma carga mostrou
+  43% quando a execução caiu dentro de um bucket e 15% quando ficou entre dois. Abaixo de
+  120 s a resposta marca `cpu_subestimada` e o texto diz para ler o número
+  como um piso. Use `duration_s: 120` para a conversa de capacidade.
+- **Execuções repetidas variam.** Duas execuções idênticas de 120 s a ~1.600 TPS leram 28,6% e
+  53,0%. Cite a faixa, ou cite a execução na tela — não um número lembrado.
 
-None of this is sizing. It answers who hit the ceiling in *this* run; a
-production volume needs a measurement at production volume.
-
+Nada disso é sizing. Isso responde quem atingiu o teto *nesta* execução; um
+volume de produção exige medição em volume de produção.

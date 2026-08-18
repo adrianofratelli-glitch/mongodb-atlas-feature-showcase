@@ -1,707 +1,698 @@
-# Current implementation handoff
+# Handoff da implementação atual
 
-Last reviewed: 2026-08-11
+Última revisão: 2026-08-11
 
-## Whose ceiling was it? The run's cost on the cluster (2026-08-11)
+## De quem era o teto? O custo da execução no cluster (2026-08-11)
 
-The throughput figure was the weakest number in module 07 — not because it is
-low, but because alone it never says **whose** limit it is. A payments architect
-reads "2,000 TPS" as an Atlas capacity claim; the generator is a CPython process
-on the presenter's laptop and usually saturates first.
+O número de vazão era o mais fraco do módulo 07 — não por ser baixo, mas porque
+sozinho ele nunca diz **de quem** é o limite. Um arquiteto de pagamentos
+lê "2.000 TPS" como uma alegação de capacidade do Atlas; o gerador é um processo CPython
+no notebook do apresentador e normalmente satura primeiro.
 
-`GET /streaming/folga` reads the primary's CPU from the Atlas Admin API, cut to
-the run's own window, and reports it next to the peak TPS that produced it.
-Verdicts: `sem_execucao`, `metricas_pendentes`, `cluster_com_folga`,
+O `GET /streaming/folga` lê a CPU do primário pela Atlas Admin API, recortada à
+janela da própria execução, e a reporta ao lado do TPS de pico que a produziu.
+Vereditos: `sem_execucao`, `metricas_pendentes`, `cluster_com_folga`,
 `cluster_participando`, `cluster_no_limite`.
 
-Measured on M20, sa-east-1, WARP off (RTT 7.5 ms): ~1,600 TPS sustained for
-120 s at **28.6% and 53.0% CPU on two identical runs**. Burst runs of 30 s reach
-~2,400 TPS.
+Medido em M20, sa-east-1, WARP desligado (RTT 7,5 ms): ~1.600 TPS sustentados por
+120 s a **28,6% e 53,0% de CPU em duas execuções idênticas**. Execuções em rajada de 30 s chegam a
+~2.400 TPS.
 
-Four defects were found by measuring, and each is now a test:
+Quatro defeitos foram achados medindo, e cada um virou teste:
 
-1. **Atlas publishes process metrics one to two minutes late.** The first
-   version queried right after a 30 s run and concluded "cluster idle" from
-   points that predated the load — the right answer from the wrong evidence.
-   The series is cut at `started_at`; with no point covering the run the answer
-   is `metricas_pendentes`, never a number.
-2. **A run shorter than the publish interval is diluted.** The rest of the
-   minute (cluster idle) is averaged in: the same workload read 43% when it
-   landed inside a bucket and 15% when it straddled two. Below 120 s the
-   response sets `cpu_subestimada` and drops the "plenty of headroom" claim.
-   `duration_s` maxes at 120, which is exactly the clean threshold.
-3. **The peak only existed if someone was watching.** `tps_pico` was updated
-   inside `measured_tps()`, which only runs when the UI polls status. A run with
-   nobody on the page ended with peak 0, and the panel compared cluster CPU with
-   no TPS at all. It is now computed in `_record()`, on the write path.
-4. **`.replace(",", ".")` on the finished sentence ate the prose commas** —
-   "trabalho real. ainda com folga." on screen. The same mistake was already
-   committed and documented in `routers/geo.py`. The number is formatted in
-   isolation.
+1. **O Atlas publica métricas de processo com um a dois minutos de atraso.** A primeira
+   versão consultava logo depois de uma execução de 30 s e concluía "cluster ocioso" a partir de
+   pontos anteriores à carga — a resposta certa pela evidência errada.
+   A série é cortada em `started_at`; sem nenhum ponto cobrindo a execução, a resposta
+   é `metricas_pendentes`, nunca um número.
+2. **Uma execução mais curta que o intervalo de publicação é diluída.** O resto daquele
+   minuto (cluster ocioso) entra na média: a mesma carga leu 43% quando
+   caiu dentro de um bucket e 15% quando ficou entre dois. Abaixo de 120 s a
+   resposta marca `cpu_subestimada` e abandona a alegação de "muita folga".
+   O `duration_s` vai até 120, que é exatamente o limiar limpo.
+3. **O pico só existia se alguém estivesse olhando.** O `tps_pico` era atualizado
+   dentro de `measured_tps()`, que só roda quando a UI consulta o status. Uma execução com
+   ninguém na página terminava com pico 0, e o painel comparava CPU do cluster com
+   TPS nenhum. Agora é calculado em `_record()`, no caminho de escrita.
+4. **O `.replace(",", ".")` sobre a frase pronta comia as vírgulas da prosa** —
+   "trabalho real. ainda com folga." na tela. O mesmo erro já havia sido
+   cometido e documentado em `routers/geo.py`. O número é formatado isoladamente.
 
-The endpoint never returns the Atlas hostname: it carries the cluster name,
-which is usually the customer's name, and this field reaches the screen and the
-screenshots of a public repository. A test asserts it.
+O endpoint nunca retorna o hostname do Atlas: ele carrega o nome do cluster,
+que costuma ser o nome do cliente, e esse campo chega à tela e aos
+screenshots de um repositório público. Um teste garante isso.
 
-## What leaves the design (2026-08-11)
+## O que sai do desenho (2026-08-11)
 
-The second gap was that the PoV proved the technology works without saying what
-it **replaces** — a team that already runs Kafka does not buy one more place for
-the data to pass through. A new panel in module 07 compares the components each
-path requires, who operates them, and where reconciliation happens. It is
-deliberately factual and estimates no saving: an invented cost number is the
-first thing to be dismantled in the room, and the Kafka row stays correct
-whenever the event must reach systems outside Atlas — which is why it is in the
-demo, working.
+A segunda lacuna era que a PoV provava que a tecnologia funciona sem dizer o que ela
+**substitui** — um time que já roda Kafka não compra mais um lugar por onde
+o dado passa. Um novo painel no módulo 07 compara os componentes que cada
+caminho exige, quem os opera e onde a reconciliação acontece. Ele é
+deliberadamente factual e não estima economia nenhuma: um número de custo inventado é a
+primeira coisa a ser desmontada na sala, e a linha do Kafka continua correta
+sempre que o evento precisa chegar a sistemas fora do Atlas — que é por isso que ele está na
+demo, funcionando.
 
-## Panel 02 stopped being a catalogue search (2026-08-10)
+## O painel 02 deixou de ser busca de catálogo (2026-08-10)
 
-It asked "find a bakery". Nobody in a disputes team asks that. The investigation
-starts at the **contested purchase** and asks what exists around *that* terminal.
+Ele perguntava "encontre uma padaria". Ninguém num time de disputas pergunta isso. A investigação
+começa na **compra contestada** e pergunta o que existe em volta *daquele* terminal.
 
-The technical claim is unchanged — one `$search` stage with `geoWithin`, category
-filter and `$searchMeta` facets — but the entry point moved:
+A alegação técnica não mudou — um estágio `$search` com `geoWithin`, filtro de categoria
+e facetas de `$searchMeta` — mas o ponto de entrada mudou:
 
-- `POST /geo/search` accepts `endToEndId`. When present, the centre is the
-  registered coordinate of that purchase's terminal, and the response carries the
-  anchor (merchant, terminal, value, status, provenance) so the screen can show
-  what is being investigated.
-- **`termo` is now optional.** Without it the question is "what is here", and the
-  scoring clause becomes `exists` on the merchant name — a compound with only
-  `filter` clauses would return everything at score zero. Results are then
-  ordered by distance, because with no text query every document ties on score
-  and "most relevant" would be an arbitrary order. The tie-break is applied
-  **before** the per-terminal dedup, so each terminal contributes the right
-  document. With a term, fuzzy matching and relevance ordering are unchanged —
-  that is the "cloned merchant name" case, kept as a refinement rather than the
-  starting point.
-- The anchor's own terminal appears in its neighbourhood and is flagged, so it is
-  not mistaken for a neighbouring establishment.
-- Panel 01 gained a "ver o entorno desta compra" button that carries the flagged
-  case into panel 02, so the analyst's path is one click.
+- O `POST /geo/search` aceita `endToEndId`. Quando presente, o centro é a
+  coordenada cadastrada do terminal daquela compra, e a resposta carrega a
+  âncora (estabelecimento, terminal, valor, status, procedência) para que a tela mostre
+  o que está sendo investigado.
+- **O `termo` agora é opcional.** Sem ele, a pergunta é "o que há aqui", e a
+  cláusula de scoring vira `exists` sobre o nome do estabelecimento — um compound só com
+  cláusulas de `filter` retornaria tudo com score zero. Os resultados são então
+  ordenados por distância, porque sem consulta textual todos os documentos empatam em score
+  e "mais relevante" seria uma ordem arbitrária. O desempate é aplicado
+  **antes** da deduplicação por terminal, então cada terminal contribui com o documento certo.
+  Com um termo, o casamento fuzzy e a ordenação por relevância seguem iguais —
+  é o caso de "nome de estabelecimento clonado", mantido como refinamento e não como
+  ponto de partida.
+- O próprio terminal da âncora aparece na vizinhança e é sinalizado, para que não seja
+  confundido com um estabelecimento vizinho.
+- O painel 01 ganhou um botão "ver o entorno desta compra" que leva o caso sinalizado
+  para o painel 02, então o caminho do analista é um clique.
 
-Verified live: case `ECLI000270025` → anchor *Auto Posto Estrela*, Manaus/AM,
-terminal `POS060107`, neighbours ordered 0 → 2.78 km, facets returning 5,431
-documents in AM across four categories.
+Verificado ao vivo: caso `ECLI000270025` → âncora *Auto Posto Estrela*, Manaus/AM,
+terminal `POS060107`, vizinhos ordenados de 0 a 2,78 km, facetas retornando 5.431
+documentos no AM em quatro categorias.
 
-## Module 08: closing the flanks an architect would still push on (2026-08-10)
+## Módulo 08: fechando os flancos em que um arquiteto ainda apertaria (2026-08-10)
 
-Four changes, all cheap, after re-reading the tab as a bank architect would.
+Quatro mudanças, todas baratas, depois de reler a aba como um arquiteto de banco faria.
 
-- **The panel promised detection and delivered investigation.** The heading was
-  "the same calculation over 90 days of history", which reads as discovery; the
-  evidence is an analyst investigating without moving data. It now says
-  *"Investigar 90 dias sem tirar o histórico do banco"*. The bigger promise was
-  undermining the smaller, true one.
-- **Positioning stated out loud.** A new banner says this is **not** a fraud
-  engine and does not replace one — an issuer has rules, behavioural scoring and
-  models trained on confirmed fraud, none of which is here. What changes is
-  *where the calculation happens*: no copy of the history in a separate engine
-  with its own CDC, contract and operations.
-- **The selectivity rate is a property of the seed.** 0.027% only reflects how
-  many cases were planted. The screen already said "not accuracy"; it now also
-  says the denominator itself is constructed, because an analyst comparing that
-  number with their own would end the conversation badly.
-- **`$setWindowFields` memory, answered before being asked.** Each partition is
-  sorted in memory under the 100 MB per-stage cap; the query runs with
-  `allowDiskUse`, so a large partition spills instead of failing, at the cost of
-  I/O. What keeps partitions small in production is the cut (one client, a date
-  window), not a bigger machine.
+- **O painel prometia detecção e entregava investigação.** O título era
+  "o mesmo cálculo sobre 90 dias de histórico", o que se lê como descoberta; a
+  evidência é um analista investigando sem mover dado. Agora ele diz
+  *"Investigar 90 dias sem tirar o histórico do banco"*. A promessa maior estava
+  minando a menor, que era verdadeira.
+- **Posicionamento dito em voz alta.** Um novo banner diz que isto **não** é um motor
+  antifraude e não substitui um — um emissor tem regras, scoring comportamental e
+  modelos treinados em fraude confirmada, nada disso está aqui. O que muda é
+  *onde o cálculo acontece*: sem cópia do histórico em um motor separado
+  com CDC, contrato e operação próprios.
+- **A taxa de seletividade é uma propriedade do seed.** 0,027% só reflete quantos
+  casos foram plantados. A tela já dizia "não é acurácia"; agora diz também
+  que o próprio denominador é construído, porque um analista comparando esse
+  número com o dele encerraria a conversa mal.
+- **Memória do `$setWindowFields`, respondida antes de ser perguntada.** Cada partição é
+  ordenada em memória sob o teto de 100 MB por estágio; a consulta roda com
+  `allowDiskUse`, então uma partição grande vai para disco em vez de falhar, ao custo de
+  I/O. O que mantém as partições pequenas em produção é o recorte (um cliente, uma janela
+  de datas), não uma máquina maior.
 
-### A defect only clicking around would find
+### Um defeito que só clicando se acha
 
-`useApi()` exposes **one** `loading` flag for every call in a component, and the
-Geo tab polls `/geo/sinais-ao-vivo` every 4 s on the same instance. The three
-action buttons therefore went to "carregando" and were **disabled for about a
-second on every poll**, with nobody having clicked. Measured before: 4 of 24
-samples over 12 s disabled; after: 0 of 24. The live poll now uses its own
-`useApi()` instance and each action tracks its own busy state, so running the
-detection no longer disables the search panel next to it. Any page mixing
-polling with action buttons on a shared `useApi()` has this bug.
+O `useApi()` expõe **uma** flag `loading` para todas as chamadas de um componente, e a
+aba de Geo consulta `/geo/sinais-ao-vivo` a cada 4 s na mesma instância. Os três
+botões de ação, portanto, iam para "carregando" e ficavam **desabilitados por cerca de
+um segundo a cada poll**, sem ninguém ter clicado. Medido antes: 4 de 24
+amostras em 12 s desabilitadas; depois: 0 de 24. O poll ao vivo agora usa a própria
+instância de `useApi()` e cada ação controla o próprio estado de ocupado, então rodar
+a detecção não desabilita mais o painel de busca ao lado. Qualquer página que misture
+polling com botões de ação em um `useApi()` compartilhado tem esse bug.
 
-## Module 08 reviewed like module 07 (2026-08-10)
+## Módulo 08 revisado como o 07 (2026-08-10)
 
-Four problems, all found by running the tab rather than reading it.
+Quatro problemas, todos achados rodando a aba em vez de lê-la.
 
-**The 40 planted pairs were clones.** Every one used exactly `5 minutes`, the
-same position in the client's sequence, and `municipio_distante` returned the
-first candidate — so most pairs ended in the same city. The table showed 40 rows
-repeating "5 min / ~30.000 km/h / → São Paulo", which announces synthetic data
-before anyone asks. Worse, deriving minutes directly produced implied speeds of
-16,000–42,000 km/h, twenty times beyond any real cloned-card pattern.
+**Os 40 pares plantados eram clones.** Todos usavam exatamente `5 minutos`, a
+mesma posição na sequência do cliente, e o `municipio_distante` retornava o
+primeiro candidato — então a maioria dos pares terminava na mesma cidade. A tabela mostrava 40 linhas
+repetindo "5 min / ~30.000 km/h / → São Paulo", o que anuncia dado sintético
+antes de alguém perguntar. Pior, derivar os minutos diretamente produzia velocidades implícitas de
+16.000–42.000 km/h, vinte vezes além de qualquer padrão real de cartão clonado.
 
-The seed (v5) now picks the **target speed first** — uniform in 1,100–9,000 km/h
-— and derives the interval from the real distance between the two cities, with
-the pair's position and destination randomised inside the same fixed RNG seed.
-Measured after regeneration: speeds from **1,352 to 8,936 km/h**, intervals from
-5.5 to 115.7 minutes, routes spread across the country, and borderline cases
-just above the 900 km/h threshold — which are exactly the ones that force the
-conversation about risk policy rather than certainty. `routers/streaming.py`
-got the same treatment, so the live event-time panel stopped reporting 20,815
-km/h and now lands between 2,522 and 7,523.
+O seed (v5) agora escolhe a **velocidade alvo primeiro** — uniforme entre 1.100 e 9.000 km/h
+— e deriva o intervalo da distância real entre as duas cidades, com
+a posição e o destino do par aleatorizados dentro da mesma semente fixa de RNG.
+Medido depois da regeneração: velocidades de **1.352 a 8.936 km/h**, intervalos de
+5,5 a 115,7 minutos, rotas espalhadas pelo país e casos limítrofes
+logo acima do limiar de 900 km/h — que são justamente os que forçam a
+conversa sobre política de risco em vez de certeza. O `routers/streaming.py`
+recebeu o mesmo tratamento, então o painel ao vivo em tempo de evento parou de reportar 20.815
+km/h e agora fica entre 2.522 e 7.523.
 
-**The retrospective panel had no provenance.** All 40 results were the planted
-ones, while the copy ("the same calculation over 90 days of history") implied
-discovery. It now marks each row `plantado`/`emergente` from
-`backend/data/fraud_seeds.json`, exactly like the event-time panel — the
-guarantee must never be presented as the evidence.
+**O painel retrospectivo não tinha procedência.** Todos os 40 resultados eram os plantados,
+enquanto o texto ("o mesmo cálculo sobre 90 dias de histórico") sugeria
+descoberta. Agora ele marca cada linha como `plantado`/`emergente` a partir de
+`backend/data/fraud_seeds.json`, exatamente como o painel em tempo de evento — a
+garantia nunca pode ser apresentada como a evidência.
 
-**No denominator.** A risk team does not ask "did it detect?", it asks "how many
-alerts per day does this put in my queue?". `$facet` now counts the pairs
-evaluated in the same pass (the expensive `$setWindowFields` runs once, and the
-count is taken **before** the geometric cut, or the rate would always look
-high). Measured: **148,000 pairs evaluated, 40 flagged, 0.027%, ~0.44 alerts per
-day** over 90 days. The screen says explicitly that this is operational volume,
-not accuracy: without confirmed-fraud labels there is no precision or recall, and
-this PoV has no such label.
+**Sem denominador.** Um time de risco não pergunta "detectou?", pergunta "quantos
+alertas por dia isso coloca na minha fila?". O `$facet` agora conta os pares
+avaliados na mesma passada (o caro `$setWindowFields` roda uma vez, e a
+contagem é tirada **antes** do corte geométrico, ou a taxa sempre pareceria
+alta). Medido: **148.000 pares avaliados, 40 sinalizados, 0,027%, ~0,44 alertas por
+dia** em 90 dias. A tela diz explicitamente que isso é volume operacional,
+não acurácia: sem rótulos de fraude confirmada não há precisão nem recall, e
+esta PoV não tem esse rótulo.
 
-Cost of the `$facet`, measured warm to avoid mistaking a cold cache for a
-regression: 2,532 ms with it against 2,394 ms without — about 5%. The 5,641 ms
-seen right after recreating the collection was WiredTiger warming up.
+Custo do `$facet`, medido a quente para não confundir cache frio com
+regressão: 2.532 ms com ele contra 2.394 ms sem — cerca de 5%. Os 5.641 ms
+vistos logo depois de recriar a coleção eram o WiredTiger aquecendo.
 
-**The cheap path was unreachable.** `clienteId` existed in the API and had no
-control in the UI, so the presenter could not answer the scale objection. The
-panel now has a per-client cut next to the full scan and keeps both measurements
-on screen: **2.5 s over the whole collection against 371 ms for one client, 6.8×
-cheaper**. That is the honest answer to "and over 90 days of real history?" — the
-narrowing is what keeps the pipeline viable, not hardware.
+**O caminho barato era inalcançável.** O `clienteId` existia na API e não tinha
+controle na UI, então o apresentador não conseguia responder à objeção de escala. O
+painel agora tem um recorte por cliente ao lado da varredura completa e mantém as duas medições
+na tela: **2,5 s sobre a coleção inteira contra 371 ms para um cliente, 6,8×
+mais barato**. Essa é a resposta honesta para "e sobre 90 dias de histórico real?" — o
+estreitamento é o que mantém o pipeline viável, não o hardware.
 
-Deliberately left alone: panel 02 still searches a catalogue ("padaria") rather
-than an investigation question, and the LGPD note still lives inside a collapsed
-checklist.
+Deixado de propósito como estava: o painel 02 ainda busca um catálogo ("padaria") em vez de
+uma pergunta de investigação, e a nota de LGPD ainda vive dentro de um checklist recolhido.
 
-## One way to run the broker, and measured cold start (2026-08-10)
+## Uma forma de rodar o broker, e cold start medido (2026-08-10)
 
-The Docker/Redpanda path was removed: `docker-compose.streaming.yml` and
-`scripts/teardown-streaming.sh` are gone, and the docs, the architecture note and
-the "Kafka não configurado" panel in the UI now point at `scripts/kafka-local.sh`
-(or simply `./bin/overview`). Two ways to start the same dependency doubled the
-setup surface for no demo value — and one of the containers published `9093` on
-the host, which is the port Kafka's own KRaft controller listens on. The broker
-then accepted TCP on the controller port and timed out on every registration,
-which reads exactly like a corrupted Kafka install and cost half an hour of
-debugging. **Nothing in this PoV needs Docker.**
+O caminho Docker/Redpanda foi removido: `docker-compose.streaming.yml` e
+`scripts/teardown-streaming.sh` sumiram, e a documentação, a nota de arquitetura e
+o painel "Kafka não configurado" na UI agora apontam para `scripts/kafka-local.sh`
+(ou simplesmente `./bin/overview`). Duas formas de subir a mesma dependência dobravam a
+superfície de setup sem valor para a demo — e um dos containers publicava a `9093` no
+host, que é a porta em que o próprio controller KRaft do Kafka escuta. O broker
+então aceitava TCP na porta do controller e estourava timeout em todo registro,
+o que parece exatamente uma instalação corrompida do Kafka e custou meia hora de
+depuração. **Nada nesta PoV precisa de Docker.**
 
-Measured cold start, VPN on (RTT 256 ms — the worst realistic case):
+Cold start medido, VPN ligada (RTT 256 ms — o pior caso realista):
 
-| Step | Time |
+| Passo | Tempo |
 |---|---:|
-| `./bin/overview` → "Pronto" (ASP recreated, broker, Connect, connector, backend, frontend) | **77 s** |
-| Play → generator writing (reset 3.5 s + deliberate 0.8 s pause + start 1.9 s) | **6.2 s** |
+| `./bin/overview` → "Pronto" (ASP recriado, broker, Connect, connector, backend, frontend) | **77 s** |
+| Play → gerador escrevendo (reset 3,5 s + pausa deliberada de 0,8 s + start 1,9 s) | **6,2 s** |
 
-The 6.2 s is roughly 24 sequential round trips: on the presentation network
-(cluster in the same region, no VPN) it lands under a second. Nothing here is
-warm-up dependent — the first Play after `overview` works.
+Os 6,2 s são mais ou menos 24 idas e voltas sequenciais: na rede da apresentação
+(cluster na mesma região, sem VPN) isso fica abaixo de um segundo. Nada aqui depende de
+aquecimento — o primeiro Play depois do `overview` funciona.
 
-Request volume with the tab open, measured from the backend access log:
+Volume de requisições com a aba aberta, medido no log de acesso do backend:
 
-| State | Requests / 20 s |
+| Estado | Requisições / 20 s |
 |---|---:|
-| Run in progress, tab visible | 52 (~2.6/s, mostly the 1 s generator status) |
-| Run stopped, tab visible | **0** |
-| Tab hidden | **0** |
+| Execução em andamento, aba visível | 52 (~2,6/s, majoritariamente o status do gerador a cada 1 s) |
+| Execução parada, aba visível | **0** |
+| Aba oculta | **0** |
 
-Two behaviours worth knowing before blaming a panel: the page only follows runs
-**it started** (a run triggered by curl or another tab is deliberately not
-polled), and every interval and EventSource suspends when the tab is hidden.
+Dois comportamentos que vale conhecer antes de culpar um painel: a página só acompanha execuções
+**que ela iniciou** (uma execução disparada por curl ou por outra aba deliberadamente não é
+consultada), e todo intervalo e EventSource suspendem quando a aba está oculta.
 
-### A regression introduced and removed in the same session
+### Uma regressão introduzida e removida na mesma sessão
 
-Making `atlas_admin_api` probe for real took `/preflight` from ~1 s to ~6 s at
-256 ms RTT, because digest auth costs two round trips and the app header calls
-preflight. The probe is now cached for 60 s with a 5 s timeout. The check that
-exists so the demo does not break must not be the thing that makes it slow.
+Fazer o `atlas_admin_api` sondar de verdade levou o `/preflight` de ~1 s para ~6 s a
+256 ms de RTT, porque a autenticação digest custa duas idas e voltas e o cabeçalho da aplicação chama
+o preflight. A sonda agora é cacheada por 60 s com timeout de 5 s. A checagem que
+existe para a demo não quebrar não pode ser o que a deixa lenta.
 
-## Primary failover and schema contract, both exercised live (2026-08-10)
+## Failover de primário e contrato de schema, ambos exercitados ao vivo (2026-08-10)
 
-Two failures were added to module 07, and both were run against the real
-cluster, not only unit-tested.
+Duas falhas foram adicionadas ao módulo 07, e as duas foram executadas contra o cluster
+real, não apenas testadas em unidade.
 
-**Primary failover.** `POST /streaming/falha/failover` triggers the Atlas test
-failover on the demo cluster. It is the only failure in this PoV that hits
-MongoDB itself rather than a third party. Measured, one run:
+**Failover de primário.** O `POST /streaming/falha/failover` dispara o test
+failover do Atlas no cluster de demo. É a única falha desta PoV que atinge o
+próprio MongoDB, e não um terceiro. Medido, em uma execução:
 
 | | |
 |---|---:|
-| Documents in the run | **332,568** |
-| Value, identical on all three paths | **R$ 104.486.759,65** |
-| Election duration (until the cluster returned to IDLE) | **145.6 s** |
-| Writes rejected after driver retry | **0** |
-| Duplicates | **0** |
-| Client ACK p50 / server-side p50 | 18.5 ms / 8.2 ms |
+| Documentos na execução | **332.568** |
+| Valor, idêntico nos três caminhos | **R$ 104.486.759,65** |
+| Duração da eleição (até o cluster voltar a IDLE) | **145,6 s** |
+| Escritas rejeitadas após retry do driver | **0** |
+| Duplicatas | **0** |
+| p50 de ACK do cliente / p50 do lado do servidor | 18,5 ms / 8,2 ms |
 | Final | **reconciliado** |
 
-Three details that make it work and must not be undone:
+Três detalhes que fazem isso funcionar e não podem ser desfeitos:
 
-- The run is **extended by 150 s** when the failover is injected. An election
-  outlasts the 30 s demo window, so without the extension the auto-stop closed
-  the run mid-event and the recovery would be demonstrated with the generator
-  already stopped.
-- The evidence is not the election; it is **writes rejected next to writes
-  confirmed**. `retryWrites` absorbs the step-down, so the honest number is zero
-  — and zero only means something when it sits beside 299,208 confirmed.
-- The Admin API resource has changed shape across versions, so the call tries
-  the known forms in order. Only 404/405 moves to the next one: a credential or
-  access-list error is final and must reach the screen unmasked.
+- A execução é **estendida em 150 s** quando o failover é injetado. Uma eleição
+  dura mais que a janela de 30 s da demo, então sem a extensão o auto-stop fechava
+  a execução no meio do evento e a recuperação seria demonstrada com o gerador
+  já parado.
+- A evidência não é a eleição; são as **escritas rejeitadas ao lado das escritas
+  confirmadas**. O `retryWrites` absorve o step-down, então o número honesto é zero
+  — e zero só significa algo quando está ao lado de 299.208 confirmadas.
+- O recurso da Admin API mudou de forma entre versões, então a chamada tenta
+  as formas conhecidas em ordem. Só 404/405 avança para a próxima: um erro de credencial ou de
+  access list é final e precisa chegar à tela sem máscara.
 
-At 332k documents the run crossed `MAX_DOCS_DIGEST` (200,000), so the set digest
-was skipped and the page said so, while count and value still reconciled. That
-path is therefore exercised too, not just theorised.
+Com 332 mil documentos a execução ultrapassou o `MAX_DOCS_DIGEST` (200.000), então o digest do conjunto
+foi pulado e a página disse isso, enquanto contagem e valor continuaram reconciliando. Esse
+caminho, portanto, também é exercitado, não apenas teorizado.
 
-**Schema contract, without new infrastructure.** `GET /streaming/contrato`
-publishes the contract the processor enforces, mirroring the `$validate` in
-`scripts/setup-asp.js`, and `POST /streaming/falha/schema-incompativel` publishes
-an event with the required `valor` renamed to `amount` — the incompatible change
-a Schema Registry would reject at registration. Measured: 49,683 documents,
-value identical on all three paths, DLQ 1 with motive `Input document found to be
-invalid in $validate stage`, pipeline never stopped, `final: reconciliado`.
+**Contrato de schema, sem infraestrutura nova.** O `GET /streaming/contrato`
+publica o contrato que o processor aplica, espelhando o `$validate` de
+`scripts/setup-asp.js`, e o `POST /streaming/falha/schema-incompativel` publica
+um evento com o campo obrigatório `valor` renomeado para `amount` — a mudança incompatível
+que um Schema Registry rejeitaria no registro. Medido: 49.683 documentos,
+valor idêntico nos três caminhos, DLQ 1 com o motivo `Input document found to be
+invalid in $validate stage`, pipeline nunca parou, `final: reconciliado`.
 
-The deliberate decision was to *not* add Schema Registry, Avro or TLS/SASL to
-the local broker: it would prove configuration of a third-party product, tie the
-PoV to one bank's stack design, and add the largest failure surface of the three
-options to something that must not break on stage. What convinces is the
-behaviour under violation, and that needed no new container.
+A decisão deliberada foi *não* adicionar Schema Registry, Avro ou TLS/SASL ao
+broker local: isso provaria configuração de um produto de terceiro, prenderia a
+PoV ao desenho de stack de um banco e adicionaria a maior superfície de falha das três
+opções a algo que não pode quebrar no palco. O que convence é o
+comportamento sob violação, e isso não precisou de container novo.
 
-### Preflight was reporting a green light it could not back
+### O preflight reportava um sinal verde que não conseguia sustentar
 
-`atlas_admin_api` checked only whether the credential existed in `.env`. With the
-key's access list missing the current egress IP, every Admin API call was
-refused while preflight stayed green — and `/streaming/cluster` fell back to the
-`.env` tier silently (`"fonte": "env (HTTPError)"`), so the page announced M20
-without ever reaching Atlas. Module 02 (Online Archive) would have broken on
-stage after a clean preflight. It now probes the API and returns the refused IP
-with the path to fix it. **The egress IP changes whenever a VPN is switched on
-or off, so this is the check that fails most often in real life.** Note the two
-distinct lists: the project's Network Access list governs driver connections
-(which kept working), while the Admin API needs the entry under Organization →
+O `atlas_admin_api` só checava se a credencial existia no `.env`. Com a
+access list da chave sem o IP de saída atual, toda chamada à Admin API era
+recusada enquanto o preflight seguia verde — e o `/streaming/cluster` caía para o
+tier do `.env` em silêncio (`"fonte": "env (HTTPError)"`), então a página anunciava M20
+sem nunca alcançar o Atlas. O módulo 02 (Online Archive) teria quebrado no
+palco depois de um preflight limpo. Agora ele sonda a API e retorna o IP recusado
+com o caminho para corrigir. **O IP de saída muda sempre que uma VPN é ligada
+ou desligada, então esta é a checagem que mais falha na vida real.** Repare nas duas
+listas distintas: a lista de Network Access do projeto governa as conexões do driver
+(que seguiam funcionando), enquanto a Admin API precisa da entrada em Organization →
 Access Manager → API Keys → Access List.
 
-## Reconciliation now checks value and set, not only count (2026-08-10)
+## A reconciliação agora confere valor e conjunto, não só contagem (2026-08-10)
 
-A count-only reconciliation goes green in two cases where the data is wrong: a
-value transformed somewhere in the path, and a document swapped for another.
-Both are exactly what a payments team asks about, so `/streaming/reconciliacao`
-now reports three levels per path:
+Uma reconciliação só de contagem fica verde em dois casos em que o dado está errado: um
+valor transformado em algum ponto do caminho, e um documento trocado por outro.
+Os dois são exatamente o que um time de pagamentos pergunta, então o `/streaming/reconciliacao`
+agora reporta três níveis por caminho:
 
-| Level | How | Where it applies |
+| Nível | Como | Onde se aplica |
 |---|---|---|
-| Count | documents per path | source, CS, Kafka, ASP+DLQ |
-| Value | sum in **integer cents** (never floats) | all four |
-| Set | XOR of `blake2b(endToEndId)` — order-independent | source, CS, Kafka |
+| Contagem | documentos por caminho | origem, CS, Kafka, ASP+DLQ |
+| Valor | soma em **centavos inteiros** (nunca ponto flutuante) | os quatro |
+| Conjunto | XOR de `blake2b(endToEndId)` — independe de ordem | origem, CS, Kafka |
 
-The ASP is aggregate-only: it reconciles by value inside a declared tolerance of
-±R$0,01 per closed window (each window rounds its volume to 2 decimals) and has
-no identifier set to digest. The digest is skipped above 200,000 documents in a
-run, and the page says so rather than showing a blank.
+O ASP é só agregado: ele reconcilia por valor dentro de uma tolerância declarada de
+±R$0,01 por janela fechada (cada janela arredonda o volume para 2 casas) e não tem
+conjunto de identificadores para digerir. O digest é pulado acima de 200.000 documentos numa
+execução, e a página diz isso em vez de mostrar um espaço em branco.
 
-The deliberately invalid event (string `valor`) stays counted as a document and
-out of the sums, on every path — that is what makes the DLQ story and the value
-check consistent instead of contradictory.
+O evento deliberadamente inválido (`valor` em string) segue contado como documento e
+fora das somas, em todos os caminhos — é isso que torna a história da DLQ e a checagem
+de valor consistentes em vez de contraditórias.
 
-Measured over VPN, run with both failures injected: 1,960 documents,
-R$ 726.718,22 identical across the three paths, same digest, 1 non-numeric,
+Medido sob VPN, execução com as duas falhas injetadas: 1.960 documentos,
+R$ 726.718,22 idênticos nos três caminhos, mesmo digest, 1 não numérico,
 DLQ 1, `final: reconciliado`.
 
-### Two demo-stoppers fixed in the same pass
+### Dois impedimentos de demo corrigidos na mesma passada
 
-- **Reset answered 503 with the collection already empty.** `_purge` confirmed
-  emptiness with `estimated_document_count()`, which reads collection metadata
-  that still reports the pre-delete total. Play was aborted silently. It now
-  uses `count_documents({}, limit=1)`, and only residue in `pix.transacoes`
-  blocks a run — a late window written by the processor is normal and everything
-  is filtered by `run_id`. The UI also says why when Play does not start.
-- **A red "backend desatualizado" badge during a healthy demo.** The badge
-  tested for `write_ack` on whatever payload was in state, and the
-  `/generator/start` response does not carry it. The start payload is now merged
-  into the status object instead of replacing it.
+- **O Reset respondia 503 com a coleção já vazia.** O `_purge` confirmava
+  o vazio com `estimated_document_count()`, que lê metadados da coleção
+  ainda reportando o total anterior à exclusão. O Play era abortado em silêncio. Agora ele
+  usa `count_documents({}, limit=1)`, e só resíduo em `pix.transacoes`
+  bloqueia uma execução — uma janela atrasada escrita pelo processor é normal e tudo
+  é filtrado por `run_id`. A UI também diz o motivo quando o Play não inicia.
+- **Um selo vermelho de "backend desatualizado" durante uma demo saudável.** O selo
+  testava `write_ack` em qualquer payload que estivesse no estado, e a
+  resposta de `/generator/start` não o carrega. O payload de start agora é mesclado
+  no objeto de status em vez de substituí-lo.
 
-Also added: `entrega` in `/streaming/generator/status` attributes a
-below-target TPS to the presenter's network or to the local generator process,
-so presenting over VPN no longer shows "medido 64 · alvo 2.000" without an
-explanation; and module 08 reports the measured cost of the retrospective
-pipeline (ms + documents scanned) next to its result, with the event-time panel
-named as the answer for in-flow decisions.
+Também adicionado: o `entrega` em `/streaming/generator/status` atribui um
+TPS abaixo do alvo à rede do apresentador ou ao processo gerador local,
+então apresentar sob VPN não mostra mais "medido 64 · alvo 2.000" sem
+explicação; e o módulo 08 reporta o custo medido do pipeline retrospectivo
+(ms + documentos varridos) ao lado do resultado, com o painel de tempo de evento
+nomeado como a resposta para decisões em fluxo.
 
-## Region move: done and measured (2026-08-07)
+## Mudança de região: feita e medida (2026-08-07)
 
-The cluster and the Stream Processing workspace both run in **sa-east-1 (São
-Paulo)**. Measured before and after, same laptop, same harness:
+O cluster e o workspace de Stream Processing rodam ambos em **sa-east-1 (São
+Paulo)**. Medido antes e depois, mesmo notebook, mesmo harness:
 
-| Measure | us-east-1 | **sa-east-1** | Gain |
+| Medida | us-east-1 | **sa-east-1** | Ganho |
 |---|---:|---:|---:|
-| Pure RTT (`ping`, no write) | 148.10 ms | **7.39 ms** | 20× |
-| One PIX, client round-trip (p50) | 141.70 ms | **11.54 ms** | 12× |
-| One PIX, inside mongod (`opLatencies`) | 3.06 ms | 4.19 ms | — |
-| Commit → change stream event | 0.10 ms | 0.09 ms | — |
-| Individual-insert ceiling | 260 TPS | **2,376 TPS** | 9× |
+| RTT puro (`ping`, sem escrita) | 148,10 ms | **7,39 ms** | 20× |
+| Um PIX, ida e volta do cliente (p50) | 141,70 ms | **11,54 ms** | 12× |
+| Um PIX, dentro do mongod (`opLatencies`) | 3,06 ms | 4,19 ms | — |
+| Commit → evento de change stream | 0,10 ms | 0,09 ms | — |
+| Teto de insert individual | 260 TPS | **2.376 TPS** | 9× |
 
-Three conclusions that should shape how the PoV is presented:
+Três conclusões que devem moldar como a PoV é apresentada:
 
-1. **A PIX round trip is now 11.5 ms end-to-end**, well under the 100 ms the
-   customer conversation needs. The two numbers that did *not* change are the
-   ones that were never about distance: time inside mongod, and commit → CDC
-   propagation. Atlas was never the latency; geography was.
-2. **`1 insert = 1 PIX` is now viable.** 2,376 TPS with 50 threads clears the
-   1,000 TPS Inter mark with headroom, so the ~800-document micro-batch is no
-   longer required to reach demo volume. The batch existed only to amortise a
-   148 ms round trip.
-3. **50 threads is the sweet spot, and more is worse**: 50 → 2,376 TPS at p95
-   33.9 ms, while 600 → 2,041 TPS at p95 2,038 ms. Past ~50 the bottleneck is
-   CPython (GIL plus BSON encoding), not Atlas. Do not "tune" this by raising
-   thread count.
+1. **Uma ida e volta de PIX agora é de 11,5 ms ponta a ponta**, bem abaixo dos 100 ms que a
+   conversa com o cliente final exige. Os dois números que *não* mudaram são os
+   que nunca foram sobre distância: o tempo dentro do mongod e a propagação
+   commit → CDC. O Atlas nunca foi a latência; a geografia era.
+2. **`1 insert = 1 PIX` agora é viável.** 2.376 TPS com 50 threads supera a
+   marca de 1.000 TPS do Inter com folga, então o micro-lote de ~800 documentos não é
+   mais necessário para atingir o volume da demo. O lote existia só para amortizar uma
+   ida e volta de 148 ms.
+3. **50 threads é o ponto ideal, e mais é pior**: 50 → 2.376 TPS com p95
+   de 33,9 ms, enquanto 600 → 2.041 TPS com p95 de 2.038 ms. Passando de ~50 o gargalo é
+   o CPython (GIL mais codificação BSON), não o Atlas. Não "otimize" isso subindo
+   a contagem de threads.
 
-**Beware the egress path when reading any latency number.** These numbers only
-appeared after disabling a Cloudflare WARP-style proxy on the presenting laptop.
-With it on, traffic egressed from **New York**, making São Paulo *farther* than
-Virginia (s3 connect: sa-east-1 308 ms vs us-east-1 226 ms) and the post-move RTT
-read 254 ms — worse than before the move. Confirm egress with
-`curl -s https://ipinfo.io/json` before trusting or debugging a latency figure.
-The customer sits in Brazil on a direct route; the demo laptop must too, or it
-cannot show the latency the customer would actually get.
+**Cuidado com a rota de saída ao ler qualquer número de latência.** Esses números só
+apareceram depois de desligar um proxy tipo Cloudflare WARP no notebook da apresentação.
+Com ele ligado, o tráfego saía de **Nova York**, tornando São Paulo *mais longe* que a
+Virgínia (conexão s3: sa-east-1 308 ms vs us-east-1 226 ms), e o RTT pós-mudança
+lia 254 ms — pior que antes da mudança. Confirme a saída com
+`curl -s https://ipinfo.io/json` antes de confiar em um número de latência ou depurá-lo.
+O cliente está no Brasil, em rota direta; o notebook da demo precisa estar também, ou ele
+não consegue mostrar a latência que o cliente de fato teria.
 
-Reproduce with the four measures: pure RTT, per-PIX client round-trip, per-PIX
-`serverStatus().opLatencies.writes`, and the individual-insert ceiling at
-50/150/300/600 threads. The harness lived in the session scratchpad and is not
-committed.
+Reproduza com as quatro medidas: RTT puro, ida e volta do cliente por PIX, o
+`serverStatus().opLatencies.writes` por PIX e o teto de insert individual com
+50/150/300/600 threads. O harness viveu no scratchpad da sessão e não está
+commitado.
 
-### Individual mode is now the default (2026-08-07)
+### O modo individual agora é o padrão (2026-08-07)
 
-`STREAMING_MODO_ESCRITA=individual` makes the generator write **one `insert_one`
-per PIX**. This is what a bank's flow actually looks like, and it is what makes
-`opLatencies` measure a transaction instead of an 800-document micro-batch — the
-objection that motivated the change.
+`STREAMING_MODO_ESCRITA=individual` faz o gerador escrever **um `insert_one`
+por PIX**. É assim que o fluxo de um banco realmente é, e é isso que faz o
+`opLatencies` medir uma transação em vez de um micro-lote de 800 documentos — a
+objeção que motivou a mudança.
 
-The write path uses **`AsyncMongoClient`**. With `asyncio.to_thread(insert_one)`
-each PIX held a pool thread, and since the same process also runs four change
-stream cursors, the Kafka consumer and the UI polls, the GIL capped throughput at
-~1,000 TPS. Async doubled it with identical semantics.
+O caminho de escrita usa **`AsyncMongoClient`**. Com `asyncio.to_thread(insert_one)`
+cada PIX segurava uma thread do pool, e como o mesmo processo também roda quatro cursores de
+change stream, o consumidor Kafka e os polls da UI, o GIL travava a vazão em
+~1.000 TPS. O assíncrono dobrou isso com semântica idêntica.
 
-Measured in sa-east-1 with all three consumers active (target → measured):
+Medido em sa-east-1 com os três consumidores ativos (alvo → medido):
 
-| Target | Measured | Atlas p50 | ACK p50 | CS p50 | Kafka p50 |
+| Alvo | Medido | p50 Atlas | p50 ACK | p50 CS | p50 Kafka |
 |---:|---:|---:|---:|---:|---:|
-| 1,000 | 1,018 | 3.07 ms | 14.6 ms | 20.6 ms | 28.2 ms |
-| **2,000** | **2,037** | **3.07 ms** | **17.6 ms** | **21.9 ms** | **32.1 ms** |
-| 2,500 | 2,277 | 8.19 ms | 21.2 ms | 23.7 ms | 99.8 ms |
-| 3,000 | 2,544 | 8.19 ms | 23.4 ms | 32.8 ms | 262.9 ms |
-| 4,000 | 3,015 | 8.19 ms | 25.7 ms | 40.4 ms | 1,003 ms |
+| 1.000 | 1.018 | 3,07 ms | 14,6 ms | 20,6 ms | 28,2 ms |
+| **2.000** | **2.037** | **3,07 ms** | **17,6 ms** | **21,9 ms** | **32,1 ms** |
+| 2.500 | 2.277 | 8,19 ms | 21,2 ms | 23,7 ms | 99,8 ms |
+| 3.000 | 2.544 | 8,19 ms | 23,4 ms | 32,8 ms | 262,9 ms |
+| 4.000 | 3.015 | 8,19 ms | 25,7 ms | 40,4 ms | 1.003 ms |
 
-Every row reconciled across all three paths with DLQ 0 and zero pending.
+Toda linha reconciliou nos três caminhos com DLQ 0 e zero pendente.
 
-**2,000 TPS is the default** — the last target that is actually delivered and
-keeps the whole post-commit path under 35 ms. The three stage presets are 363
-(Inter average), 1,000 (Inter peak, the customer's mark) and 2,000 (2× the mark).
+**2.000 TPS é o padrão** — o último alvo que é de fato entregue e
+mantém todo o caminho pós-commit abaixo de 35 ms. Os três presets de palco são 363
+(média do Inter), 1.000 (pico do Inter, a marca do cliente) e 2.000 (2× a marca).
 
-**What saturates first is the local Kafka consumer, not Atlas.** During a
-1,000 TPS run the server ingested each PIX in 3.07 ms using 157 of 3,000
-connections, with WiredTiger cache at 67%. Raising the target past 2,000 only
-degrades the laptop's consumer — do not read it as an Atlas limit, and do not
-"fix" it by raising thread counts.
+**O que satura primeiro é o consumidor Kafka local, não o Atlas.** Durante uma
+execução a 1.000 TPS o servidor ingeriu cada PIX em 3,07 ms usando 157 de 3.000
+conexões, com o cache do WiredTiger em 67%. Subir o alvo além de 2.000 só
+degrada o consumidor do notebook — não leia isso como limite do Atlas, e não
+"conserte" subindo a contagem de threads.
 
-`modo: "lote"` remains available on `/streaming/generator/start` for the 8,000
-TPS volume story; the batch exists solely to amortise client-side cost.
+O `modo: "lote"` continua disponível em `/streaming/generator/start` para a história de volume
+de 8.000 TPS; o lote existe unicamente para amortizar custo do lado do cliente.
 
-**ASP workspace region cannot be changed in place.** `PATCH /streams/{name}` and
-`atlas streams instances update --region` both return
-`400 INVALID_JSON_ATTRIBUTE`. The workspace must be deleted and recreated in the
-new region, which also destroys its connections and processors.
+**A região do workspace de ASP não pode ser trocada no lugar.** O `PATCH /streams/{name}` e
+o `atlas streams instances update --region` retornam ambos
+`400 INVALID_JSON_ATTRIBUTE`. O workspace precisa ser apagado e recriado na
+nova região, o que também destrói suas conexões e processors.
 
-**The São Paulo region identifier is `SAOPAULO_BRA`** — no underscore between
-SAO and PAULO. `SA_EAST_1` (what the docs table lists), `SAO_PAULO_BRA` and
-`sa-east-1` are all rejected with `400 INVALID_JSON_ATTRIBUTE`, which reads like
-"region unsupported" and is really just a wrong identifier. Verify a new value by
-POSTing a throwaway workspace before concluding a region is unavailable.
+**O identificador da região de São Paulo é `SAOPAULO_BRA`** — sem underline entre
+SAO e PAULO. `SA_EAST_1` (o que a tabela da documentação lista), `SAO_PAULO_BRA` e
+`sa-east-1` são todos rejeitados com `400 INVALID_JSON_ATTRIBUTE`, o que parece
+"região não suportada" e é só um identificador errado. Verifique um valor novo
+fazendo POST de um workspace descartável antes de concluir que uma região está indisponível.
 
-Rebuild recipe, done on 2026-08-06 and verified (`activeRegion: sa-east-1`):
+Receita de reconstrução, feita em 2026-08-06 e verificada (`activeRegion: sa-east-1`):
 
 ```bash
-# 1. workspace (tier goes in streamConfig; the CLI has no --tier flag)
+# 1. workspace (o tier vai em streamConfig; a CLI não tem flag --tier)
 POST /api/atlas/v2/groups/{proj}/streams
   {"name":"spi-inter-pix",
    "dataProcessRegion":{"cloudProvider":"AWS","region":"SAOPAULO_BRA"},
    "streamConfig":{"tier":"SP10"}}
 
-# 2. connection
+# 2. conexão
 POST /api/atlas/v2/groups/{proj}/streams/spi-inter-pix/connections
   {"name":"atlasCluster","type":"Cluster","clusterName":"inter",
    "dbRoleToExecute":{"role":"readWriteAnyDatabase","type":"BUILT_IN"}}
 
-# 3. processor — replace only the host in ASP_CONNECTION_STRING first
+# 3. processor — troque antes só o host em ASP_CONNECTION_STRING
 ASP_RECREATE=true ASP_TIER=SP10 mongosh "$ASP_CONNECTION_STRING" \
   --file scripts/setup-asp.js
 ```
 
-**The new workspace gets a different hostname, so `ASP_CONNECTION_STRING` in
-`backend/.env` must be updated** — leaving the old `virginia-usa` host there is
-the failure mode that makes column 3 silently read a cluster across the
-continent. A backup of the pre-change file is at `backend/.env.bak-regiao`.
+**O workspace novo recebe um hostname diferente, então o `ASP_CONNECTION_STRING` em
+`backend/.env` precisa ser atualizado** — deixar o host antigo `virginia-usa` ali é
+o modo de falha que faz a coluna 3 ler em silêncio um cluster do outro lado do
+continente. Um backup do arquivo anterior à mudança está em `backend/.env.bak-regiao`.
 
-Keep cluster and ASP workspace in the **same region**. With them split, the ASP
-column measures a transcontinental hop and looks like a product weakness when it
-is topology.
+Mantenha cluster e workspace de ASP na **mesma região**. Separados, a coluna do ASP
+mede um salto transcontinental e parece fraqueza do produto quando é
+topologia.
 
-This is the shortest reliable entry point when picking the project back up. It
-records the decisions behind the current PoV; use `ARCHITECTURE.md` for endpoint
-detail.
+Este é o ponto de entrada confiável mais curto ao retomar o projeto. Ele
+registra as decisões por trás da PoV atual; use o `ARCHITECTURE.md` para detalhe de endpoint.
 
-## Product position
+## Posicionamento do produto
 
-The PoV proves that MongoDB Atlas can be a trustworthy data and event platform
-for a PIX-shaped workload. It is deliberately **not** a benchmark, sizing
-exercise or production topology recommendation.
+A PoV prova que o MongoDB Atlas pode ser uma plataforma confiável de dados e eventos
+para uma carga com o formato do PIX. Ela deliberadamente **não** é um benchmark, um exercício de
+sizing nem uma recomendação de topologia de produção.
 
-- The workload and values are synthetic; Atlas, Change Streams, Kafka,
-  checkpoints, Stream Processing and the DLQ are real.
-- TPS and latency describe only the current laptop-to-Atlas execution.
-- One Kafka source connector and four filtered Change Stream cursors are used in
-  the default demonstration. The cursors expose consumer parallelism in this
-  PoV; they are not native Kafka partitions or a production sizing prescription.
-- Reliability is demonstrated by finite-run reconciliation, resumability,
-  idempotency, observable backlog and explicit failure states—not by a large
-  throughput number.
+- A carga e os valores são sintéticos; Atlas, Change Streams, Kafka,
+  checkpoints, Stream Processing e a DLQ são reais.
+- TPS e latência descrevem apenas a execução atual notebook → Atlas.
+- Um source connector Kafka e quatro cursores filtrados de Change Stream são usados na
+  demonstração padrão. Os cursores expõem paralelismo de consumo nesta
+  PoV; não são partições nativas do Kafka nem prescrição de sizing de produção.
+- A confiabilidade é demonstrada por reconciliação de execução finita, retomabilidade,
+  idempotência, backlog observável e estados de falha explícitos — não por um número
+  grande de vazão.
 
-## Changes and rationale
+## Mudanças e racional
 
-### Module 08 reframed: card-present risk, not "geo" (2026-08-07)
+### Módulo 08 reenquadrado: risco em cartão presencial, não "geo" (2026-08-07)
 
-The tab was a showcase of geospatial features; it is now a **risk** tab. Renamed
-"Risco geográfico" in the nav, and the three demos were reordered by what a bank
-actually asks:
+A aba era uma vitrine de recursos geoespaciais; agora é uma aba de **risco**. Renomeada
+para "Risco geográfico" na navegação, e as três demos foram reordenadas pelo que um banco
+de fato pergunta:
 
-| Before | After |
+| Antes | Depois |
 |---|---|
-| Demo A: index plan comparison (first) | moved into a `<details>` — it answers "is the index right?", not "what problem does this solve?" |
-| Demo B: impossible travel | **01 · Sinal de risco** — now the opening demo |
-| Demo C: geo + Atlas Search | **02 · Contexto para investigação**, anchored on dispute/alert triage |
+| Demo A: comparação de planos de índice (primeira) | movida para um `<details>` — ela responde "o índice está certo?", não "que problema isso resolve?" |
+| Demo B: viagem impossível | **01 · Sinal de risco** — agora a demo de abertura |
+| Demo C: geo + Atlas Search | **02 · Contexto para investigação**, ancorada em triagem de disputa/alerta |
 
-**The dataset now models card-present purchases (`VERSAO_DATASET = 4`).** The old
-seed was internally inconsistent: it had a physical `estabelecimento` but sourced
-the coordinate from `APP_MOBILE` / `GPS_APP_SIMULADO`. An attentive analyst asks
-why a purchase at a bakery is located by the customer's phone.
+**O dataset agora modela compras de cartão presencial (`VERSAO_DATASET = 4`).** O seed antigo
+era internamente inconsistente: tinha um `estabelecimento` físico, mas tirava a
+coordenada de `APP_MOBILE` / `GPS_APP_SIMULADO`. Um analista atento pergunta
+por que uma compra numa padaria é localizada pelo celular do cliente.
 
-Why this matters for the argument, not just for tidiness:
+Por que isso importa para o argumento, e não só para a arrumação:
 
-- **PIX carries no coordinate.** The BACEN arrangement has no geolocation, so any
-  "geo of PIX" framing invites a correction from the room and costs credibility.
-  PIX is also the *weakest* geo case — it is online, with no terminal.
-- **Card-present fixes exactly that.** The coordinate is the acquirer's terminal:
-  fixed and registered independently from handset telemetry. It is harder for
-  the customer to manipulate, but the acquirer registry can still be stale or
-  incorrect. Impossible
-  travel over card-present transactions is the canonical industry case.
-- **It gives the narrative continuity without lying.** Module 07 is PIX
-  (transfer, online); module 08 is card (purchase, present). Two transactional
-  fronts of a digital bank, one cluster. Relevant because the customer here is a
-  digital bank with **no branches** — so branch-network geo cases do not apply.
+- **O PIX não carrega coordenada.** O arranjo do BACEN não tem geolocalização, então qualquer
+  enquadramento de "geo do PIX" convida uma correção da sala e custa credibilidade.
+  O PIX também é o caso geo *mais fraco* — é online, sem terminal.
+- **O cartão presencial resolve exatamente isso.** A coordenada é o terminal do adquirente:
+  fixa e cadastrada de forma independente da telemetria do aparelho. É mais difícil
+  de o cliente manipular, mas o cadastro do adquirente ainda pode estar desatualizado ou
+  incorreto. Viagem impossível sobre transações de cartão presencial é o caso canônico do setor.
+- **Dá continuidade à narrativa sem mentir.** O módulo 07 é PIX
+  (transferência, online); o módulo 08 é cartão (compra, presencial). Duas frentes
+  transacionais de um banco digital, um cluster. Relevante porque o cliente aqui é um
+  banco digital **sem agências** — então casos geo de rede de agências não se aplicam.
 
-Document changes: `dispositivo.canal` → `POS_PRESENCIAL`, `localizacaoMeta.origem`
+Mudanças no documento: `dispositivo.canal` → `POS_PRESENCIAL`, `localizacaoMeta.origem`
 → `TERMINAL_ADQUIRENTE`, `qualidade` → `CADASTRAL`, `tipo` → `CARTAO_DEBITO`/
-`CARTAO_CREDITO`. Establishments and terminals are stable catalog entities: the
-same terminal keeps the same registered coordinate across purchases. Re-seed with
+`CARTAO_CREDITO`. Estabelecimentos e terminais são entidades estáveis de catálogo: o
+mesmo terminal mantém a mesma coordenada cadastrada entre compras. Ressemeie com
 `python scripts/seed_geo.py --drop`.
 
-The GPS caveat on screen was rewritten accordingly: terminal capture is far more
-trustworthy than handset GPS, but the signal still does not decide alone —
-additional cards, authorised third-party use and capture delay all produce false
-positives.
+A ressalva de GPS na tela foi reescrita de acordo: a captura no terminal é bem mais
+confiável que o GPS do aparelho, mas o sinal ainda não decide sozinho —
+cartões adicionais, uso autorizado por terceiros e atraso de captura todos produzem falsos
+positivos.
 
-### Streaming live for the PIX team (2026-08-05; defaults updated 2026-08-07)
+### Streaming ao vivo para o time de PIX (2026-08-05; padrões atualizados em 2026-08-07)
 
-- Module 07 defaults to a real live session again; the recorded run remains a
-  visibly labelled contingency selected with `overview --replay`.
-- The UI opens its three SSE observers and Atlas-facing polls only after the
-  operator starts a live session, and closes them after reconciliation. This
-  preserves the relative-CPU lesson that originally motivated replay-only mode.
-- `Parar e reconciliar` waits one window plus allowed lateness, then inserts a
-  technical event under `__demo_watermark__`. It advances event time without
-  contaminating the demonstrated `run_id`, so the final ASP window can close.
-- The business comparison is now explicit and sourced from BCB: 313,339,828 PIX
-  on the 2025-12-05 record day is 3,627 TPS average, or ~363 TPS under the
-  customer's 10% share premise. The stage-impact target is 1,000 TPS, equal to
-  10% of the BCB's planned 10k sustained peak. These are comparison marks, not
-  a production capacity or sizing claim.
-- `overview` now starts ASP and Kafka by default and `overview --replay` is the
-  no-write path. `overview down` is mandatory because ASP bills per second.
-- The original live stage default was 8,000 TPS in batch mode. After the region
-  move and async-driver work, the customer-facing default became **2,000 TPS in
-  individual mode**: one acknowledged `insert_one` per PIX. Batch mode keeps
-  8,000 TPS for the separate volume story. Atlas write ACK is the persistence
-  metric; Change Streams, Kafka and ASP are post-commit paths.
-- Every live Play now performs a scoped PIX reset before opening the observers,
-  then starts a fresh `run_id`. In-flight status/reconciliation responses are
-  guarded by that `run_id`, so a completed prior run cannot close the new SSE
-  session or overwrite its reconciliation. The UI also names the exact Data
-  Explorer namespace (`pix.transacoes`) and detects an old backend contract.
-- M20 and M30 are both healthy states inside the configured M20→M30 compute
-  auto-scaling range. The header still exposes the real tier, but preflight no
-  longer fails merely because Atlas legitimately moved to M30.
+- O módulo 07 volta a usar por padrão uma sessão real ao vivo; a execução gravada segue como
+  contingência visivelmente rotulada, selecionada com `overview --replay`.
+- A UI abre seus três observadores SSE e os polls contra o Atlas somente depois que o
+  operador inicia uma sessão ao vivo, e os fecha depois da reconciliação. Isso
+  preserva a lição de CPU relativa que originalmente motivou o modo só-replay.
+- O `Parar e reconciliar` espera uma janela mais o atraso permitido e então insere um
+  evento técnico sob `__demo_watermark__`. Ele avança o tempo de evento sem
+  contaminar o `run_id` demonstrado, para que a última janela do ASP possa fechar.
+- A comparação de negócio agora é explícita e vem do BCB: 313.339.828 PIX
+  no dia recorde de 2025-12-05 dão 3.627 TPS médios, ou ~363 TPS sob a
+  premissa de 10% de participação do cliente. O alvo de impacto de palco é 1.000 TPS, igual a
+  10% do pico sustentado de 10 mil planejado pelo BCB. São marcas de comparação, não
+  alegação de capacidade de produção ou sizing.
+- O `overview` agora sobe ASP e Kafka por padrão, e o `overview --replay` é o
+  caminho sem escrita. O `overview down` é obrigatório porque o ASP cobra por segundo.
+- Todo Play ao vivo agora faz um reset de PIX com escopo antes de abrir os observadores,
+  e então inicia um `run_id` novo. Respostas de status/reconciliação em voo são
+  protegidas por esse `run_id`, então uma execução anterior concluída não pode fechar a nova sessão
+  SSE nem sobrescrever a reconciliação dela. A UI também nomeia o namespace exato do Data
+  Explorer (`pix.transacoes`) e detecta um contrato antigo de backend.
+- M20 e M30 são ambos estados saudáveis dentro da faixa configurada de auto-scaling de
+  compute M20→M30. O cabeçalho ainda expõe o tier real, mas o preflight
+  não falha mais só porque o Atlas legitimamente foi para M30.
 
-### PIX presentation hardening (2026-08-04)
+### Endurecimento da apresentação do PIX (2026-08-04)
 
-- Module 05 now delivers its UI feed over SSE and no longer implies that its
-  introductory animation proves durable resume. Module 07 remains the evidence
-  for persisted tokens, re-delivery, idempotency and oplog-bounded recovery.
-- The module 07 recording badge is permanent again. Spoken disclosure is not a
-  substitute for visible provenance of recorded measurements.
-- Kafka now makes its current document key/JSON contract explicit and separates
-  observed offsets from production decisions about ordering, partition key,
-  schema compatibility, HA and security.
-- The ASP snippet matches the deployed 5 s / 2 s event-time policy and exposes
-  watermark idleness, late-event DLQ behavior and the single terminal-sink
-  constraint. Stopping input does not force an event-time window closed.
-- **Superseded by the card-present model above:** Geo originally labelled
-  coordinates as synthetic app telemetry. Dataset v4 now uses registered
-  acquirer-terminal coordinates and stable terminal/merchant identities.
-  Impossible travel remains a retrospective risk signal, not a fraud verdict.
+- O módulo 05 agora entrega seu feed de UI por SSE e não sugere mais que sua
+  animação introdutória prova retomada durável. O módulo 07 continua sendo a evidência
+  de tokens persistidos, reentrega, idempotência e recuperação limitada pelo oplog.
+- O selo de gravação do módulo 07 voltou a ser permanente. Aviso falado não é
+  substituto de procedência visível de medições gravadas.
+- O Kafka agora explicita seu contrato atual de chave/JSON do documento e separa
+  offsets observados de decisões de produção sobre ordenação, chave de partição,
+  compatibilidade de schema, alta disponibilidade e segurança.
+- O trecho do ASP corresponde à política implantada de tempo de evento 5 s / 2 s e expõe
+  ociosidade da marca d'água, comportamento de evento atrasado na DLQ e a restrição de sink
+  terminal único. Parar a entrada não força o fechamento de uma janela de tempo de evento.
+- **Substituído pelo modelo de cartão presencial acima:** o Geo originalmente rotulava
+  coordenadas como telemetria sintética de app. O dataset v4 agora usa coordenadas
+  cadastradas de terminal de adquirente e identidades estáveis de terminal/estabelecimento.
+  Viagem impossível segue como sinal de risco retrospectivo, não veredito de fraude.
 
-### Streaming backend: evidence instead of claims
+### Backend de streaming: evidência em vez de alegações
 
-Primary files: `backend/routers/streaming.py`,
+Arquivos principais: `backend/routers/streaming.py`,
 `backend/tests/test_streaming.py`, `scripts/setup-asp.js`.
 
-| Change | Why |
+| Mudança | Por quê |
 |---|---|
-| Every generator start creates a `run_id`; transactions also carry a sequence and stable `endToEndId`. | A finite run can be counted independently of previous demonstrations. |
-| `RunTracker` records unique IDs seen by Change Streams and Kafka; reconciliation also reads the source, ASP windows, DLQ and audit collections. | “Nothing was lost” is now an accounting result, not an animation or counter comparison. |
-| Change Stream workers persist resume tokens in `pix.consumer_checkpoints`. | API restarts and transient cursor failures can resume from durable state. |
-| A checkpoint is discarded only when MongoDB confirms `ChangeStreamHistoryLost`; other errors retain it. | Retaining an older token may redeliver, while silently starting at “now” could lose events. |
-| Duplicate deliveries are measured by `endToEndId`. | Change Streams and Kafka are at-least-once paths; idempotency is explicit. |
-| Kafka health is downgraded from connector state to task state, and connector/consumer restart endpoints were added. | A connector can report `RUNNING` while its only task is `FAILED`; the task moves the data. |
-| ASP status includes processor runtime stats when available; restart uses controlled stop/start and preserves the managed checkpoint. | The UI shows operational state and recovery without recreating the processor. |
-| The ASP pipeline validates `run_id`, PIX type and numeric value, uses event-time tumbling windows with allowed lateness, and merges with a deterministic execution/window/UF/type `_id`. | Bad input is auditable in the DLQ, late events have a defined policy, and replay replaces rather than double-counts a window. |
-| DLQ summary, injection and idempotent reprocessing preserve the business key. | Error handling becomes a demonstrable recovery path rather than a dead-end counter. |
-| Oplog window, network RTT and point-read latency are measured separately. | Resume-token retention, network distance and operational reads answer different questions and must not be conflated. |
-| Moderate presets and a laptop-safe generator ceiling replaced “impressive” capacity claims. | The PoV proves mechanics on a low-cost environment; cluster sizing is explicitly out of scope. |
+| Todo start de gerador cria um `run_id`; as transações também carregam sequência e `endToEndId` estável. | Uma execução finita pode ser contada independentemente de demonstrações anteriores. |
+| O `RunTracker` registra os IDs únicos vistos por Change Streams e Kafka; a reconciliação também lê a origem, as janelas do ASP, a DLQ e as coleções de auditoria. | "Nada foi perdido" passa a ser resultado contábil, não animação ou comparação de contadores. |
+| Os workers de Change Stream persistem resume tokens em `pix.consumer_checkpoints`. | Restarts da API e falhas transitórias de cursor podem retomar a partir de estado durável. |
+| Um checkpoint só é descartado quando o MongoDB confirma `ChangeStreamHistoryLost`; outros erros o preservam. | Manter um token antigo pode reentregar, enquanto começar em silêncio a partir de "agora" poderia perder eventos. |
+| Entregas duplicadas são medidas por `endToEndId`. | Change Streams e Kafka são caminhos at-least-once; a idempotência é explícita. |
+| A saúde do Kafka é rebaixada do estado do connector para o estado da task, e endpoints de restart de connector/consumidor foram adicionados. | Um connector pode reportar `RUNNING` enquanto sua única task está `FAILED`; quem move o dado é a task. |
+| O status do ASP inclui estatísticas de runtime do processor quando disponíveis, e o restart usa stop/start controlado e preserva o checkpoint gerenciado. | A UI mostra estado operacional e recuperação sem recriar o processor. |
+| O pipeline de ASP valida `run_id`, tipo de PIX e valor numérico, usa janelas tumbling de tempo de evento com atraso permitido, e faz merge com um `_id` determinístico de execução/janela/UF/tipo. | Entrada ruim fica auditável na DLQ, eventos atrasados têm política definida, e o replay substitui em vez de contar duas vezes uma janela. |
+| Resumo da DLQ, injeção e reprocessamento idempotente preservam a chave de negócio. | O tratamento de erro vira um caminho de recuperação demonstrável, e não um contador sem saída. |
+| Janela do oplog, RTT de rede e latência de leitura pontual são medidos separadamente. | Retenção de resume token, distância de rede e leituras operacionais respondem a perguntas diferentes e não podem ser confundidas. |
+| Presets moderados e um teto de gerador seguro para notebook substituíram alegações "impressionantes" de capacidade. | A PoV prova mecânica em um ambiente de baixo custo; o sizing do cluster está explicitamente fora de escopo. |
 
-### Streaming cost posture: the PoV must fit on M20
+### Postura de custo do streaming: a PoV precisa caber em um M20
 
-Primary files: `backend/routers/streaming.py`, `scripts/ambiente.sh`,
+Arquivos principais: `backend/routers/streaming.py`, `scripts/ambiente.sh`,
 `frontend/src/pages/Streaming.jsx`.
 
-The cluster was auto-scaling to M30 during every streaming demo. The dominant
-cause was not the write load: `/streaming/reconciliacao` counted the source with
-`count_documents({"run_id": ...})` against a collection that had no `run_id`
-index, and the UI polled it every 2 s. That collection scan pulled the whole
-live set through the WiredTiger cache in a loop.
+O cluster estava escalando para M30 em toda demo de streaming. A causa dominante
+não era a carga de escrita: o `/streaming/reconciliacao` contava a origem com
+`count_documents({"run_id": ...})` contra uma coleção sem índice de
+`run_id`, e a UI consultava isso a cada 2 s. Essa varredura de coleção puxava o conjunto
+vivo inteiro pelo cache do WiredTiger, em loop.
 
-| Change | Why |
+| Mudança | Por quê |
 |---|---|
-| `_ensure_indexes()` creates a `run_id` index. | Turns the reconciliation count from a repeated COLLSCAN into an index scan. Largest single win. |
-| Reconciliation poll 2 s → 5 s, and the loop stops once the run is final. | It kept querying Atlas after the answer could no longer change. |
-| **Individual Play** = 2,000 TPS for 30 s; batch mode = 8,000 TPS; `TPS_MAX` = 15,000; 4 Change Stream partitions; ASP stage tier SP10. | Individual mode is the customer-facing default after the region move. The 8,000 TPS batch run remains a measured volume story, not production sizing. |
-| `STREAMING_TTL_SEGUNDOS` 1800 → 300. | Reset is the primary cleanup. A 60 s TTL would begin deleting near the ingest rate during repeated runs, add oplog pressure and risk racing reconciliation. |
-| Cluster normalization was removed from `scripts/ambiente.sh`; tier/state are operator-owned. | Demo startup must not pause, resume or resize the user's Atlas cluster. |
-| `/preflight`'s `cluster_tier` check was inverted. It used to fail on M20 and tell the operator to "run load for a few minutes to scale up before the demo"; it now passes on the entry tier and fails when the cluster has scaled **above** it. `_cluster_info_sync()` exposes `escalou` in place of `aquecido`, and the header badge turns yellow on scale-up. | Scaling up was encoded in the product as a demo prerequisite. That assumption is what made M30 feel normal; the check now states the opposite expectation. |
-| `scripts/kafka-local.sh down` reads the connector list into a variable and parses it defensively, and now also stops each connector and deletes its offsets before removing it. | The teardown printed a raw `json.load` traceback (`Extra data: line 1 column 7`) when Connect returned something other than the expected JSON array while shutting down. In a cleanup path that noise is indistinguishable from a genuine failure. It now warns in one line and prints the first 200 bytes of the body, which is what a future diagnosis needs. Resetting offsets on the way down complements the same fix on the way up. |
-| `scripts/setup-kafka-connector.sh` stops each stale connector, deletes its offsets, then deletes the connector. | Deleting a connector does not delete its offsets — Connect keeps the resume token in `connect-offsets` under the connector name, and `startup.mode: latest` only applies when no offset is stored. Since `up` drops `pix.transacoes`, the stored token pointed at a vanished oplog position and the task died with `ChangeStreamHistoryLost`, leaving the connector `RUNNING` with its only task `FAILED`. |
+| O `_ensure_indexes()` cria um índice de `run_id`. | Transforma a contagem da reconciliação de um COLLSCAN repetido em varredura de índice. Maior ganho isolado. |
+| Poll de reconciliação de 2 s → 5 s, e o loop para quando a execução é final. | Ele seguia consultando o Atlas depois que a resposta já não podia mudar. |
+| **Play individual** = 2.000 TPS por 30 s; modo lote = 8.000 TPS; `TPS_MAX` = 15.000; 4 partições de Change Stream; tier de palco do ASP SP10. | O modo individual é o padrão voltado ao cliente depois da mudança de região. A execução em lote de 8.000 TPS segue sendo uma história de volume medida, não sizing de produção. |
+| `STREAMING_TTL_SEGUNDOS` 1800 → 300. | O Reset é a limpeza principal. Um TTL de 60 s começaria a apagar perto da taxa de ingestão em execuções repetidas, somaria pressão no oplog e arriscaria correr contra a reconciliação. |
+| A normalização de cluster foi removida do `scripts/ambiente.sh`; tier/estado pertencem ao operador. | A subida da demo não pode pausar, retomar ou redimensionar o cluster Atlas do usuário. |
+| A checagem `cluster_tier` do `/preflight` foi invertida. Antes ela falhava em M20 e mandava o operador "rodar carga por alguns minutos para escalar antes da demo"; agora passa no tier de entrada e falha quando o cluster escalou **acima** dele. O `_cluster_info_sync()` expõe `escalou` no lugar de `aquecido`, e o selo do cabeçalho fica amarelo quando escala. | Escalar estava codificado no produto como pré-requisito de demo. Essa premissa era o que fazia o M30 parecer normal; a checagem agora declara a expectativa oposta. |
+| O `scripts/kafka-local.sh down` lê a lista de connectors para uma variável e a interpreta de forma defensiva, e agora também para cada connector e apaga os offsets antes de removê-lo. | O teardown imprimia um traceback cru de `json.load` (`Extra data: line 1 column 7`) quando o Connect retornava algo diferente do array JSON esperado durante o desligamento. Em um caminho de limpeza esse ruído é indistinguível de uma falha genuína. Agora ele avisa em uma linha e imprime os primeiros 200 bytes do corpo, que é o que um diagnóstico futuro precisa. Resetar offsets na descida complementa a mesma correção na subida. |
+| O `scripts/setup-kafka-connector.sh` para cada connector antigo, apaga os offsets dele e então apaga o connector. | Apagar um connector não apaga os offsets — o Connect guarda o resume token em `connect-offsets` sob o nome do connector, e o `startup.mode: latest` só vale quando não há offset armazenado. Como o `up` dropa `pix.transacoes`, o token armazenado apontava para uma posição sumida do oplog e a task morria com `ChangeStreamHistoryLost`, deixando o connector `RUNNING` com sua única task `FAILED`. |
 
-**Live stage calibration, M20 + SP10 (2026-08-06).** Each row is a finite
-20-second run, reconciled across source, Change Streams, Kafka and ASP with zero
-duplicates, DLQ 0 and zero pending on all three paths. These are PoV
-observations, not production sizing:
+**Calibração de palco ao vivo, M20 + SP10 (2026-08-06).** Cada linha é uma execução finita de
+20 segundos, reconciliada entre origem, Change Streams, Kafka e ASP com zero
+duplicatas, DLQ 0 e zero pendente nos três caminhos. São observações da
+PoV, não sizing de produção:
 
-| Target | Documents | ACK p99 | Change Stream p99 | Kafka p99 | Reconciled in | Result |
+| Alvo | Documentos | p99 ACK | p99 Change Stream | p99 Kafka | Reconciliado em | Resultado |
 |---:|---:|---:|---:|---:|---:|---|
-| 4,000 TPS | 80,400 | 0.61 s | 0.51 s | 0.48 s | 4.1 s | Comfortable. |
-| 6,000 TPS | 120,600 | 0.95 s | 0.60 s | 0.59 s | 4.1 s | Comfortable. |
-| 8,000 TPS | 160,800 | 0.67 s | 0.76 s | 3.61 s | 4.2 s | Comfortable; stage default. |
-| 10,000 TPS | 201,000 | 0.99 s | 2.67 s | 12.5 s | 4.3 s | Inflection: post-commit latency climbs sharply. |
-| 12,000 TPS | 241,200 | 0.83 s | 11.6 s | 16.0 s | 12.0 s | Reconciled, but the observer ran a visible backlog; stress boundary. |
+| 4.000 TPS | 80.400 | 0,61 s | 0,51 s | 0,48 s | 4,1 s | Confortável. |
+| 6.000 TPS | 120.600 | 0,95 s | 0,60 s | 0,59 s | 4,1 s | Confortável. |
+| 8.000 TPS | 160.800 | 0,67 s | 0,76 s | 3,61 s | 4,2 s | Confortável; padrão de palco. |
+| 10.000 TPS | 201.000 | 0,99 s | 2,67 s | 12,5 s | 4,3 s | Inflexão: a latência pós-commit sobe forte. |
+| 12.000 TPS | 241.200 | 0,83 s | 11,6 s | 16,0 s | 12,0 s | Reconciliou, mas o observador acumulou backlog visível; fronteira de estresse. |
 
-**The ASP tier is SP10, not SP30.** The earlier version of this table claimed
-SP30. `sp.pixJanelas5s.stats()` reports `tier` and `effectiveTier` both SP10,
-and the 2026-08-05 row for 4,000 TPS records the same 80,400 documents measured
-here — that calibration was almost certainly already running on SP10 and only
-the label was wrong. Do not re-provision SP30 on the strength of the old note.
+**O tier do ASP é SP10, não SP30.** A versão anterior desta tabela alegava
+SP30. O `sp.pixJanelas5s.stats()` reporta `tier` e `effectiveTier` ambos SP10,
+e a linha de 2026-08-05 para 4.000 TPS registra os mesmos 80.400 documentos medidos
+aqui — aquela calibração quase certamente já rodava em SP10 e só
+o rótulo estava errado. Não provisione SP30 de novo com base na nota antiga.
 
-Why SP10 is enough for this pipeline, measured rather than assumed:
+Por que o SP10 basta para este pipeline, medido em vez de presumido:
 
-- **Window state is trivial.** The `$group` key is `(run_id, uf, tipo)` over 10
-  UFs, so a window holds tens of keys. `stateSize` is 0 and memory sat between
-  186 and 221 MB of the tier's 2 GB — about 11% of the 80% ceiling that causes
-  OOM. Large-window-state is the usual reason to demand SP30 and it does not
-  apply here.
-- **Bandwidth is not close.** 605 bytes/event measured (1.42 GB over 2.35 M
-  events). At 8,000 TPS that is ~39 Mbps against the tier's 200 Mbps.
-- **Parallelism is 0.** Every stage runs at the default 1, which is included in
-  the tier. Nothing in the pipeline needs SP30's higher parallelism ceiling.
+- **O estado da janela é trivial.** A chave do `$group` é `(run_id, uf, tipo)` sobre 10
+  UFs, então uma janela guarda dezenas de chaves. O `stateSize` é 0 e a memória ficou entre
+  186 e 221 MB dos 2 GB do tier — cerca de 11% do teto de 80% que causa
+  OOM. Estado de janela grande é a razão usual para exigir SP30, e não se
+  aplica aqui.
+- **A banda não chega perto.** 605 bytes/evento medidos (1,42 GB em 2,35 milhões de
+  eventos). A 8.000 TPS isso dá ~39 Mbps contra os 200 Mbps do tier.
+- **O paralelismo é 0.** Todo estágio roda no padrão 1, que está incluído no
+  tier. Nada no pipeline precisa do teto maior de paralelismo do SP30.
 
-The bottleneck at 10,000+ is not the processor. ASP p99 stays flat (9.4 s → 11.5
-s, and it measures window close, not per-event lag) while the **local Kafka
-observer** degrades first — 3.6 s at 8,000 and 12.5 s at 10,000. Above 8,000 the
-number that moves is the consumer's, not Atlas's.
+O gargalo a partir de 10.000 não é o processor. O p99 do ASP fica estável (9,4 s → 11,5
+s, e ele mede o fechamento da janela, não o atraso por evento) enquanto o **observador Kafka
+local** degrada primeiro — 3,6 s a 8.000 e 12,5 s a 10.000. Acima de 8.000 o
+número que se move é o do consumidor, não o do Atlas.
 
-The cluster stayed **M20 through the entire ramp**, including 12,000 TPS; it did
-not auto-scale to M30. That supports a short demo claim only; it does not
-establish sustained M20 capacity. The processor bills per second and must be
-stopped after the run.
+O cluster ficou em **M20 durante a rampa inteira**, inclusive a 12.000 TPS; ele não
+escalou para M30. Isso sustenta apenas uma alegação de demo curta; não
+estabelece capacidade sustentada de M20. O processor cobra por segundo e precisa ser
+parado depois da execução.
 
-**Measured against the live M20 cluster (2026-07-27).** A 25-minute run at 200
-TPS, generator writing continuously, one Change Stream connector and the ASP
-processor active. Phase A ran the fixed code; phase B reverted only the `run_id`
-index and set the poll back to 2 s, reproducing the regression in place.
-Per-minute figures from the Atlas Admin API, primary node:
+**Medido contra o cluster M20 real (2026-07-27).** Uma execução de 25 minutos a 200
+TPS, gerador escrevendo continuamente, um connector de Change Stream e o processor de ASP
+ativos. A fase A rodou o código corrigido; a fase B reverteu apenas o índice de `run_id`
+e voltou o poll para 2 s, reproduzindo a regressão no lugar.
+Números por minuto vindos da Atlas Admin API, nó primário:
 
-| Metric | A — indexed, 5 s poll | B — COLLSCAN, 2 s poll |
+| Métrica | A — indexado, poll de 5 s | B — COLLSCAN, poll de 2 s |
 |---|---|---|
-| `QUERY_EXECUTOR_SCANNED_OBJECTS` (docs/s) | 751 | 50,176 (**67×**) |
-| `QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED` | 1.68 | 89.23 (**53×**) |
-| `PROCESS_CPU_USER` (avg) | 8.24% | 12.55% |
+| `QUERY_EXECUTOR_SCANNED_OBJECTS` (docs/s) | 751 | 50.176 (**67×**) |
+| `QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED` | 1,68 | 89,23 (**53×**) |
+| `PROCESS_CPU_USER` (média) | 8,24% | 12,55% |
 
-`QUERY_EXECUTOR_SCANNED` moves the *other* way (8,785 → 3,035) because it counts
-index keys, and a collection scan reads none — the pair of metrics together is
-what identifies the plan change.
+O `QUERY_EXECUTOR_SCANNED` se move na direção *contrária* (8.785 → 3.035) porque conta
+chaves de índice, e uma varredura de coleção não lê nenhuma — é o par de métricas junto que
+identifica a mudança de plano.
 
-The cluster stayed on M20 throughout, peaking at 16.4% CPU and 2.27 GB of 4 GB.
-**Do not read that 16.4% as headroom** — see "Auto-scaling fires on RELATIVE
-CPU" below, which corrects it. The threshold is relative to a burstable
-instance's baseline, and ~17% absolute is ~88% relative. The cluster scaled to
-M30 later the same day.
+O cluster ficou em M20 o tempo todo, com pico de 16,4% de CPU e 2,27 GB de 4 GB.
+**Não leia esses 16,4% como folga** — veja "O auto-scaling dispara por CPU RELATIVA"
+abaixo, que corrige isso. O limiar é relativo à linha de base de uma
+instância burstable, e ~17% absoluto é ~88% relativo. O cluster escalou para
+M30 mais tarde no mesmo dia.
 
-Two further limits on this evidence: 25 minutes is far too short to trigger
-Atlas compute auto-scaling, which averages over roughly an hour, so "it did not
-scale" proves little on its own; and phase B is a
-*weakened* reproduction — it reverted the index and the poll interval but kept
-TTL at 600 s and 200 TPS, so its live set was ~131k documents against the
-~900k the original 1800 s / 500 TPS configuration produced.
+Mais dois limites desta evidência: 25 minutos é curto demais para disparar o
+auto-scaling de compute do Atlas, que faz média sobre cerca de uma hora, então "não escalou"
+prova pouco sozinho; e a fase B é uma reprodução
+*enfraquecida* — ela reverteu o índice e o intervalo de poll, mas manteve o
+TTL em 600 s e 200 TPS, então seu conjunto vivo era de ~131 mil documentos contra os
+~900 mil que a configuração original de 1800 s / 500 TPS produzia.
 
-Client-side latency barely separated the phases (p50 579 ms vs 613 ms) because
-it is dominated by laptop-to-Atlas round trip; only the server-side metrics
-resolve the difference.
+A latência do lado do cliente mal separou as fases (p50 579 ms vs 613 ms) porque
+é dominada pela ida e volta notebook → Atlas; só as métricas do lado do servidor
+resolvem a diferença.
 
-**End-to-end UI run (browser, same day).** Generator started from the page at
-200 TPS and stopped from the page: source 14,420 = Change Streams 14,420 =
-Kafka 14,420 = ASP 14,420, zero duplicates, DLQ 0, `final: reconciliado`.
-Reconciliation poll measured at the browser: 5.0 s average interval. Only
-console message is the pre-existing `favicon.ico` 404.
+**Execução ponta a ponta pela UI (navegador, mesmo dia).** Gerador iniciado pela página a
+200 TPS e parado pela página: origem 14.420 = Change Streams 14.420 =
+Kafka 14.420 = ASP 14.420, zero duplicatas, DLQ 0, `final: reconciliado`.
+Poll de reconciliação medido no navegador: intervalo médio de 5,0 s. A única
+mensagem no console é o 404 pré-existente de `favicon.ico`.
 
-One behaviour to know before demoing: the ASP window uses
-`boundary: "eventTime"`, so the final window closes only when a newer event
-advances the watermark. The stop path now waits for the 5 s window + 2 s
-lateness and writes a technical marker under the reserved
-`__demo_watermark__` run id. The marker is excluded from the demonstrated
-run's accounting, closes its last window, and lets reconciliation become final
-without requiring a second business burst.
+Um comportamento para conhecer antes de demonstrar: a janela do ASP usa
+`boundary: "eventTime"`, então a janela final só fecha quando um evento mais novo
+avança a marca d'água. O caminho de parada agora espera a janela de 5 s + os 2 s de
+atraso e escreve um marcador técnico sob o run id reservado
+`__demo_watermark__`. O marcador fica fora da contabilidade da execução
+demonstrada, fecha a última janela dela e permite que a reconciliação seja final
+sem exigir uma segunda rajada de negócio.
 
-Normalization runs only after the cluster reaches `IDLE` — Atlas rejects spec
-changes on a paused or transitioning cluster. A rejected PATCH warns and
-continues rather than blocking the demo.
+A normalização só roda depois que o cluster chega a `IDLE` — o Atlas rejeita mudanças de
+spec em cluster pausado ou em transição. Um PATCH rejeitado avisa e
+continua, em vez de bloquear a demo.
 
-Two Atlas constraints were found the hard way, both HTTP 400, and both are now
-encoded in the script:
+Duas restrições do Atlas foram descobertas na marra, ambas HTTP 400, e ambas estão agora
+codificadas no script:
 
-- `minInstanceSize` must be **strictly** less than `maxInstanceSize` when
-  compute auto-scaling is enabled. "Pin the cluster to M20 with auto-scaling on"
-  is therefore inexpressible: the range would collapse to one tier.
-- Each tier has a maximum disk size. This cluster has 150 GB, and M10 tops out
-  at 128 GB, so an M10 floor is rejected. `ATLAS_MIN_TIER` defaults to empty
-  (leave the floor alone) for that reason.
+- O `minInstanceSize` precisa ser **estritamente** menor que o `maxInstanceSize` quando
+  o auto-scaling de compute está habilitado. "Fixar o cluster em M20 com auto-scaling ligado"
+  é, portanto, inexprimível: a faixa colapsaria em um único tier.
+- Cada tier tem um tamanho máximo de disco. Este cluster tem 150 GB, e o M10 vai até
+  128 GB, então um piso M10 é rejeitado. O `ATLAS_MIN_TIER` fica vazio por padrão
+  (não mexa no piso) por essa razão.
 
-### Auto-scaling fires on RELATIVE CPU — and replay mode
+### O auto-scaling dispara por CPU RELATIVA — e o modo replay
 
-The fixes above were not enough. The cluster scaled to M30 again the same day,
-at 15:36Z, **with the generator stopped** since 14:45Z. The Atlas event payload
-is unambiguous:
+As correções acima não bastaram. O cluster escalou para M30 de novo no mesmo dia,
+às 15:36Z, **com o gerador parado** desde 14:45Z. O payload do evento do Atlas
+é inequívoco:
 
 ```
 computeAutoScalingTriggers: "CPU_ABOVE"
@@ -709,297 +700,297 @@ threshold: NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75  (mode: AVERAGE)
 absoluteCpuMetric: 0.176   cpuThresholdType: "RELATIVE"   relativeCpuMetric: 0.881
 ```
 
-M20/M30 are burstable instances. The threshold applies to CPU **relative** to
-the instance's baseline entitlement, not absolute CPU. 17.6% absolute registered
-as 88% relative. An earlier scale event (2026-07-26, before the fixes) shows
-27.0% absolute at 100% relative — so the fixes did cut CPU by about a third, but
-not below the line.
+M20/M30 são instâncias burstable. O limiar se aplica à CPU **relativa** à
+cota de base da instância, não à CPU absoluta. 17,6% absoluto registrou
+como 88% relativo. Um evento de escala anterior (2026-07-26, antes das correções) mostra
+27,0% absoluto com 100% relativo — então as correções cortaram a CPU em cerca de um terço, mas
+não abaixo da linha.
 
-This corrects an earlier conclusion recorded here: "16.4% CPU is far below the
-75% threshold" compared the right metric against the wrong ruler.
+Isso corrige uma conclusão anterior registrada aqui: "16,4% de CPU está bem abaixo do
+limiar de 75%" comparava a métrica certa com a régua errada.
 
-The consequence that matters operationally: with the generator stopped, what
-sustained that CPU was **the dashboard itself** — three change-stream cursors
-plus polling (generator status 1 s, oplog/read-probe/DLQ 4 s, reconciliation and
-ASP 5 s, Kafka 4 s). `/streaming/oplog` alone does a `$natural` sort over
-`local.oplog.rs` every 4 s. Leaving the page open costs cluster.
+A consequência que importa operacionalmente: com o gerador parado, o que
+sustentava aquela CPU era **o próprio dashboard** — três cursores de change stream
+mais polling (status do gerador a 1 s, oplog/sonda de leitura/DLQ a 4 s, reconciliação e
+ASP a 5 s, Kafka a 4 s). O `/streaming/oplog` sozinho faz uma ordenação `$natural` sobre
+`local.oplog.rs` a cada 4 s. Deixar a página aberta custa cluster.
 
-**Historical decision, superseded on 2026-08-05:** replay was temporarily the
-only mode because an always-observing dashboard stressed the cluster even after
-the generator stopped. The current live mode addresses that root cause by
-opening observers only for an explicit session and closing them after
-reconciliation; replay remains the zero-write contingency.
+**Decisão histórica, substituída em 2026-08-05:** o replay foi temporariamente o
+único modo porque um dashboard sempre observando estressava o cluster mesmo depois de o
+gerador parar. O modo ao vivo atual trata essa causa raiz abrindo observadores só
+para uma sessão explícita e fechando-os depois da reconciliação; o replay continua sendo a
+contingência sem escrita.
 
-The word "replay" was dropped from the UI, but the disclosure was not. The
-badge is permanent and unconditional, the Change Streams column reads
-"reproduzindo" rather than "ao vivo", and environment-acting buttons stay
-disabled. Renaming the control is cosmetic; removing the badge would not be.
+A palavra "replay" saiu da UI, mas o aviso não. O
+selo é permanente e incondicional, a coluna de Change Streams diz
+"reproduzindo" em vez de "ao vivo", e os botões que atuam no ambiente ficam
+desabilitados. Renomear o controle é cosmético; remover o selo não seria.
 
-The honesty constraint is part of the design, not decoration. The PoV's whole
-claim is "evidence instead of claims", so a mode that *looks* live while nothing
-happens would invert it — and what would become fake is exactly what the module
-sells (change streams, Kafka fan-out, ASP windows). Therefore: the recorder
-synthesises nothing, every replayed payload carries `replay: true`,
-`/replay/manifest` states the origin and the recorded `run_id`, the page shows a
-permanent badge, actions that touch the real environment are disabled, and a
-test asserts `replay.py` never imports or calls into Mongo. A replay must never
-be presented as a live run.
+A restrição de honestidade faz parte do design, não é decoração. A alegação inteira da PoV
+é "evidência em vez de alegações", então um modo que *pareça* ao vivo enquanto nada
+acontece a inverteria — e o que viraria falso é exatamente o que o módulo
+vende (change streams, fan-out Kafka, janelas de ASP). Portanto: o gravador
+não sintetiza nada, todo payload reproduzido carrega `replay: true`,
+o `/replay/manifest` declara a origem e o `run_id` gravado, a página mostra um
+selo permanente, ações que tocam o ambiente real ficam desabilitadas, e um
+teste garante que o `replay.py` nunca importa nem chama o Mongo. Um replay nunca pode ser
+apresentado como execução ao vivo.
 
-**Capture ordering:** the Change Stream and Kafka consumers start lazily on the
-first SSE subscription. The observer now uses `auto.offset.reset=earliest`; the
-source connector retains `startup.mode=latest` when no connector offset exists.
-Open the live capture page first and wait for the Kafka column to report
-`consumindo` before starting the generator. `scripts/capture_replay.py` encodes
-that ordering so consumer startup is not measured as application backlog.
+**Ordem da captura:** os consumidores de Change Stream e Kafka sobem de forma preguiçosa na
+primeira assinatura SSE. O observador agora usa `auto.offset.reset=earliest`; o
+source connector mantém `startup.mode=latest` quando não existe offset de connector.
+Abra a página de captura ao vivo primeiro e espere a coluna do Kafka reportar
+`consumindo` antes de iniciar o gerador. O `scripts/capture_replay.py` codifica
+essa ordem para que a subida do consumidor não seja medida como backlog da aplicação.
 
-**Historical replay-only period:** `scripts/ambiente.sh` and `bin/overview`
-temporarily did not provision ASP or Kafka unless `STREAMING_AO_VIVO=1` /
-`overview --ao-vivo` was used. That decision is superseded: `overview` now
-defaults to the live rig and `overview --replay` is the explicit no-write path.
-The `down` path still stops both unconditionally, since a processor left running
-bills per second.
+**Período histórico de só-replay:** o `scripts/ambiente.sh` e o `bin/overview`
+temporariamente não provisionavam ASP nem Kafka a menos que `STREAMING_AO_VIVO=1` /
+`overview --ao-vivo` fosse usado. Essa decisão foi substituída: o `overview` agora
+usa por padrão a plataforma ao vivo e o `overview --replay` é o caminho explícito sem escrita.
+O caminho `down` ainda para os dois incondicionalmente, já que um processor deixado rodando
+cobra por segundo.
 
-**Two bugs found while wiring this up, both worth knowing:**
+**Dois bugs achados ao montar isso, ambos dignos de nota:**
 
-- The replay SSE shipped without a keepalive (the live one has always had one).
-  An idle stream — replay paused, or simply between events — is dropped by the
-  browser and the Vite proxy; `useSse` reconnects every 2 s, and the abandoned
-  server-side generator never notices, because a generator that never writes
-  never sees the disconnect. Those leaked streams exhaust the browser's ~6
-  connections-per-host budget, and ordinary fetches queue until the 30 s
-  timeout while the backend answers in ~2 ms. Fixed with a 10 s keepalive; a
-  test covers it.
-- `porta_ativa()` in `bin/overview` and `scripts/kafka-local.sh` used
-  `lsof -ti:PORT` with no state filter, so ESTABLISHED connections (the Vite
-  proxy, the browser) counted as "service is up". With the backend dead, `up`
-  concluded "já estava de pé" and printed **✅ Pronto with no backend**; `down`
-  used the same list to pick PIDs to kill, so it could kill a client instead of
-  the server. Both now filter `-sTCP:LISTEN`.
+- O SSE de replay foi lançado sem keepalive (o ao vivo sempre teve um).
+  Um fluxo ocioso — replay pausado, ou simplesmente entre eventos — é derrubado pelo
+  navegador e pelo proxy do Vite; o `useSse` reconecta a cada 2 s, e o gerador abandonado
+  do lado do servidor nunca percebe, porque um gerador que nunca escreve
+  nunca vê a desconexão. Esses fluxos vazados esgotam o orçamento de ~6
+  conexões por host do navegador, e fetches comuns ficam na fila até o timeout de 30 s
+  enquanto o backend responde em ~2 ms. Corrigido com keepalive de 10 s; um
+  teste cobre isso.
+- O `porta_ativa()` em `bin/overview` e `scripts/kafka-local.sh` usava
+  `lsof -ti:PORT` sem filtro de estado, então conexões ESTABLISHED (o proxy do Vite,
+  o navegador) contavam como "serviço no ar". Com o backend morto, o `up`
+  concluía "já estava de pé" e imprimia **✅ Pronto sem backend**; o `down`
+  usava a mesma lista para escolher PIDs a matar, então podia matar um cliente em vez
+  do servidor. Os dois agora filtram `-sTCP:LISTEN`.
 
-**Idle polling is now gone.** `frontend/src/hooks/usePolling.js` adds
-`useVisivel()` and `useIntervaloVisivel()`; every interval on the Streaming page
-and the shell's cluster poll go through it, and `useSse` closes its
-EventSource when the tab is hidden. Two rules: nothing polls while the tab is
-hidden, and nothing polls for data that cannot change — the recorded snapshots
-only move while the playback clock runs.
+**O polling ocioso acabou.** O `frontend/src/hooks/usePolling.js` adiciona
+`useVisivel()` e `useIntervaloVisivel()`; todo intervalo da página de streaming
+e o poll de cluster da casca passam por ele, e o `useSse` fecha seu
+EventSource quando a aba está oculta. Duas regras: nada faz polling com a aba
+oculta, e nada faz polling de dado que não pode mudar — os snapshots gravados
+só se movem enquanto o relógio de playback roda.
 
-Measured in the browser, replay stopped: **48 requests per 20 s → 1**. Tab
-hidden: **0 requests in 15 s**, resuming immediately on return. While playing it
-is back to the normal cadence, which is the point.
+Medido no navegador, com o replay parado: **48 requisições por 20 s → 1**. Aba
+oculta: **0 requisições em 15 s**, retomando imediatamente ao voltar. Enquanto toca, ele
+volta à cadência normal, que é o ponto.
 
-Worth stating plainly, because an earlier note here implied otherwise: this is
-*not* what stopped the auto-scaling. The Atlas-facing load disappeared when
-module 07 became a replay (its polls now read a file, ~2 ms, no Mongo) and when
-ASP and Kafka stopped being provisioned, which removed three change-stream
-cursors. The only recurring remote call left is `/streaming/cluster`, and that
-is the Admin API — control plane, not cluster CPU. Killing the idle polling buys
-laptop and backend CPU, and it removes the held connections that caused the
-30 s fetch timeouts; it does not change the tier. Pausing polls on
-`document.visibilityState !== 'visible'` and when the generator is stopped, plus
-revisiting the `/streaming/oplog` probe, is the remaining work for live mode.
+Vale dizer com clareza, porque uma nota anterior aqui sugeria o contrário: isto
+*não* foi o que parou o auto-scaling. A carga contra o Atlas sumiu quando o
+módulo 07 virou replay (seus polls agora leem um arquivo, ~2 ms, sem Mongo) e quando
+o ASP e o Kafka deixaram de ser provisionados, o que removeu três cursores de change
+stream. A única chamada remota recorrente que sobrou é `/streaming/cluster`, e essa
+é a Admin API — plano de controle, não CPU do cluster. Matar o polling ocioso compra
+CPU de notebook e de backend, e remove as conexões seguradas que causavam os
+timeouts de 30 s no fetch; não muda o tier. Pausar polls quando
+`document.visibilityState !== 'visible'` e quando o gerador está parado, mais
+revisitar a sonda `/streaming/oplog`, é o trabalho que resta para o modo ao vivo.
 
-### Environment lifecycle: one command, clean boundaries
+### Ciclo de vida do ambiente: um comando, fronteiras limpas
 
-Primary files: `bin/overview`, `scripts/ambiente.sh`,
+Arquivos principais: `bin/overview`, `scripts/ambiente.sh`,
 `scripts/cleanup-streaming-data.py`, `scripts/kafka-local.sh`,
 `scripts/setup-kafka-connector.sh`, `scripts/setup-asp.js`.
 
-`./bin/overview` now treats the whole demo as one lifecycle:
+O `./bin/overview` agora trata a demo inteira como um ciclo de vida:
 
-1. Run `scripts/prepare-demo.sh` ahead of time to materialize the dedicated Geo
-   dataset, MongoDB indexes and a queryable Atlas Search index.
-2. At startup, perform only a fast read-only readiness check; never alter cluster
-   state, tier or auto-scaling.
-3. Stop any processor left running and remove scoped PIX residue.
-4. In the default live mode, recreate the ASP definition/checkpoint and start
-   Kafka/Connect with a clean connector. `overview --replay` keeps both off.
-5. Start backend and frontend only after the selected environment is consistent.
+1. Rode o `scripts/prepare-demo.sh` com antecedência para materializar o dataset de Geo
+   dedicado, os índices do MongoDB e um índice do Atlas Search consultável.
+2. Na subida, faça apenas uma checagem rápida e somente leitura de prontidão; nunca altere estado
+   do cluster, tier ou auto-scaling.
+3. Pare qualquer processor deixado rodando e remova resíduo de PIX com escopo.
+4. No modo ao vivo padrão, recrie a definição/checkpoint do ASP e suba
+   Kafka/Connect com um connector limpo. O `overview --replay` mantém os dois desligados.
+5. Suba backend e frontend somente depois que o ambiente selecionado estiver consistente.
 
-If readiness fails, `overview` aborts and directs the operator to
-`scripts/prepare-demo.sh`; it never begins a slow rebuild during the demo.
+Se a prontidão falhar, o `overview` aborta e direciona o operador ao
+`scripts/prepare-demo.sh`; ele nunca começa uma reconstrução lenta durante a demo.
 
-`./bin/overview down` performs a two-layer shutdown:
+O `./bin/overview down` faz um desligamento em duas camadas:
 
-1. The API stops the generator and ASP, waits for `STOPPED`, removes the source,
-   windows, DLQ, audit and application checkpoints.
-2. The environment script repeats a direct scoped cleanup, removes the demo
-   connector/topic/consumer group and stops Kafka. Atlas is not altered.
+1. A API para o gerador e o ASP, espera o `STOPPED`, remove a origem,
+   as janelas, a DLQ, a auditoria e os checkpoints da aplicação.
+2. O script de ambiente repete uma limpeza direta e com escopo, remove o
+   connector/tópico/consumer group da demo e para o Kafka. O Atlas não é alterado.
 
-The second layer handles an unavailable or interrupted API. Cleanup is limited
-to the known `pix` demo collections and Kafka resources; it must never become a
-database-wide delete. The 30-minute TTL on transaction timestamps is only a
-safety net for an abandoned run.
+A segunda camada cobre uma API indisponível ou interrompida. A limpeza é limitada
+às coleções de demo conhecidas do `pix` e aos recursos Kafka; ela nunca pode virar um
+delete no banco inteiro. O TTL de 30 minutos nos timestamps das transações é apenas uma
+rede de segurança para uma execução abandonada.
 
-### Frontend: proof-first narrative
+### Frontend: narrativa de prova primeiro
 
-Primary files: `frontend/src/pages/Streaming.jsx`,
+Arquivos principais: `frontend/src/pages/Streaming.jsx`,
 `Aggregations.jsx`, `Reindexacao.jsx`, `SchemaValidation.jsx`,
 `frontend/src/hooks/useApi.js`, `frontend/src/App.jsx`,
 `frontend/src/index.css`.
 
-| Area | Current decision and reason |
+| Área | Decisão atual e razão |
 |---|---|
-| Streaming | The scenario, observed environment, compact generator and start of all three capability columns fit in the first 1440×900 viewport. The detailed comparison table is collapsed. This keeps the reliability proof above supporting reference material. |
-| Aggregations | Tabs describe outcomes, while the operator is secondary. A permanent `Source → Pipeline → Result` flow and honest pre-execution state make the business narrative visible before a query runs. |
-| Reindexing | Cards show a one-line command and collapse the commented version. The explain panel highlights `COLLSCAN → IXSCAN`; the index list defaults to demo-relevant indexes. This emphasizes measured plan change over code volume. |
-| Schema Validation | The guided write/reject sequence remains primary; the full JSON Schema is collapsed under details. |
-| API errors | Expected request aborts caused by module unmount are ignored, and identical global errors are deduplicated for eight seconds. Navigation no longer produces false failure toasts; genuine timeouts and API failures remain visible. |
-| Other modules | Hot/Cold, Change Streams and Transactions retained their structure because their one-screen narratives were already strong. |
+| Streaming | O cenário, o ambiente observado, o gerador compacto e o começo das três colunas de capacidade cabem no primeiro viewport 1440×900. A tabela de comparação detalhada fica recolhida. Isso mantém a prova de confiabilidade acima do material de referência de apoio. |
+| Agregações | As abas descrevem resultados, com o operador em segundo plano. Um fluxo permanente `Origem → Pipeline → Resultado` e um estado honesto pré-execução tornam a narrativa de negócio visível antes de uma consulta rodar. |
+| Reindexação | Os cards mostram um comando de uma linha e recolhem a versão comentada. O painel de explain destaca `COLLSCAN → IXSCAN`; a lista de índices mostra por padrão os índices relevantes à demo. Isso enfatiza mudança de plano medida em vez de volume de código. |
+| Validação de schema | A sequência guiada de escrita/rejeição continua sendo o principal; o JSON Schema completo fica recolhido em details. |
+| Erros de API | Aborts esperados de requisição causados pelo unmount de um módulo são ignorados, e erros globais idênticos são deduplicados por oito segundos. A navegação não produz mais toasts falsos de falha; timeouts genuínos e falhas de API seguem visíveis. |
+| Outros módulos | Hot/Cold, Change Streams e Transações mantiveram a estrutura porque suas narrativas de uma tela já eram fortes. |
 
-The visual direction remains the existing MongoDB dark system: Outfit,
-JetBrains Mono, `#001E2B` and `#00ED64`. The review intentionally improved
-hierarchy and progressive disclosure instead of introducing a second design
-language.
+A direção visual segue o sistema escuro MongoDB existente: Outfit,
+JetBrains Mono, `#001E2B` e `#00ED64`. A revisão intencionalmente melhorou
+hierarquia e revelação progressiva em vez de introduzir uma segunda linguagem de
+design.
 
-## Operational truth and limitations
+## Verdade operacional e limitações
 
-- Reconciliation turns green only after every path accounts for the finite run.
-  Stopping input does not close an event-time window by itself; the watermark
-  must advance. “Pending” is observable backlog or open-window state, not
-  evidence of loss.
-- Change Stream and Kafka unique counters belong to the current backend process.
-  Source, ASP and DLQ counts are read from Atlas.
-- Resume works only while the saved token remains inside the oplog window.
-- Local Kafka is single-node and intentionally has no TLS/SASL, ACLs or Schema
-  Registry. These are production concerns, not hidden claims.
-- A single connector per collection is the default. Filtered multi-connector
-  fan-out is educational and can add oplog pressure.
-- The ASP processor must be stopped after the PoV because it bills while idle.
-  Atlas storage can remain billable while the cluster is paused.
-- Never point destructive demo endpoints or cleanup scripts at a non-disposable
-  database.
+- A reconciliação fica verde só depois que todos os caminhos prestam contas da execução finita.
+  Parar a entrada não fecha por si só uma janela de tempo de evento; a marca d'água
+  precisa avançar. "Pendente" é backlog observável ou estado de janela aberta, não
+  evidência de perda.
+- Os contadores únicos de Change Stream e Kafka pertencem ao processo de backend atual.
+  As contagens de origem, ASP e DLQ são lidas do Atlas.
+- O resume só funciona enquanto o token salvo permanecer dentro da janela do oplog.
+- O Kafka local é de nó único e intencionalmente não tem TLS/SASL, ACLs nem Schema
+  Registry. Esses são temas de produção, não alegações escondidas.
+- Um connector por coleção é o padrão. O fan-out multi-connector filtrado é
+  educativo e pode somar pressão no oplog.
+- O processor de ASP precisa ser parado depois da PoV porque ele cobra mesmo ocioso.
+  O armazenamento do Atlas pode seguir sendo cobrado enquanto o cluster está pausado.
+- Nunca aponte endpoints destrutivos de demo ou scripts de limpeza para um banco que não
+  seja descartável.
 
-## Validation baseline
+## Linha de base de validação
 
-### Streaming presentation hardening (2026-08-07)
+### Endurecimento da apresentação de streaming (2026-08-07)
 
-- The ambiguous yellow `Verificar` state was traced to
-  `cleanup-streaming-data.py`: it recreated the unique and TTL indexes but not
-  `run_id_reconciliacao`. The cleanup now materializes all three contracts, so
-  the normal state is the green `Pronto`; a real failure reads `Pré-voo
-  pendente` instead of asking the audience to "verify" something.
-- `/streaming/reset` no longer creates one new SRV `MongoClient` per collection.
-  It reuses the already connected application topology and purges independent
-  collections in parallel. A DNS outage can therefore no longer leave Play in
-  preparation for 20 seconds while the healthy existing connection is ignored.
-- Kafka Connect is restarted only after a collection drop, the operation that
-  actually invalidates its source cursor. A routine clean run no longer
-  perturbs a healthy connector.
-- The controlled-drop threshold is now 25k documents (configurable with
-  `STREAMING_DROP_ACIMA_DE`). Deleting the 59,896-document acceptance run took
-  9.92 s even after the DNS fix; above the threshold, reset stops ASP, drops the
-  dedicated source, recreates its indexes and resumes ASP/Kafka instead.
-  Live measurement after the change: **6.43 s** to prepare after a 59k-document
-  run, versus **9.92 s** with `delete_many`; an initially clean run remains
-  **1.33 s**.
-- The presenter-only architecture decision panel was removed from the customer
-  UI. Its react/distribute/transform talk track and trade-offs now live in the
-  editable `docs/roteiro-apresentacao-streaming.md`; regenerate the PDF with
+- O estado amarelo ambíguo `Verificar` foi rastreado até o
+  `cleanup-streaming-data.py`: ele recriava os índices único e de TTL, mas não o
+  `run_id_reconciliacao`. A limpeza agora materializa os três contratos, então
+  o estado normal é o verde `Pronto`; uma falha real aparece como `Pré-voo
+  pendente` em vez de pedir à plateia para "verificar" alguma coisa.
+- O `/streaming/reset` não cria mais um `MongoClient` SRV novo por coleção.
+  Ele reaproveita a topologia da aplicação já conectada e limpa coleções
+  independentes em paralelo. Uma queda de DNS, portanto, não consegue mais deixar o Play em
+  preparação por 20 segundos enquanto a conexão saudável existente é ignorada.
+- O Kafka Connect só é reiniciado depois de um drop de coleção, a operação que de fato
+  invalida o cursor de origem dele. Uma execução limpa de rotina não perturba mais
+  um connector saudável.
+- O limiar de drop controlado agora é 25 mil documentos (configurável com
+  `STREAMING_DROP_ACIMA_DE`). Apagar a execução de aceitação de 59.896 documentos levava
+  9,92 s mesmo depois da correção de DNS; acima do limiar, o reset para o ASP, dropa a
+  origem dedicada, recria seus índices e retoma ASP/Kafka.
+  Medição ao vivo depois da mudança: **6,43 s** para preparar depois de uma execução de 59 mil
+  documentos, contra **9,92 s** com `delete_many`; uma execução partindo do zero segue em
+  **1,33 s**.
+- O painel de decisão de arquitetura, voltado apenas ao apresentador, foi removido da UI do
+  cliente. O roteiro de react/distribute/transform e os trade-offs agora vivem no
+  editável `docs/roteiro-apresentacao-streaming.md`; regenere o PDF com
   `scripts/generate-streaming-guide.py`.
-- Live acceptance after the fix: preparation **1.33 s**, 30-second run,
-  **59,896** source documents reconciled across Atlas, Change Streams, Kafka
-  and ASP + DLQ, zero lost, HTTP/console errors zero, final state in **41.09 s**.
+- Aceitação ao vivo depois da correção: preparação **1,33 s**, execução de 30 segundos,
+  **59.896** documentos de origem reconciliados entre Atlas, Change Streams, Kafka
+  e ASP + DLQ, zero perdidos, erros de HTTP/console zero, estado final em **41,09 s**.
 
-Validated after the current implementation:
+Validado depois da implementação atual:
 
 ```bash
 backend/venv/bin/python -m pytest -q backend/tests  # 157 passed
-npm --prefix frontend run build                    # Vite build passed
-git diff --check                                   # passed
+npm --prefix frontend run build                    # build do Vite passou
+git diff --check                                   # passou
 ```
 
-Browser validation used a 1440×900 viewport. Streaming exposed all three
-capability columns above the fold, the revised Aggregations/Reindexing screens
-rendered correctly, Schema code was collapsed by default, and rapid module
-navigation produced zero API-error toasts and zero console errors.
+A validação no navegador usou um viewport de 1440×900. O Streaming expôs as três
+colunas de capacidade acima da dobra, as telas revisadas de agregações/reindexação
+renderizaram corretamente, o código de schema veio recolhido por padrão, e a navegação
+rápida entre módulos produziu zero toasts de erro de API e zero erros de console.
 
-## 2026-08-07 — modules 07 and 08 joined; failure injection; density pass
+## 2026-08-07 — módulos 07 e 08 unidos; injeção de falha; passada de densidade
 
-Driven by a critical read of the PoV from the seat of a PIX-squad architect at a
-bank that already runs Kafka and Elastic. Four objections, four changes.
+Movido por uma leitura crítica da PoV do assento de um arquiteto de squad de PIX em um
+banco que já roda Kafka e Elastic. Quatro objeções, quatro mudanças.
 
-1. **"Fan-out sem ETL argues for Kafka, not MongoDB."** The real, unarguable
-   gain is removing the application's dual-write/outbox. Reconciliation proves
-   it; the copy now leads with it.
-2. **"It is all the happy path."** `POST /streaming/falha/connector` stops the
-   connector mid-flow and resumes it from the stored offset;
-   `POST /streaming/falha/evento-invalido` writes a document with a string
-   `valor` that the ASP diverts to the DLQ while the processor keeps running.
-   Measured with both injected: source 742, Change Streams 742, Kafka 742,
-   ASP 742, duplicates 0, DLQ 1, final `reconciliado`.
-3. **"Module 08 is not my problem, and it is retrospective."** The stream now
-   carries two channels (`PIX` without coordinate, `CARTAO_PRESENCIAL` with the
-   terminal's), and a second processor, `geoSinais30s`, computes the risk signal
-   inside a 30 s hopping window into `geo.sinais_ao_vivo`. Module 08 opens with
-   that panel; the on-demand panels stay, labelled as retrospective
-   investigation.
-4. **"Your only findings are the ones you planted."** Signals carry
-   `origem: plantado | emergente` and the page counts them apart. A 1,000 TPS
-   run produced 5 planted and 4 emergent.
+1. **"Fan-out sem ETL é argumento para Kafka, não para MongoDB."** O ganho real e
+   indiscutível é remover a dual-write/outbox da aplicação. A reconciliação prova
+   isso; o texto agora abre por aí.
+2. **"É tudo caminho feliz."** O `POST /streaming/falha/connector` para o
+   connector no meio do fluxo e o retoma a partir do offset armazenado; o
+   `POST /streaming/falha/evento-invalido` escreve um documento com `valor` em string
+   que o ASP desvia para a DLQ enquanto o processor segue rodando.
+   Medido com as duas injetadas: origem 742, Change Streams 742, Kafka 742,
+   ASP 742, duplicatas 0, DLQ 1, final `reconciliado`.
+3. **"O módulo 08 não é o meu problema, e é retrospectivo."** O fluxo agora
+   carrega dois canais (`PIX` sem coordenada, `CARTAO_PRESENCIAL` com a do
+   terminal), e um segundo processor, `geoSinais30s`, calcula o sinal de risco
+   dentro de uma janela hopping de 30 s em `geo.sinais_ao_vivo`. O módulo 08 abre com
+   esse painel; os painéis sob demanda ficam, rotulados como investigação
+   retrospectiva.
+4. **"Suas únicas descobertas são as que você plantou."** Os sinais carregam
+   `origem: plantado | emergente` e a página os conta separadamente. Uma execução a 1.000 TPS
+   produziu 5 plantados e 4 emergentes.
 
-Two traps found while building, both worth remembering:
+Duas armadilhas achadas na construção, ambas dignas de lembrança:
 
-- Back-dating `ts` to model acquirer capture delay put the TTL field in the
-  past, so the older half of a pair expired before reconciliation ran and the
-  source counted 610 against 652 in all three consumers. Arrival is `ts`;
-  the purchase instant is `compradaEm`. Never conflate them.
-- A km/h threshold alone is a false-positive factory: two purchases 20 km apart
-  captured seconds apart read as 1,343 km/h. The signal needs a minimum
-  distance (200 km) and a minimum interval (1 min) as well.
+- Retrodatar o `ts` para modelar o atraso de captura do adquirente colocava o campo do TTL no
+  passado, então a metade mais antiga de um par expirava antes de a reconciliação rodar e a
+  origem contava 610 contra 652 nos três consumidores. A chegada é `ts`;
+  o instante da compra é `compradaEm`. Nunca os confunda.
+- Um limiar de km/h sozinho é uma fábrica de falsos positivos: duas compras a 20 km
+  capturadas com segundos de diferença dão 1.343 km/h. O sinal precisa também de uma distância
+  mínima (200 km) e de um intervalo mínimo (1 min).
 
-Also in this pass: the Kafka connector no longer resolves DNS on task start
-(`scripts/lib/expand_srv.py` rewrites the SRV URI to its standard form at setup
-— the `Failed looking up TXT record` failure that killed the task under load was
-a flaky resolver, not throughput), the 12,000 TPS preset is labelled
-`Volume em lote` with its bottleneck stated, delivery semantics
-(at-least-once + unique `endToEndId` + per-partition ordering) are on screen
-instead of in a footnote, and module 07's narrative prose moved into `<details>`
-so the three columns and reconciliation own the fold.
+Também nesta passada: o connector Kafka não resolve mais DNS no start da task
+(o `scripts/lib/expand_srv.py` reescreve a URI SRV para a forma padrão no setup
+— a falha `Failed looking up TXT record` que matava a task sob carga era
+um resolver instável, não vazão), o preset de 12.000 TPS é rotulado
+`Volume em lote` com o gargalo declarado, a semântica de entrega
+(at-least-once + `endToEndId` único + ordenação por partição) está na tela
+em vez de em nota de rodapé, e a prosa narrativa do módulo 07 foi para `<details>`
+para que as três colunas e a reconciliação ocupem a dobra.
 
-Network caveat that bit again mid-session: RTT to the cluster measured
-**243.6 ms** and throughput collapsed to ~68 TPS with `write_ack` p50 at 324 ms.
-That is the WARP/US-egress route, not the code. Check `/streaming/rede` before
-trusting any latency number.
+Ressalva de rede que voltou a morder no meio da sessão: o RTT até o cluster mediu
+**243,6 ms** e a vazão colapsou para ~68 TPS, com `write_ack` p50 em 324 ms.
+Isso é a rota WARP/saída nos EUA, não o código. Cheque o `/streaming/rede` antes de
+confiar em qualquer número de latência.
 
-### Accepted with WARP off
+### Aceito com o WARP desligado
 
-The whole thing re-run end to end once the VPN route was out of the way, RTT at
-7.4 ms: 2,000 TPS individual for 30 s, both failures injected halfway,
-**47,377** documents with the same count on all four paths, zero duplicates, one
-document in the DLQ, `write_ack` p50 19.8 ms / p95 40.5 ms / p99 48.8 ms. Module
-08 in the same run: 40 pairs retrospectively, 8 search results with facets, and
-the explain comparison at 3 keys / 3 ms against 49,493 keys / 234 ms.
+Tudo foi reexecutado ponta a ponta assim que a rota de VPN saiu do caminho, com RTT em
+7,4 ms: 2.000 TPS individual por 30 s, as duas falhas injetadas na metade,
+**47.377** documentos com a mesma contagem nos quatro caminhos, zero duplicatas, um
+documento na DLQ, `write_ack` p50 19,8 ms / p95 40,5 ms / p99 48,8 ms. O módulo
+08 na mesma execução: 40 pares retrospectivamente, 8 resultados de busca com facetas, e
+a comparação de explain em 3 chaves / 3 ms contra 49.493 chaves / 234 ms.
 
-Two defects surfaced only at demo scale and are worth remembering:
+Dois defeitos apareceram só em escala de demo e vale lembrar:
 
-- With 600 cardholders at 2,000 TPS each card buys dozens of times per window,
-  so the planted pair's extremes were outvoted by ordinary traffic: the run
-  reported **0 planted / 30 emergent** and flagged 0.4% of all purchases, a rate
-  no real detector produces. Ordinary traffic now uses 12,000 cardholders and
-  planted pairs an exclusive range of 400, with legitimate travel at 0.06%.
-- Four orphaned `uvicorn` processes from manual restarts. One of them held the
-  `showcase-pix-observer` group membership and ate the messages, so column 2
-  read zero while offsets advanced normally. Not a product bug, but the symptom
-  on stage is identical: `pgrep -f "uvicorn main:app"` must return exactly one
+- Com 600 portadores a 2.000 TPS, cada cartão compra dezenas de vezes por janela,
+  então os extremos do par plantado eram sufocados pelo tráfego comum: a execução
+  reportou **0 plantados / 30 emergentes** e sinalizou 0,4% de todas as compras, uma taxa
+  que nenhum detector real produz. O tráfego comum agora usa 12.000 portadores e os
+  pares plantados uma faixa exclusiva de 400, com viagem legítima em 0,06%.
+- Quatro processos `uvicorn` órfãos de restarts manuais. Um deles segurava a
+  participação no grupo `showcase-pix-observer` e comia as mensagens, então a coluna 2
+  lia zero enquanto os offsets avançavam normalmente. Não é bug de produto, mas o sintoma
+  no palco é idêntico: o `pgrep -f "uvicorn main:app"` precisa retornar exatamente um
   PID.
 
-### Documentation restructured
+### Documentação reestruturada
 
-The README had grown to 771 lines and mixed the pitch with Kafka/ASP/Search
-setup. It is now 183 lines — what it is, the eight modules, quick start, the two
-modules that carry the demo, security — with the rest split into
-`docs/setup-streaming.md`, `docs/setup-geo.md` and `docs/reference.md`.
+O README havia crescido para 771 linhas e misturava o pitch com o setup de
+Kafka/ASP/Search. Agora tem 183 linhas — o que é, os oito módulos, início rápido, os dois
+módulos que sustentam a demo, segurança — com o resto separado em
+`docs/setup-streaming.md`, `docs/setup-geo.md` e `docs/reference.md`.
 
-Screenshot rule, because mismatched sizes were skewing the GitHub tables: every
-image used inside a table is exactly **1440×900**. Detail crops used standalone
-may differ. `07e-reconciliacao.png` (1010×300) and `08b-geo-aovivo.png`
-(800×530) are the two current exceptions and should be re-shot at 1440×900 the
-next time the environment is up — the cluster was paused when the restructure
-happened.
+Regra de screenshot, porque tamanhos divergentes estavam distorcendo as tabelas do GitHub: toda
+imagem usada dentro de uma tabela tem exatamente **1440×900**. Recortes de detalhe usados
+avulsos podem diferir. O `07e-reconciliacao.png` (1010×300) e o `08b-geo-aovivo.png`
+(800×530) são as duas exceções atuais e devem ser recapturados em 1440×900 na
+próxima vez que o ambiente estiver no ar — o cluster estava pausado quando a reestruturação
+aconteceu.
 
-## Fast reading order
+## Ordem rápida de leitura
 
-1. Read this file.
-2. Read only the relevant section of `ARCHITECTURE.md`.
-3. For Streaming work, inspect `backend/routers/streaming.py`, its matching
-   tests and the relevant frontend column together.
+1. Leia este arquivo.
+2. Leia apenas a seção relevante do `ARCHITECTURE.md`.
+3. Para trabalho de streaming, inspecione `backend/routers/streaming.py`, seus testes
+   correspondentes e a coluna relevante do frontend, juntos.

@@ -1,45 +1,45 @@
-# Architecture
+# Arquitetura
 
 ```
 React 18 + Vite (frontend/, :5174)
    │  fetch /api/*        (JSON)
-   │  EventSource /api/streaming/*        (SSE — live session, primary mode)
-   │  EventSource /api/replay/streaming/* (SSE — recorded fallback)
+   │  EventSource /api/streaming/*        (SSE — sessão ao vivo, modo principal)
+   │  EventSource /api/replay/streaming/* (SSE — fallback gravado)
    ▼
 FastAPI (backend/main.py, :8002)
-   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* and geo.*)
-   ├─ requests ────────────► Atlas Admin API v2      (Online Archive only)
-   ├─ requests ────────────► Kafka Connect REST      (:8083, live mode)
-   ├─ aiokafka (optional) ─► Kafka broker (:9092, KRaft via Homebrew, live mode)
-   └─ file ────────────────► backend/data/replay_streaming.json (module 07 playback)
+   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* e geo.*)
+   ├─ requests ────────────► Atlas Admin API v2      (só Online Archive)
+   ├─ requests ────────────► Kafka Connect REST      (:8083, modo ao vivo)
+   ├─ aiokafka (opcional) ─► broker Kafka (:9092, KRaft via Homebrew, modo ao vivo)
+   └─ arquivo ─────────────► backend/data/replay_streaming.json (playback do módulo 07)
 ```
 
-The Vite dev server proxies `/api` to `http://localhost:8002`, stripping the
-prefix. Every browser call — including SSE — goes through that proxy, so no
-external host is contacted to render a page.
+O servidor de dev do Vite faz proxy de `/api` para `http://localhost:8002`, removendo o
+prefixo. Toda chamada do navegador — SSE incluído — passa por esse proxy, então nenhum
+host externo é contatado para renderizar uma página.
 
-## Backend layout
+## Organização do backend
 
-| File | Responsibility |
+| Arquivo | Responsabilidade |
 |---|---|
-| `main.py` | App, CORS, request-id middleware, exception handlers, router wiring, `/`, `/health/live`, `/health/ready`, `/preflight`, `/stats` |
-| `settings.py` | Frozen dataclass reading env vars once; `settings.atlas_configured` gates Online Archive |
-| `database.py` | Single `MongoClient` (`connect=False`, explicit timeouts) plus `readiness()` |
-| `security.py` | `MutationGuardMiddleware` (loopback/token/Origin) and `ApiHardeningMiddleware` (body cap + headers) |
-| `routers/*.py` | One module per demo |
+| `main.py` | App, CORS, middleware de request-id, handlers de exceção, ligação dos routers, `/`, `/health/live`, `/health/ready`, `/preflight`, `/stats` |
+| `settings.py` | Dataclass congelada que lê as variáveis de ambiente uma vez; `settings.atlas_configured` habilita o Online Archive |
+| `database.py` | Um único `MongoClient` (`connect=False`, timeouts explícitos) mais `readiness()` |
+| `security.py` | `MutationGuardMiddleware` (loopback/token/Origin) e `ApiHardeningMiddleware` (teto de corpo + cabeçalhos) |
+| `routers/*.py` | Um módulo por demo |
 
-`MutationGuardMiddleware` skips safe methods, so the SSE endpoints (all `GET`)
-are reachable from `EventSource`, which cannot send the `X-Demo-Token` header.
+O `MutationGuardMiddleware` ignora métodos seguros, então os endpoints SSE (todos `GET`)
+são alcançáveis pelo `EventSource`, que não consegue enviar o cabeçalho `X-Demo-Token`.
 
 ## Endpoints
 
-### Ops
+### Operação
 
 `GET /` · `GET /health/live` · `GET /health/ready` · `GET /preflight` · `GET /stats`
 
-### Modules
+### Módulos
 
-| Prefix | Endpoints |
+| Prefixo | Endpoints |
 |---|---|
 | `/reindexacao` | `GET /indexes`, `POST /create`, `GET /build-status`, `DELETE /drop/{index_name}`, `GET /read-probe`, `GET /explain`, `GET /demo-scenarios` |
 | `/hot-cold` | `GET /distribution`, `GET /archive-simulation`, `GET /query-transparent`, `GET /online-archive/list`, `POST /online-archive/create`, `DELETE /online-archive/{archive_id}` |
@@ -47,212 +47,211 @@ are reachable from `EventSource`, which cannot send the `X-Demo-Token` header.
 | `/schema` | `GET /status`, `POST /step1-create-collection`, `POST /step2-insert-without-schema`, `POST /step3-activate-schema`, `POST /step4-insert-invalid`, `POST /insert-valid`, `GET /documents`, `DELETE /reset` |
 | `/change-streams` | `POST /start`, `POST /trigger`, `GET /feed` (SSE), `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
 | `/transactions` | `GET /status`, `POST /executar`, `POST /reset` |
-| `/streaming` | see below |
+| `/streaming` | veja abaixo |
 | `/geo` | `GET /status`, `GET /municipios`, `GET /sinais-ao-vivo`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
 
-### `/streaming` (module 07)
+### `/streaming` (módulo 07)
 
-One write generator feeds four consumers of the same change. Data lives in
-`pix.transacoes`, `pix.metricas_janela`, `pix.dlq`, `pix.dlq_audit` and
-`pix.consumer_checkpoints` (`STREAMING_DB` overrides the database name), plus
-`geo.sinais_ao_vivo` for the fourth one.
+Um gerador de escrita alimenta quatro consumidores da mesma mudança. Os dados vivem em
+`pix.transacoes`, `pix.metricas_janela`, `pix.dlq`, `pix.dlq_audit` e
+`pix.consumer_checkpoints` (`STREAMING_DB` sobrescreve o nome do banco), mais
+`geo.sinais_ao_vivo` para o quarto.
 
-**Two channels in one stream.** `canal: "PIX"` carries no coordinate — a PIX
-transfer genuinely does not have one. `canal: "CARTAO_PRESENCIAL"`
-(`STREAMING_CARTAO_PCT`, 18% by default) carries `local` as the acquirer
-terminal's registered point, the same modelling as the module 08 dataset, from
-the same `backend/data/municipios.json`. That is what lets `geoSinais30s`
-compute geographic risk in event time instead of module 08 scanning history on
-demand.
+**Dois canais em um fluxo.** `canal: "PIX"` não carrega coordenada — uma transferência
+PIX realmente não tem uma. `canal: "CARTAO_PRESENCIAL"`
+(`STREAMING_CARTAO_PCT`, 18% por padrão) carrega `local` como o ponto cadastrado do
+terminal do adquirente, a mesma modelagem do dataset do módulo 08, vinda do
+mesmo `backend/data/municipios.json`. É isso que permite ao `geoSinais30s`
+calcular risco geográfico em tempo de evento, em vez de o módulo 08 varrer o histórico
+sob demanda.
 
-The card channel has two distinct instants and conflating them is a real bug:
-`ts` is arrival into the stream and the TTL field; `compradaEm` is the purchase
-at the terminal, which can be minutes earlier because acquirer capture lags.
-Speed is computed from `compradaEm`. Back-dating `ts` made the TTL delete the
-older half of a pair before reconciliation ran, so the source counted fewer than
-the consumers — expiry indistinguishable from loss.
+O canal de cartão tem dois instantes distintos, e confundi-los é um bug real:
+`ts` é a chegada ao fluxo e o campo do TTL; `compradaEm` é a compra
+no terminal, que pode ser minutos antes, porque a captura do adquirente atrasa.
+A velocidade é calculada a partir de `compradaEm`. Retrodatar o `ts` fazia o TTL apagar a
+metade mais antiga de um par antes de a reconciliação rodar, então a origem contava menos que os
+consumidores — expiração indistinguível de perda.
 
 **Negócio e operação**
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/streaming/oplog` | Oplog retention window in minutes, read from `local.oplog.rs`, plus the configured minimum retention. This is the **operational limit of the resume-token guarantee** — recovery works only while the resume point is still in the oplog. |
-| `GET` | `/streaming/leitura` | Latency of a point lookup by `endToEndId` sampled every 250 ms **while the generator writes**, with p50/p95/p99. Answers the daily operational question the throughput numbers do not. |
-| `GET` | `/streaming/asp/dlq/resumo` | DLQ grouped by rejection reason, with first/last occurrence. |
-| `POST` | `/streaming/asp/dlq/reprocessar` | Fixes the known defect and re-inserts, preserving the original `endToEndId` — running it twice does not duplicate, the unique index blocks it. Idempotency by business key. |
-| `GET` | `/streaming/reconciliacao` | Reconciles one finite `run_id` on three levels: **count** (source documents, unique Change Stream events, unique Kafka messages, ASP aggregates and DLQ/audit), **value** summed in integer cents — never floats, because three independent sums of doubles leave a residue indistinguishable from real divergence — and an XOR **digest** of the `endToEndId` set, which is order-independent and only matches when the paths saw the same *set*, not merely the same quantity. The ASP path is aggregate-only: it reconciles by value inside a declared tolerance of R$0.01 per closed window and has no id set to digest. The digest is skipped above 200,000 documents in a run, and the page says so. It only reports `reconciliado` after input stops and every path accounts for the same run. The source count relies on the `run_id` index created by `_ensure_indexes()`; the UI polls this every 5 s and stops once the result is final. |
+| `GET` | `/streaming/oplog` | Janela de retenção do oplog em minutos, lida de `local.oplog.rs`, mais a retenção mínima configurada. Este é o **limite operacional da garantia de resume token** — a recuperação só funciona enquanto o ponto de retomada ainda está no oplog. |
+| `GET` | `/streaming/leitura` | Latência de uma busca pontual por `endToEndId`, amostrada a cada 250 ms **enquanto o gerador escreve**, com p50/p95/p99. Responde à pergunta operacional do dia a dia que os números de vazão não respondem. |
+| `GET` | `/streaming/asp/dlq/resumo` | DLQ agrupada por motivo de rejeição, com primeira/última ocorrência. |
+| `POST` | `/streaming/asp/dlq/reprocessar` | Corrige o defeito conhecido e reinsere, preservando o `endToEndId` original — rodar duas vezes não duplica, o índice único bloqueia. Idempotência por chave de negócio. |
+| `GET` | `/streaming/reconciliacao` | Reconcilia um `run_id` finito em três níveis: **contagem** (documentos de origem, eventos únicos do Change Stream, mensagens únicas do Kafka, agregados do ASP e DLQ/auditoria), **valor** somado em centavos inteiros — nunca em ponto flutuante, porque três somas independentes de doubles deixam um resíduo indistinguível de divergência real — e um **digest** XOR do conjunto de `endToEndId`, que independe de ordem e só bate quando os caminhos viram o mesmo *conjunto*, não apenas a mesma quantidade. O caminho do ASP é só agregado: ele reconcilia por valor dentro de uma tolerância declarada de R$0,01 por janela fechada e não tem conjunto de ids para digerir. O digest é pulado acima de 200.000 documentos em uma execução, e a página diz isso. Ele só reporta `reconciliado` depois que a entrada para e todos os caminhos prestam contas da mesma execução. A contagem da origem depende do índice de `run_id` criado por `_ensure_indexes()`; a UI consulta isso a cada 5 s e para quando o resultado é final. |
 
 **Cenário e rede**
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/streaming/cenario` | Returns presets for the active write mode. The default individual path exposes 1,000 TPS as the customer reference, 2,000 TPS as the sustained stage target, and 12,000 TPS in batch mode as tier headroom. The endpoint also returns `modo_escrita`, `default_tps` and the individual ceiling. These are comparison and stage evidence, not sizing or certified capacity. |
-| `GET` | `/streaming/rede` | Median RTT app ↔ cluster, measured with `ping`. Without it the columns' latency reads as change-stream cost when a large part is distance. |
-| `GET` | `/streaming/folga` | What the run cost the cluster: primary CPU read from the Atlas Admin API, cut to the run's own window, next to the peak TPS that produced it. Answers whose ceiling was reached — the generator, the presenter's network, or the cluster. Verdicts: `sem_execucao`, `metricas_pendentes`, `cluster_com_folga`, `cluster_participando`, `cluster_no_limite`. Measured, not sizing. |
+| `GET` | `/streaming/cenario` | Retorna presets para o modo de escrita ativo. O caminho individual padrão expõe 1.000 TPS como referência do cliente, 2.000 TPS como alvo sustentado de palco e 12.000 TPS em modo lote como folga do tier. O endpoint também retorna `modo_escrita`, `default_tps` e o teto do modo individual. Isso é evidência de comparação e de palco, não sizing nem capacidade certificada. |
+| `GET` | `/streaming/rede` | RTT mediano app ↔ cluster, medido com `ping`. Sem ele a latência das colunas é lida como custo de change stream, quando boa parte é distância. |
+| `GET` | `/streaming/folga` | Quanto a execução custou ao cluster: CPU do primário lida pela Atlas Admin API, recortada à janela da própria execução, ao lado do TPS de pico que a produziu. Responde de quem foi o teto atingido — o gerador, a rede do apresentador ou o cluster. Vereditos: `sem_execucao`, `metricas_pendentes`, `cluster_com_folga`, `cluster_participando`, `cluster_no_limite`. Medido, não sizing. |
 
-**Generator**
+**Gerador**
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `POST` | `/streaming/generator/start` | Body `{"tps": 1..TPS_MAX, "duration_s": 10..120, "modo": "individual|lote"}` (`TPS_MAX` = 15,000; defaults to individual mode at 2,000 TPS/30 s). Individual mode uses the async driver and one acknowledged `insert_one` per PIX; batch mode uses `insert_many` micro-batches for the higher-volume story. Creates a `run_id` and sequence and stops automatically. The ceiling is a guardrail, not an M20 guarantee or product limit. |
-| `POST` | `/streaming/generator/stop` | Cancels the task, waits 7.2 s (5 s window + 2 s lateness) and writes one technical marker under a reserved `run_id` to advance the event-time watermark. The marker is outside the demonstrated run's reconciliation and lets its final window close. |
-| `GET` | `/streaming/generator/status` | `run_id`, `running`, `stopping`, `duration_s`, `ends_at`, `tps_alvo`, **`tps_medido`**, `inseridos`, write mode, `write_ack` p50/p95/p99 and collection state. In individual mode `write_ack` is the end-to-end ACK for one PIX; in batch mode it describes one acknowledged micro-batch. The three consumer columns measure post-commit propagation. |
-| `POST` | `/streaming/reset` | Stops the generator, ensures the unique business-key, TTL and `run_id_reconciliacao` indexes, then clears source, windows, DLQ and audit concurrently using the application's connected MongoDB topology. Above `STREAMING_DROP_ACIMA_DE` (25k by default), it stops ASP, drops/recreates the dedicated source and indexes, then recovers ASP and Kafka; a routine delete does not restart Kafka. Residual data **in the source collection** returns 503 instead of starting a mixed run; a late window or DLQ document is the processor finishing the previous round and does not block, since everything downstream is filtered by `run_id`. Emptiness is confirmed with a bounded exact count, never `estimated_document_count()`, whose metadata still reports the pre-delete total. With `?finalizar=true`, it also removes application checkpoints and leaves ASP/Kafka stopped. |
+| `POST` | `/streaming/generator/start` | Corpo `{"tps": 1..TPS_MAX, "duration_s": 10..120, "modo": "individual|lote"}` (`TPS_MAX` = 15.000; padrão é modo individual a 2.000 TPS/30 s). O modo individual usa o driver assíncrono e um `insert_one` confirmado por PIX; o modo lote usa micro-lotes de `insert_many` para a história de volume maior. Cria um `run_id` e uma sequência, e para sozinho. O teto é uma proteção, não uma garantia do M20 nem um limite de produto. |
+| `POST` | `/streaming/generator/stop` | Cancela a tarefa, espera 7,2 s (janela de 5 s + 2 s de atraso) e escreve um marcador técnico sob um `run_id` reservado para avançar a marca d'água do tempo de evento. O marcador fica fora da reconciliação da execução demonstrada e permite que a janela final dela feche. |
+| `GET` | `/streaming/generator/status` | `run_id`, `running`, `stopping`, `duration_s`, `ends_at`, `tps_alvo`, **`tps_medido`**, `inseridos`, modo de escrita, `write_ack` p50/p95/p99 e estado da coleção. No modo individual o `write_ack` é o ACK ponta a ponta de um PIX; no modo lote ele descreve um micro-lote confirmado. As três colunas de consumidores medem propagação pós-commit. |
+| `POST` | `/streaming/reset` | Para o gerador, garante os índices de chave de negócio única, TTL e `run_id_reconciliacao`, e então limpa origem, janelas, DLQ e auditoria em paralelo usando a topologia MongoDB já conectada da aplicação. Acima de `STREAMING_DROP_ACIMA_DE` (25 mil por padrão), ele para o ASP, dropa/recria a origem dedicada e os índices, e então recupera ASP e Kafka; uma exclusão de rotina não reinicia o Kafka. Dado residual **na coleção de origem** retorna 503 em vez de iniciar uma execução misturada; uma janela atrasada ou um documento na DLQ é o processor terminando a rodada anterior e não bloqueia, já que tudo a jusante é filtrado por `run_id`. O vazio é confirmado com uma contagem exata limitada, nunca com `estimated_document_count()`, cujos metadados ainda reportam o total anterior à exclusão. Com `?finalizar=true`, ele também remove os checkpoints da aplicação e deixa ASP/Kafka parados. |
 
-**Column 1 — Change Streams**
+**Coluna 1 — Change Streams**
 
-The PoV can open multiple `watch()` cursors with disjoint filters. This is a
-demonstration technique, not native partitioning or a sizing recommendation.
-Each cursor persists its resume token in `pix.consumer_checkpoints`. Transient
-errors retain the checkpoint; only a confirmed `ChangeStreamHistoryLost`
-condition discards it.
+A PoV consegue abrir vários cursores `watch()` com filtros disjuntos. Isto é uma
+técnica de demonstração, não particionamento nativo nem recomendação de sizing.
+Cada cursor persiste seu resume token em `pix.consumer_checkpoints`. Erros
+transitórios preservam o checkpoint; só uma condição confirmada de
+`ChangeStreamHistoryLost` o descarta.
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/streaming/changestream` | **SSE.** One `collection.watch()` cursor per demonstration partition (`[{$match: {operationType: "insert"}}]`) broadcasts to all subscribers. Because the pipeline only accepts inserts, it reads `fullDocument` from the event without `updateLookup`. Event types: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Each `evento` carries end-to-end `latency_ms`, the truncated resume token and the `recuperado` flag. |
-| `POST` | `/streaming/changestream/drop-resume` | Closes the cursor, waits 3 s while the generator keeps writing, and reopens with `resume_after(<persisted resume token>)`. Events whose `ts` precedes the reopen are marked `recuperado`; the reconciliation endpoint then verifies the accounting instead of inferring “zero loss” from animation alone. |
-| `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, **`duplicados`**, `token`, plus `eventos_s` and the p50/p95/p99 latency percentiles. Delivery is at-least-once, so duplicates are *measured* over a bounded window of recent `endToEndId`s rather than asserted away. |
+| `GET` | `/streaming/changestream` | **SSE.** Um cursor `collection.watch()` por partição de demonstração (`[{$match: {operationType: "insert"}}]`) transmite para todos os assinantes. Como o pipeline só aceita inserts, ele lê `fullDocument` do evento sem `updateLookup`. Tipos de evento: `hello`, `aberto`, `evento`, `derrubado`, `erro`, `reset`. Cada `evento` carrega `latency_ms` ponta a ponta, o resume token truncado e a flag `recuperado`. |
+| `POST` | `/streaming/changestream/drop-resume` | Fecha o cursor, espera 3 s enquanto o gerador segue escrevendo, e reabre com `resume_after(<resume token persistido>)`. Eventos cujo `ts` precede a reabertura são marcados como `recuperado`; o endpoint de reconciliação então verifica a contabilidade, em vez de inferir "zero perda" só pela animação. |
+| `GET` | `/streaming/changestream/status` | `aberto`, `eventos`, `recuperados`, **`duplicados`**, `token`, mais `eventos_s` e os percentis de latência p50/p95/p99. A entrega é at-least-once, então duplicatas são *medidas* sobre uma janela limitada de `endToEndId` recentes, e não descartadas por afirmação. |
 
-**Column 2 — MongoDB Kafka Connector**
+**Coluna 2 — MongoDB Kafka Connector**
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/streaming/kafka` | **SSE** of messages consumed from `atlas.pix.transacoes`, with partition, offset and the Atlas-insert → topic-arrival `latency_ms`. `aiokafka` is imported lazily: without the dependency or the broker, the stream emits `{"type": "status", "estado": "nao_configurado"}` and the UI renders the setup instructions. |
-| `GET` | `/streaming/kafka/status` | Aggregated state of every `atlas-pix-source*` connector, **downgraded by task health**: a connector reporting `RUNNING` with every task `FAILED` is reported as `FAILED` (`DEGRADADO` when only some failed), because the task is what moves data. Plus message count and current offset. |
-| `POST` | `/streaming/kafka/restart` | Restarts connector and tasks. A task killed by a network blip or a cluster restart never recovers on its own while the connector keeps claiming `RUNNING`. |
-| `POST` | `/streaming/kafka/consumer/restart` | Restarts the UI observer with the same `group.id`, demonstrating recovery from committed offsets and exposing re-deliveries to reconciliation. |
+| `GET` | `/streaming/kafka` | **SSE** das mensagens consumidas de `atlas.pix.transacoes`, com partição, offset e a `latency_ms` de insert no Atlas → chegada ao tópico. O `aiokafka` é importado de forma preguiçosa: sem a dependência ou sem o broker, o fluxo emite `{"type": "status", "estado": "nao_configurado"}` e a UI mostra as instruções de setup. |
+| `GET` | `/streaming/kafka/status` | Estado agregado de todo connector `atlas-pix-source*`, **rebaixado pela saúde das tasks**: um connector reportando `RUNNING` com todas as tasks `FAILED` é reportado como `FAILED` (`DEGRADADO` quando só algumas falharam), porque quem move dado é a task. Mais contagem de mensagens e offset atual. |
+| `POST` | `/streaming/kafka/restart` | Reinicia connector e tasks. Uma task morta por uma oscilação de rede ou por um restart de cluster nunca se recupera sozinha enquanto o connector segue afirmando `RUNNING`. |
+| `POST` | `/streaming/kafka/consumer/restart` | Reinicia o observador da UI com o mesmo `group.id`, demonstrando recuperação a partir dos offsets commitados e expondo reentregas à reconciliação. |
 
-**Injected failure**
+**Falha injetada**
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `POST` | `/streaming/falha/connector` | Stops every showcase connector, waits `segundos` (1–30, default 8) and resumes them. Stopping does not discard the offset: the resume token stays in `connect-offsets`, so everything written during the outage is delivered afterwards, and reconciliation has to close anyway. |
-| `POST` | `/streaming/falha/evento-invalido` | Writes one transaction whose `valor` is a string. It is a valid document for the collection — it passes the unique index and counts at the source — but the processor's `$validate` diverts it to the DLQ while the pipeline keeps running. |
-| `POST` | `/streaming/falha/schema-incompativel` | Publishes a "new version" of the event with the required `valor` renamed to `amount` — the incompatible change a Schema Registry would refuse at registration. Same outcome, different cause: DLQ with the reason, pipeline still running, reconciliation still closing. |
-| `POST` | `/streaming/falha/failover` | Atlas **test failover**: a real primary election on the demo cluster, under load. The only injected failure that hits MongoDB rather than a third party. It extends the run by 150 s, because an election outlasts the 30 s window and the auto-stop would otherwise close the run mid-event. The evidence is `escritas_rejeitadas` next to `escritas_confirmadas` — `retryWrites` absorbs the step-down, so the honest number is zero. The Admin API resource changed shape across versions, so the call tries the known forms in order and only 404/405 advances; a credential or access-list error surfaces unmasked. |
-| `GET` | `/streaming/contrato` | The contract the processor enforces, mirroring the `$validate` in `scripts/setup-asp.js`, plus the policy on violation. Shown on screen so "it went to the DLQ" becomes "it went to the DLQ because it violated *this*, which you just read". |
+| `POST` | `/streaming/falha/connector` | Para todos os connectors do showcase, espera `segundos` (1–30, padrão 8) e os retoma. Parar não descarta o offset: o resume token fica em `connect-offsets`, então tudo o que foi escrito durante a queda é entregue depois, e a reconciliação tem que fechar mesmo assim. |
+| `POST` | `/streaming/falha/evento-invalido` | Escreve uma transação cujo `valor` é uma string. É um documento válido para a coleção — passa pelo índice único e conta na origem — mas o `$validate` do processor o desvia para a DLQ enquanto o pipeline continua rodando. |
+| `POST` | `/streaming/falha/schema-incompativel` | Publica uma "nova versão" do evento com o campo obrigatório `valor` renomeado para `amount` — a mudança incompatível que um Schema Registry recusaria no registro. Mesmo desfecho, causa diferente: DLQ com o motivo, pipeline ainda rodando, reconciliação ainda fechando. |
+| `POST` | `/streaming/falha/failover` | **Test failover** do Atlas: uma eleição real de primário no cluster de demo, sob carga. A única falha injetada que atinge o MongoDB, e não um terceiro. Ela estende a execução em 150 s, porque uma eleição dura mais que a janela de 30 s e o auto-stop fecharia a execução no meio do evento. A evidência é `escritas_rejeitadas` ao lado de `escritas_confirmadas` — o `retryWrites` absorve o step-down, então o número honesto é zero. O recurso da Admin API mudou de forma entre versões, então a chamada tenta as formas conhecidas em ordem e só 404/405 avança; um erro de credencial ou de access list aparece sem máscara. |
+| `GET` | `/streaming/contrato` | O contrato que o processor aplica, espelhando o `$validate` de `scripts/setup-asp.js`, mais a política em caso de violação. Mostrado na tela para que "foi para a DLQ" vire "foi para a DLQ porque violou *isto*, que você acabou de ler". |
 
-Both exist because a run where nothing fails proves nothing failed. They are the
-counterpart to reconciliation: the number only means something once the path
-that produced it has been broken and recovered on stage.
+Os dois existem porque uma execução em que nada falha só prova que nada falhou. Eles são a
+contrapartida da reconciliação: o número só significa algo depois que o caminho
+que o produziu foi quebrado e recuperado no palco.
 
-**Column 3 — Atlas Stream Processing**
+**Coluna 3 — Atlas Stream Processing**
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/streaming/asp` | **SSE** of closed windows and DLQ documents. The backend does not query the SPI: it watches `pix.metricas_janela` and `pix.dlq` with change streams, so the ASP result reaches the screen through the mechanics of column 1. |
-| `GET` | `/streaming/asp/status` | Real state plus `getStreamProcessorStats`: input/output/DLQ, oplog lag, watermark, state size, latency and maximum operator memory when available. |
-| `POST` | `/streaming/asp/restart-checkpoint` | Stops the named processor, waits for `STOPPED`, then starts it normally so ASP resumes from its managed checkpoint. It never drops/recreates the processor. |
-| `POST` | `/streaming/asp/inject-invalid` | `?quantidade=N` (up to 5,000) inserts documents violating the expected schema in four different ways, so the DLQ shows distinct reasons; `$validate` routes them to the DLQ instead of failing the processor. Partial failures are tolerated and reported. Returns 409 when ASP is not configured. |
-| `GET` | `/streaming/asp/dlq` | Last DLQ documents. |
-| `GET` | `/streaming/asp/janelas` | Last closed windows straight from the collection the processor writes. |
+| `GET` | `/streaming/asp` | **SSE** de janelas fechadas e documentos da DLQ. O backend não consulta o SPI: ele observa `pix.metricas_janela` e `pix.dlq` com change streams, então o resultado do ASP chega à tela pela mecânica da coluna 1. |
+| `GET` | `/streaming/asp/status` | Estado real mais `getStreamProcessorStats`: entrada/saída/DLQ, atraso do oplog, marca d'água, tamanho do estado, latência e memória máxima de operador quando disponível. |
+| `POST` | `/streaming/asp/restart-checkpoint` | Para o processor nomeado, espera o `STOPPED` e então o inicia normalmente, para que o ASP retome do checkpoint gerenciado. Ele nunca dropa/recria o processor. |
+| `POST` | `/streaming/asp/inject-invalid` | `?quantidade=N` (até 5.000) insere documentos que violam o schema esperado de quatro formas diferentes, para que a DLQ mostre motivos distintos; o `$validate` os roteia para a DLQ em vez de derrubar o processor. Falhas parciais são toleradas e reportadas. Retorna 409 quando o ASP não está configurado. |
+| `GET` | `/streaming/asp/dlq` | Últimos documentos da DLQ. |
+| `GET` | `/streaming/asp/janelas` | Últimas janelas fechadas, direto da coleção em que o processor escreve. |
 
-**Sampling.** A browser should not render every streaming event. The SSE feed is therefore a
-*sample* (one frame every 120 ms), labelled as such in the UI, while counters
-and percentiles are computed in the worker over **100% of the events**. A
-recovered event is never sampled out: it is the proof the drop/resume works.
+**Amostragem.** Um navegador não deve renderizar todo evento de streaming. O feed SSE é, portanto, uma
+*amostra* (um quadro a cada 120 ms), rotulada como tal na UI, enquanto contadores
+e percentis são calculados no worker sobre **100% dos eventos**. Um
+evento recuperado nunca é descartado pela amostragem: ele é a prova de que o drop/resume funciona.
 
-### `/replay` (module 07 playback)
+### `/replay` (playback do módulo 07)
 
-Replay is the no-write contingency, selected explicitly in the page or with
-`bin/overview --replay`. It does not provision ASP or Kafka and talks to
-`/replay/*`, which mirrors the `/streaming/*` paths. Everything is served
-from `backend/data/replay_streaming.json`, recorded by
-`scripts/capture_replay.py` against the real cluster.
+O replay é a contingência sem escrita, selecionada explicitamente na página ou com
+`bin/overview --replay`. Ele não provisiona ASP nem Kafka e fala com
+`/replay/*`, que espelha os caminhos de `/streaming/*`. Tudo é servido
+a partir de `backend/data/replay_streaming.json`, gravado por
+`scripts/capture_replay.py` contra o cluster real.
 
-This router never touches MongoDB — a test asserts it — so the page works with
-the cluster paused. The reason it exists is cost: M20/M30 are burstable, and
-Atlas compute auto-scaling fires on **relative** CPU
-(`NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75`). Measured here, 17.6% absolute read
-as 88% relative and scaled the cluster with the generator already stopped, on
-dashboard polling alone.
+Este router nunca toca o MongoDB — um teste garante isso — então a página funciona com
+o cluster pausado. A razão de existir é custo: M20/M30 são burstable, e o
+auto-scaling de compute do Atlas dispara por CPU **relativa**
+(`NORMALIZED_AUTO_SCALE_SYSTEM_CPU > 0.75`). Medido aqui, 17,6% absoluto foi lido
+como 88% relativo e escalou o cluster com o gerador já parado, só pelo polling do dashboard.
 
-Every payload carries `replay: true`, and the page shows a permanent one-line
-badge naming the recorded `run_id` and its date. The numbers are real
-measurements from that run — presenting them as live would be the one thing
-this mode must not do.
+Todo payload carrega `replay: true`, e a página mostra um selo permanente de uma linha
+nomeando o `run_id` gravado e sua data. Os números são medições reais
+daquela execução — apresentá-los como ao vivo seria a única coisa que
+este modo não pode fazer.
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/replay/manifest` | `run_id`, `gravado_em`, duration, event count and the clock state. Answers **200 with `disponivel: false`** when there is no recording — the page probes this on load, and a 5xx would raise a global error toast on every install that never recorded. |
-| `POST` | `/replay/play` | Starts the playback clock at zero (`retomar=true` resumes from the paused position). This is what the single **▶ Play** button calls. |
-| `POST` | `/replay/pause` / `/replay/stop` | Freeze at the current position / rewind and stop. Position is derived from a monotonic clock on read, so a stopped replay costs nothing. |
+| `GET` | `/replay/manifest` | `run_id`, `gravado_em`, duração, contagem de eventos e o estado do relógio. Responde **200 com `disponivel: false`** quando não há gravação — a página sonda isso no carregamento, e um 5xx levantaria um toast global de erro em toda instalação que nunca gravou. |
+| `POST` | `/replay/play` | Inicia o relógio de playback do zero (`retomar=true` retoma da posição pausada). É o que o único botão **▶ Play** chama. |
+| `POST` | `/replay/pause` / `/replay/stop` | Congela na posição atual / rebobina e para. A posição é derivada de um relógio monotônico na leitura, então um replay parado não custa nada. |
 | `GET` | `/replay/estado` | `rodando`, `posicao_s`, `duracao_s`, `repetir`. |
-| `GET` | `/replay/streaming/{cenario,rede,cluster}` | Static context captured with the run: it describes the environment the run was *measured* in, not the current one. |
-| `GET` | `/replay/streaming/{generator/status,kafka/status,asp/status,oplog,leitura,asp/dlq/resumo,reconciliacao}` | The recorded snapshot whose timestamp is the last one at or before the current playback position. |
-| `GET` | `/replay/streaming/{changestream,kafka,asp}` | **SSE.** Re-emits the recorded events as the clock advances, plus a `reset` when the recording loops. Sends `: keepalive` every 10 s — without it an idle stream is dropped by the browser and the Vite proxy, the client reconnects, and the server-side generator never learns the client is gone (a generator that never writes never sees the disconnect). Those leaked streams exhaust the browser's ~6-connection-per-host budget and ordinary fetches start timing out at 30 s while the backend answers in milliseconds. |
+| `GET` | `/replay/streaming/{cenario,rede,cluster}` | Contexto estático capturado junto com a execução: descreve o ambiente em que a execução foi *medida*, não o atual. |
+| `GET` | `/replay/streaming/{generator/status,kafka/status,asp/status,oplog,leitura,asp/dlq/resumo,reconciliacao}` | O snapshot gravado cujo timestamp é o último igual ou anterior à posição atual de playback. |
+| `GET` | `/replay/streaming/{changestream,kafka,asp}` | **SSE.** Reemite os eventos gravados conforme o relógio avança, mais um `reset` quando a gravação dá a volta. Envia `: keepalive` a cada 10 s — sem isso um fluxo ocioso é derrubado pelo navegador e pelo proxy do Vite, o cliente reconecta, e o gerador do lado do servidor nunca descobre que o cliente sumiu (um gerador que nunca escreve nunca vê a desconexão). Esses fluxos vazados esgotam o orçamento de ~6 conexões por host do navegador, e fetches comuns começam a estourar 30 s de timeout enquanto o backend responde em milissegundos. |
 
-### `/geo` (module 08)
+### `/geo` (módulo 08)
 
-Its own database (`geo`, override with `GEO_DB`). Two collections:
-`geo.transacoes`, the versioned dataset seeded by `scripts/seed_geo.py`, and
-`geo.sinais_ao_vivo`, which is run data written by the ASP processor and cleared
-by `/streaming/reset` and `cleanup-streaming-data.py`. The dataset collection is
-never touched by either cleanup path.
+Tem banco próprio (`geo`, sobrescreva com `GEO_DB`). Duas coleções:
+`geo.transacoes`, o dataset versionado semeado por `scripts/seed_geo.py`, e
+`geo.sinais_ao_vivo`, que é dado de execução escrito pelo processor de ASP e limpo
+por `/streaming/reset` e `cleanup-streaming-data.py`. A coleção de dataset
+nunca é tocada por nenhum dos dois caminhos de limpeza.
 
-| Method | Path | Description |
+| Método | Caminho | Descrição |
 |---|---|---|
-| `GET` | `/geo/sinais-ao-vivo` | Reads `geo.sinais_ao_vivo`, materialized by the `geoSinais30s` stream processor while module 07 runs. Nothing is computed here — the window already did it. Returns the recent pairs plus separate `plantados` and `emergentes` counts, because merging them would turn the demo's guaranteed signal into evidence. |
-| `GET` | `/geo/status` | Document count, the index list read from the collection, and whether the Atlas Search index exists. Nothing is hard-coded in the UI. |
-| `GET` | `/geo/municipios` | Municipalities present in the dataset with a representative point, so the UI can centre a query without shipping a coordinate table to the browser. Cached in memory; the list only changes when the seed runs again. |
-| `POST` | `/geo/explain-compare` | The same `$geoWithin` (`$centerSphere`) query explained twice: hinted at `cliente_status_local_idx` (equality fields first, geo last) and at `local_2dsphere_idx`. Returns winning stage, index used, `totalKeysExamined`, `totalDocsExamined`, `nReturned` and `executionTimeMillis` for each. If the measurement contradicts the didactic note, the measurement is what the screen shows. |
-| `GET` | `/geo/impossible-travel` | Retrospective risk signal: `$setWindowFields` partitioned by `clienteId`, sorted by `ts`, `$shift` pulling the previous timestamp, coordinates, device and location provenance, then haversine in pure MQL. It explicitly returns `decisao_fraude: false`; no document leaves the cluster for the calculation. A `$facet` also counts the pairs evaluated **before** the geometric cut, so the response carries selectivity (rate, alerts per day) next to the cases, each one labelled `plantado`/`emergente` from `fraud_seeds.json`. Accepts `clienteId` to narrow the scan — the cut, not hardware, is what keeps this viable over real history. |
-| `POST` | `/geo/search` | The neighbourhood of a **contested purchase**: pass `endToEndId` and the centre becomes that terminal's registered coordinate, with the anchor returned alongside the results. One `$search` with `geoWithin`, optional category filter and `$searchMeta` facets; `termo` is optional and adds fuzzy name matching for the cloned-merchant case. Without a term the scoring clause is `exists` (a compound of only `filter` returns everything at score zero) and results order by distance, with the tie-break applied before the per-terminal dedup. Without the index the endpoint returns `estado: "nao_configurado"` rather than empty results. |
+| `GET` | `/geo/sinais-ao-vivo` | Lê `geo.sinais_ao_vivo`, materializada pelo stream processor `geoSinais30s` enquanto o módulo 07 roda. Nada é calculado aqui — a janela já fez isso. Retorna os pares recentes mais contagens separadas de `plantados` e `emergentes`, porque juntá-las transformaria o sinal garantido da demo em evidência. |
+| `GET` | `/geo/status` | Contagem de documentos, a lista de índices lida da coleção e se o índice do Atlas Search existe. Nada é fixado no código da UI. |
+| `GET` | `/geo/municipios` | Municípios presentes no dataset com um ponto representativo, para que a UI possa centralizar uma consulta sem enviar uma tabela de coordenadas ao navegador. Cacheado em memória; a lista só muda quando o seed roda de novo. |
+| `POST` | `/geo/explain-compare` | A mesma consulta `$geoWithin` (`$centerSphere`) explicada duas vezes: com hint em `cliente_status_local_idx` (campos de igualdade primeiro, geo por último) e em `local_2dsphere_idx`. Retorna estágio vencedor, índice usado, `totalKeysExamined`, `totalDocsExamined`, `nReturned` e `executionTimeMillis` para cada um. Se a medição contradisser a nota didática, é a medição que aparece na tela. |
+| `GET` | `/geo/impossible-travel` | Sinal de risco retrospectivo: `$setWindowFields` particionado por `clienteId`, ordenado por `ts`, `$shift` puxando o timestamp anterior, coordenadas, dispositivo e procedência da localização, e então haversine em MQL puro. Ele retorna explicitamente `decisao_fraude: false`; nenhum documento sai do cluster para o cálculo. Um `$facet` também conta os pares avaliados **antes** do corte geométrico, então a resposta carrega seletividade (taxa, alertas por dia) ao lado dos casos, cada um rotulado `plantado`/`emergente` a partir de `fraud_seeds.json`. Aceita `clienteId` para estreitar a varredura — o recorte, não o hardware, é o que mantém isso viável sobre histórico real. |
+| `POST` | `/geo/search` | A vizinhança de uma **compra contestada**: passe `endToEndId` e o centro vira a coordenada cadastrada daquele terminal, com a âncora retornada junto dos resultados. Um `$search` com `geoWithin`, filtro opcional de categoria e facetas de `$searchMeta`; o `termo` é opcional e adiciona casamento fuzzy de nome para o caso de estabelecimento clonado. Sem termo, a cláusula de scoring é `exists` (um compound só de `filter` retorna tudo com score zero) e os resultados são ordenados por distância, com o desempate aplicado antes da deduplicação por terminal. Sem o índice, o endpoint retorna `estado: "nao_configurado"` em vez de resultados vazios. |
 
-The geo checks join `/preflight` but never fail it: the module is optional, the
-same way Kafka and ASP are.
+As checagens de geo entram no `/preflight`, mas nunca o reprovam: o módulo é opcional,
+do mesmo jeito que Kafka e ASP.
 
-The map is rendered as inline SVG with a hand-written linear projection over the
-Brazilian bounding box — no Leaflet, no Mapbox, no tiles, no new frontend
-dependency. With the external network blocked the module still renders and every
-number still comes from the cluster; the one external request in the app is the
-Google Fonts link in `frontend/index.html`, which is app-wide and pre-existing,
-and typography falls back to system fonts when it fails.
+O mapa é renderizado como SVG inline, com uma projeção linear escrita à mão sobre o
+bounding box brasileiro — sem Leaflet, sem Mapbox, sem tiles, sem nova dependência
+de frontend. Com a rede externa bloqueada o módulo ainda renderiza e todo
+número ainda vem do cluster; a única requisição externa da aplicação é o
+link do Google Fonts em `frontend/index.html`, que vale para o app inteiro e é pré-existente,
+e a tipografia cai para fontes do sistema quando ele falha.
 
-### SSE conventions
+### Convenções de SSE
 
-All streaming endpoints share `_sse_stream`: a per-subscriber `asyncio.Queue`
-fed by a broadcast `Hub`, a `hello` frame on connect, a `: keepalive` comment
-every 15 s, and disconnect detection via `request.is_disconnected()`. Producers
-running in threads (PyMongo cursors) publish through
-`loop.call_soon_threadsafe`. A slow subscriber has its oldest frame dropped
-rather than blocking the producer.
+Todos os endpoints de streaming compartilham o `_sse_stream`: uma `asyncio.Queue` por assinante
+alimentada por um `Hub` de broadcast, um quadro `hello` na conexão, um comentário `: keepalive`
+a cada 15 s e detecção de desconexão via `request.is_disconnected()`. Produtores
+rodando em threads (cursores do PyMongo) publicam por
+`loop.call_soon_threadsafe`. Um assinante lento tem seu quadro mais antigo descartado,
+em vez de bloquear o produtor.
 
 ## Frontend
 
-- `src/App.jsx` — shell, sidebar, hash routing (`/#agg`, `/#streams`, `/#tx`, `/#streaming`).
-- `src/pages/` — one component per module; `src/components/` — `DemoFlow`, `QueryBlock`.
-- `src/hooks/useApi.js` — fetch wrapper adding `X-Demo-Token`. Expected aborts
-  caused by module unmount are silent; timeouts and real failures still dispatch
-  a global error. `App.jsx` deduplicates identical error toasts for eight
-  seconds. SSE uses `EventSource` directly (`useSse` in
+- `src/App.jsx` — casca, sidebar, roteamento por hash (`/#agg`, `/#streams`, `/#tx`, `/#streaming`).
+- `src/pages/` — um componente por módulo; `src/components/` — `DemoFlow`, `QueryBlock`.
+- `src/hooks/useApi.js` — wrapper de fetch que adiciona `X-Demo-Token`. Aborts esperados
+  causados pelo unmount de um módulo são silenciosos; timeouts e falhas reais ainda disparam
+  um erro global. O `App.jsx` deduplica toasts de erro idênticos por oito
+  segundos. O SSE usa `EventSource` diretamente (`useSse` em
   `pages/Streaming.jsx`).
-- State lives only in React state — no `localStorage`/`sessionStorage`.
+- O estado vive apenas no estado do React — sem `localStorage`/`sessionStorage`.
 
-The UI follows a proof-first hierarchy documented in
-`docs/SESSION_HANDOFF.md`: Streaming exposes the three paths in the first
-laptop viewport, Aggregations uses `Source → Pipeline → Result`, and large code
-definitions are progressively disclosed.
+A UI segue uma hierarquia de prova primeiro, documentada em
+`docs/SESSION_HANDOFF.md`: o Streaming expõe os três caminhos no primeiro
+viewport de notebook, o de agregações usa `Origem → Pipeline → Resultado`, e definições
+grandes de código são reveladas progressivamente.
 
-## External infrastructure
+## Infraestrutura externa
 
-`scripts/kafka-local.sh` runs the Kafka broker (Homebrew, KRaft, `:9092`) and
-Kafka Connect (`:8083`) with the `mongodb-kafka-connect` plugin cached locally
-after the first download. Step-by-step instructions live in
-`docs/setup-streaming.md`. Nothing here needs Docker — the container path was
-removed on purpose, because a second way to start the same dependency only added
-setup surface, and one of its containers published `9093` on the host, which is
-the port Kafka's own KRaft controller listens on.
+O `scripts/kafka-local.sh` roda o broker Kafka (Homebrew, KRaft, `:9092`) e o
+Kafka Connect (`:8083`) com o plugin `mongodb-kafka-connect` cacheado localmente
+depois do primeiro download. As instruções passo a passo estão em
+`docs/setup-streaming.md`. Nada aqui precisa de Docker — o caminho por container foi
+removido de propósito, porque uma segunda forma de subir a mesma dependência só adicionava
+superfície de setup, e um dos containers publicava a `9093` no host, que é
+a porta em que o próprio controller KRaft do Kafka escuta.
 
-Two Atlas Stream Processing jobs, not one, because a deployed pipeline has a
-single terminal sink: `pixJanelas5s` (`scripts/setup-asp.js`) merges 5-second
-windows into `pix.metricas_janela`, and `geoSinais30s`
-(`scripts/setup-asp-geo.js`) merges geographic risk signals into
-`geo.sinais_ao_vivo`. They are independent consumers of the same change stream.
-`scripts/ambiente.sh` provisions and stops both.
+Dois jobs de Atlas Stream Processing, não um, porque um pipeline implantado tem um
+único sink terminal: `pixJanelas5s` (`scripts/setup-asp.js`) faz merge de janelas de
+5 segundos em `pix.metricas_janela`, e `geoSinais30s`
+(`scripts/setup-asp-geo.js`) faz merge dos sinais de risco geográfico em
+`geo.sinais_ao_vivo`. São consumidores independentes do mesmo change stream.
+O `scripts/ambiente.sh` provisiona e para os dois.
 
-`scripts/lib/expand_srv.py` rewrites the `mongodb+srv://` URI into its standard
-three-host form before the connector is registered. The source connector
-reparses `connection.uri` on every task start, so an SRV URI turns each restart
-into a DNS SRV+TXT lookup; a flaky resolver left the connector `RUNNING` with
-its only task `FAILED`.
+O `scripts/lib/expand_srv.py` reescreve a URI `mongodb+srv://` na forma padrão de
+três hosts antes de o connector ser registrado. O source connector
+reinterpreta o `connection.uri` a cada start de task, então uma URI SRV transforma cada restart
+em uma consulta DNS SRV+TXT; um resolver instável deixava o connector em `RUNNING` com
+sua única task em `FAILED`.

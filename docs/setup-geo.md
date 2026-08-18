@@ -1,108 +1,108 @@
-# Geographic risk module — setup
+# Módulo de risco geográfico — setup
 
-How to materialize the `geo` dataset and its Atlas Search index, plus what the
-module does and does not claim.
+Como materializar o dataset `geo` e seu índice do Atlas Search, além do que o
+módulo alega e do que ele não alega.
 
-Back to the [README](../README.md).
+Voltar para o [README](../README.md).
 
-The Geo module runs against its own database (`geo`, override with `GEO_DB`), so
-it never touches the `POC` or `pix` collections. Materialize it before the demo;
-`overview` only runs the fast, read-only check:
+O módulo Geo roda contra o próprio banco (`geo`, sobrescreva com `GEO_DB`), então
+nunca toca nas coleções de `POC` ou `pix`. Materialize antes da demo;
+o `overview` só roda a checagem rápida e somente leitura:
 
 ```bash
-./scripts/prepare-demo.sh             # run ahead of the presentation
-python scripts/seed_geo.py            # 2,000 clients × 75 transactions = 150k docs
-python scripts/seed_geo.py --drop     # recreate from scratch
-python scripts/seed_geo.py --ensure   # keep if current; recreate if stale/incomplete
-./scripts/create_search_index_geo.sh  # create/update and wait until READY
+./scripts/prepare-demo.sh             # rode antes da apresentação
+python scripts/seed_geo.py            # 2.000 clientes × 75 transações = 150 mil docs
+python scripts/seed_geo.py --drop     # recria do zero
+python scripts/seed_geo.py --ensure   # mantém se estiver atual; recria se estiver defasado/incompleto
+./scripts/create_search_index_geo.sh  # cria/atualiza e espera até READY
 ```
 
-⚠️ **`--drop` deletes the collection, and the Atlas Search index goes with it.**
-Always run `./scripts/create_search_index_geo.sh` afterwards, or panel 02 opens
-as `nao_configurado` on stage.
+⚠️ **O `--drop` apaga a coleção, e o índice do Atlas Search vai junto.**
+Sempre rode `./scripts/create_search_index_geo.sh` depois, ou o painel 02 abre
+como `nao_configurado` no palco.
 
-The generator is seeded with a fixed value and carries a dataset version, so every `endToEndId` is stable and
-the unique index rejects re-inserts: running the seed twice leaves 150k
-documents, not 300k. Points are gaussian clusters around 40 real Brazilian
-municipalities weighted by population — uniformly random coordinates inside the
-country's bounding box look obviously fake on a projector.
+O gerador usa uma semente fixa e carrega uma versão de dataset, então todo `endToEndId` é estável e
+o índice único rejeita reinserções: rodar o seed duas vezes deixa 150 mil
+documentos, não 300 mil. Os pontos são clusters gaussianos ao redor de 40 municípios
+brasileiros reais, ponderados por população — coordenadas uniformemente aleatórias dentro do
+bounding box do país parecem obviamente falsas num projetor.
 
-**Dataset v5 — the planted cases.** Forty clients carry a planted
-impossible-travel pair, listed in `backend/data/fraud_seeds.json` so the screen
-can label each result `plantado` or `emergente`. Each pair derives its interval
-from a **target speed** (uniform 1,100–9,000 km/h) applied to the real distance
-between the two cities — never the other way round. Sampling minutes directly
-produced 16,000–42,000 km/h, twenty times any real cloned-card pattern, and a
-fixed 5-minute gap made all forty rows identical on screen. Position in the
-client's sequence and destination are randomised too, inside the same fixed RNG
-seed, so the dataset stays reproducible.
+**Dataset v5 — os casos plantados.** Quarenta clientes carregam um par plantado de
+viagem impossível, listados em `backend/data/fraud_seeds.json` para que a tela
+possa rotular cada resultado como `plantado` ou `emergente`. Cada par deriva seu intervalo
+de uma **velocidade alvo** (uniforme entre 1.100 e 9.000 km/h) aplicada à distância real
+entre as duas cidades — nunca o contrário. Sortear minutos diretamente
+produzia 16.000–42.000 km/h, vinte vezes qualquer padrão real de cartão clonado, e um
+intervalo fixo de 5 minutos deixava todas as quarenta linhas idênticas na tela. A posição na
+sequência do cliente e o destino também são aleatorizados, dentro da mesma semente fixa de RNG,
+de modo que o dataset segue reprodutível.
 
-Location is never presented as a PIX field. Every point in this dataset is a
-card-present purchase, and its coordinate belongs to the acquirer's terminal —
-registered data, not the customer's phone. That distinction is the whole
-argument: a terminal's position is not controlled by whoever is paying, though
-it can still be stale or wrong in the registry. Provenance travels with the
-point (terminal id, channel, source, quality) so the signal never looks like a
-fact without an origin.
+A localização nunca é apresentada como um campo do PIX. Todo ponto deste dataset é uma
+compra de cartão presencial, e sua coordenada pertence ao terminal do adquirente —
+dado cadastral, não o celular do cliente. Essa distinção é o argumento
+inteiro: a posição de um terminal não é controlada por quem está pagando, ainda que
+possa estar desatualizada ou errada no cadastro. A procedência viaja com o
+ponto (id do terminal, canal, origem, qualidade), de modo que o sinal nunca pareça um
+fato sem origem.
 
-Forty clients get a deliberately impossible pair: two transactions roughly five
-minutes and 700+ km apart. Their IDs are written to
-`backend/data/fraud_seeds.json` so the impossible-travel panel has a guaranteed
-result on stage.
+Quarenta clientes recebem um par deliberadamente impossível: duas transações a cerca de cinco
+minutos e mais de 700 km de distância. Os IDs deles são gravados em
+`backend/data/fraud_seeds.json` para que o painel de viagem impossível tenha um resultado
+garantido no palco.
 
-## The signal in event time
+## O sinal em tempo de evento
 
-The panel that opens the module does not scan history at all. It reads
-`geo.sinais_ao_vivo`, which the `geoSinais30s` stream processor fills while
-module 07 is running: it groups the card channel by cardholder in a 30-second
-hopping window and runs haversine in MQL right there, inside the window.
+O painel que abre o módulo não varre histórico algum. Ele lê
+`geo.sinais_ao_vivo`, que o stream processor `geoSinais30s` preenche enquanto
+o módulo 07 roda: ele agrupa o canal de cartão por portador em uma janela hopping de
+30 segundos e roda haversine em MQL ali mesmo, dentro da janela.
 
-![Impossible travel detected in event time](screenshots/08b-geo-aovivo.png)
+![Viagem impossível detectada em tempo de evento](screenshots/08b-geo-aovivo.png)
 
-Two counters, deliberately kept apart. The generator injects a pair every six
-seconds so the stage always has something to show — those are the *planted*
-ones. Anything else came out of ordinary traffic and was found by the pipeline,
-not arranged for it. Presenting one total would turn the guarantee into the
-evidence, which it is not.
+Dois contadores, deliberadamente separados. O gerador injeta um par a cada seis
+segundos para que o palco sempre tenha algo a mostrar — esses são os *plantados*.
+Qualquer outro veio do tráfego comum e foi encontrado pelo pipeline,
+não arranjado para ele. Apresentar um total único transformaria a garantia na
+evidência, o que ela não é.
 
-A speed threshold on its own is a false-positive machine: two purchases 20 km
-apart captured seconds apart read as 1,343 km/h. The signal therefore needs
-three conditions — km/h above the limit, at least 200 km of distance, and at
-least a minute between the two captures. Below those, "speed" is simultaneous
-capture, not travel.
+Um limiar de velocidade sozinho é uma máquina de falsos positivos: duas compras a 20 km
+de distância capturadas com segundos de diferença dão 1.343 km/h. O sinal, portanto, exige
+três condições — km/h acima do limite, ao menos 200 km de distância e ao
+menos um minuto entre as duas capturas. Abaixo disso, "velocidade" é captura
+simultânea, não deslocamento.
 
-Note the two timestamps in the card channel: `ts` is when the event entered the
-stream (also the TTL field), while `compradaEm` is when the purchase happened at
-the terminal, which can be minutes earlier because acquirer capture lags. The
-speed is computed from `compradaEm`. Putting that back-dated instant into `ts`
-made the TTL delete the older half of a pair before reconciliation ran, and the
-source then counted fewer than the consumers — expiry that looks exactly like
-loss.
-The result is explicitly a retrospective risk signal, not a fraud decision or
-an inline payment-blocking control. Production still needs provenance validation,
-anti-spoofing, multiple-device handling, LGPD controls and policy calibration.
+Repare nos dois timestamps do canal de cartão: `ts` é quando o evento entrou no
+fluxo (e também o campo do TTL), enquanto `compradaEm` é quando a compra aconteceu no
+terminal, o que pode ser minutos antes, porque a captura do adquirente atrasa. A
+velocidade é calculada a partir de `compradaEm`. Colocar esse instante retrodatado no `ts`
+fazia o TTL apagar a metade mais antiga de um par antes de a reconciliação rodar, e a
+origem então contava menos que os consumidores — expiração com cara exata de
+perda.
+O resultado é explicitamente um sinal de risco retrospectivo, não uma decisão de fraude nem
+um controle inline de bloqueio de pagamento. Produção ainda exige validação de procedência,
+antispoofing, tratamento de múltiplos dispositivos, controles de LGPD e calibração de política.
 
-Indexes created by the seed:
+Índices criados pelo seed:
 
-| Index | Used by |
+| Índice | Usado por |
 |---|---|
-| `cliente_status_local_idx` — `{clienteId: 1, status: 1, local: "2dsphere"}` | Demo A, the compound plan |
-| `local_2dsphere_idx` — `{local: "2dsphere"}` | Demo A, the geo-only plan it is compared against |
-| `cliente_ts_idx` — `{clienteId: 1, ts: 1}` | Demo B, `$setWindowFields` partition + sort |
-| `categoria_local_idx` — `{"estabelecimento.categoria": 1, local: "2dsphere"}` | category-scoped geo queries |
-| `uf_ts_idx` — `{uf: 1, ts: -1}` | regional slicing |
-| `e2e_unq_idx` — unique `{endToEndId: 1}` | seed idempotency |
+| `cliente_status_local_idx` — `{clienteId: 1, status: 1, local: "2dsphere"}` | Demo A, o plano composto |
+| `local_2dsphere_idx` — `{local: "2dsphere"}` | Demo A, o plano só-geo contra o qual ele é comparado |
+| `cliente_ts_idx` — `{clienteId: 1, ts: 1}` | Demo B, partição + ordenação do `$setWindowFields` |
+| `categoria_local_idx` — `{"estabelecimento.categoria": 1, local: "2dsphere"}` | consultas geográficas por categoria |
+| `uf_ts_idx` — `{uf: 1, ts: -1}` | recorte regional |
+| `e2e_unq_idx` — único `{endToEndId: 1}` | idempotência do seed |
 
-## The Atlas Search index
+## O índice do Atlas Search
 
-Demo C needs one Atlas Search index. Create it with:
+A demo C precisa de um índice do Atlas Search. Crie com:
 
 ```bash
 ./scripts/create_search_index_geo.sh
 ```
 
-Until it reports `READY`, the search panel renders a "não configurado" notice
-rather than inventing results. The definition it applies:
+Até ele reportar `READY`, o painel de busca mostra um aviso de "não configurado"
+em vez de inventar resultados. A definição que ele aplica:
 
 ```json
 {
@@ -123,16 +123,15 @@ rather than inventing results. The definition it applies:
 }
 ```
 
-`categoria` and `uf` are indexed twice on purpose: `token` serves the exact
-filter, `stringFacet` serves the `$searchMeta` facet.
+`categoria` e `uf` são indexados duas vezes de propósito: `token` serve ao filtro
+exato, `stringFacet` serve à faceta do `$searchMeta`.
 
-## What the module does not claim
+## O que o módulo não alega
 
-The page says this out loud, and so does this document: MongoDB answers
-geospatial *predicates* — is this inside, does it cross, what is nearby. It has
-no geometry algebra (no buffer, union, intersection or area), only WGS84 with
-no reprojection, and no raster, topology or routing. `$geoNear` must be the
-first pipeline stage, and `$vectorSearch`'s `filter` does not accept geospatial
-operators at all. Workloads that require geometry construction, topology,
-routing or heavy GIS analysis need a dedicated geospatial system.
-
+A página diz isto em voz alta, e este documento também: o MongoDB responde
+*predicados* geoespaciais — está dentro, cruza, o que há por perto. Ele não tem
+álgebra de geometria (sem buffer, união, interseção ou área), só WGS84 sem
+reprojeção, e nada de raster, topologia ou roteamento. O `$geoNear` precisa ser o
+primeiro estágio do pipeline, e o `filter` do `$vectorSearch` não aceita operadores
+geoespaciais de forma alguma. Cargas que exigem construção de geometria, topologia,
+roteamento ou análise GIS pesada precisam de um sistema geoespacial dedicado.

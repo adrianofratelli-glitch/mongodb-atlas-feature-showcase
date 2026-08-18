@@ -1,121 +1,123 @@
-# MongoDB Atlas Feature Showcase
+# Vitrine de capacidades do MongoDB Atlas
 
-Eight Atlas capabilities, one page each, running against a real cluster. Build an index and watch reads keep flowing. Break a change stream and watch it resume from its token. Roll back a transaction and see the documents go back.
+Oito capacidades do Atlas, uma página para cada, rodando contra um cluster real. Construa um índice e veja as leituras continuarem fluindo. Quebre um change stream e veja-o retomar pelo token. Faça rollback de uma transação e veja os documentos voltarem.
 
-Nothing is mocked. If a piece isn't configured, the UI says so instead of inventing a number.
+Nada é mockado. Se alguma peça não está configurada, a UI diz isso em vez de inventar um número.
 
-FastAPI + React 18. UI in pt-BR. No LLM.
+FastAPI + React 18. UI em pt-BR. Sem LLM.
 
-## The eight modules
+## Os oito módulos
 
-| Module | What Atlas does |
+| Módulo | O que o Atlas faz |
 |---|---|
-| **01** Online Reindexing | Rolling index build, no downtime. `live_monitor.py` prints read/write latency while it happens. |
-| **02** Hot / Cold Tiering | Online Archive moves aged docs to cheap storage, still queryable in one namespace. |
+| **01** Reindexação online | Construção de índice em rolling, sem downtime. O `live_monitor.py` imprime a latência de leitura/escrita enquanto acontece. |
+| **02** Tiering quente/frio | O Online Archive move documentos antigos para armazenamento barato, ainda consultáveis em um único namespace. |
 | **03** Aggregation Pipeline | `$lookup`, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto`. |
-| **04** Schema Validation | JSON Schema enforced by the database, not the app. |
-| **05** Change Streams | Ordered feed of inserts/updates/deletes with pre/post-images. |
-| **06** ACID Transactions | Multi-document transactions stepped through on screen, rollback included. |
-| **07** Streaming | Change Streams, Kafka Connector and Atlas Stream Processing on the same writes. |
-| **08** Geo risk | Impossible travel in event time + `$search` with text, geo filter and facets. |
+| **04** Validação de schema | JSON Schema aplicado pelo banco, não pela aplicação. |
+| **05** Change Streams | Feed ordenado de inserts/updates/deletes com pre/post-images. |
+| **06** Transações ACID | Transações multi-documento percorridas passo a passo na tela, rollback incluído. |
+| **07** Streaming | Change Streams, Kafka Connector e Atlas Stream Processing sobre as mesmas escritas. |
+| **08** Risco geográfico | Viagem impossível em tempo de evento + `$search` com texto, filtro geográfico e facetas. |
 
-Every module is deep-linkable: `/#agg`, `/#streams`, `/#tx`, …
+Todo módulo tem deep link: `/#agg`, `/#streams`, `/#tx`, …
 
-**Module 01 — index builds while reads keep flowing:**
+**Módulo 01 — o índice é construído enquanto as leituras seguem fluindo:**
 
-![Online Reindexing module during a rolling index build](docs/screenshots/01-reindex.png)
+![Módulo de reindexação online durante uma construção de índice em rolling](docs/screenshots/01-reindex.png)
 
-## Quick start
+## Início rápido
 
 ```bash
 cd backend && python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # MONGO_URI, optionally Atlas API keys
-python seed_data.py           # 100k products + 20k reviews
+cp .env.example .env          # MONGO_URI, opcionalmente as chaves da Atlas API
+python seed_data.py           # 100 mil produtos + 20 mil avaliações
 uvicorn main:app --reload --port 8002
 
 cd ../frontend && npm install && npm run dev   # http://localhost:5174
 ```
 
-`curl http://localhost:8002/preflight` before presenting — checks URI, cluster, collections, Atlas keys and the mutation guard.
+Rode `curl http://localhost:8002/preflight` antes de apresentar — ele checa URI, cluster, coleções, chaves do Atlas e a guarda de mutação.
 
-Once configured, `bin/overview` replaces all of it:
+Uma vez configurado, o `bin/overview` substitui tudo isso:
 
 ```bash
-./scripts/prepare-demo.sh   # ahead of time: Geo dataset + Search index
+./scripts/prepare-demo.sh   # com antecedência: dataset Geo + índice de Search
 ./bin/overview              # preflight, backend, frontend, Kafka, ASP
-./bin/overview --replay     # recorded fallback, nothing written to the cluster
-./bin/overview down         # stops everything; cluster untouched
+./bin/overview --replay     # fallback gravado, nada escrito no cluster
+./bin/overview down         # para tudo; o cluster fica intocado
 ```
 
-**Run `overview down` when you finish** — a stream processor bills per second.
+**Rode `overview down` ao terminar** — um stream processor é cobrado por segundo.
 
-Detail: [Streaming setup](docs/setup-streaming.md) · [Geo setup](docs/setup-geo.md) · [reference](docs/reference.md).
+Detalhes: [setup de Streaming](docs/setup-streaming.md) · [setup de Geo](docs/setup-geo.md) · [referência](docs/reference.md).
 
-## Module 07 — three consumers, one write
+## Módulo 07 — três consumidores, uma escrita
 
-Change Streams in the app, the Kafka Connector publishing to a real broker, and Atlas Stream Processing aggregating 5s windows — all on the same writes. The stream has two channels: `PIX` (no coordinate, because a PIX transfer has none) and `CARTAO_PRESENCIAL` (acquirer-terminal coordinate, which is what makes module 08 defensible).
+Change Streams na aplicação, o Kafka Connector publicando em um broker real e o Atlas Stream Processing agregando janelas de 5s — tudo sobre as mesmas escritas. O fluxo tem dois canais: `PIX` (sem coordenada, porque uma transferência PIX não tem) e `CARTAO_PRESENCIAL` (coordenada do terminal do adquirente, que é o que torna o módulo 08 defensável).
 
-![Streaming module: three consumers counting the same live run](docs/screenshots/07-streaming.png)
+![Módulo de streaming: três consumidores contando a mesma execução ao vivo](docs/screenshots/07-streaming.png)
 
-**Break it on purpose.** Four buttons sit next to the generator: *drop the connector* (stops it mid-flow, resumes from its stored offset), *inject an invalid event* (a string `valor`, diverted to the DLQ by the processor's `$validate`), *publish an incompatible schema version* (the required `valor` renamed to `amount` — the change a Schema Registry would refuse) and *force a primary failover* (the Atlas test failover, on the cluster, under load).
+**Quebre de propósito.** Quatro botões ficam ao lado do gerador: *derrubar o connector* (para no meio do fluxo e retoma pelo offset armazenado), *injetar um evento inválido* (um `valor` em string, desviado para a DLQ pelo `$validate` do processor), *publicar uma versão de schema incompatível* (o campo obrigatório `valor` renomeado para `amount` — a mudança que um Schema Registry recusaria) e *forçar um failover do primário* (o test failover do Atlas, no cluster, sob carga).
 
-Then watch reconciliation close anyway — and it checks three things, not one: **count** (nothing missing), **value** summed in integer cents (nothing transformed in transit) and an XOR **digest** of the `endToEndId` set (the paths saw the same documents, not merely the same quantity). Measured through a real election: 332,568 documents, R$ 104,486,759.65 identical on all three paths, 0 writes rejected after driver retry, 0 duplicates.
+Depois veja a reconciliação fechar mesmo assim — e ela confere três coisas, não uma: **contagem** (nada faltando), **valor** somado em centavos inteiros (nada transformado no caminho) e um **digest** XOR do conjunto de `endToEndId` (os caminhos viram os mesmos documentos, não apenas a mesma quantidade). Medido através de uma eleição real: 332.568 documentos, R$ 104.486.759,65 idênticos nos três caminhos, 0 escritas rejeitadas após retry do driver, 0 duplicatas.
 
-![Reconciliation closing after a connector outage and a poisoned event](docs/screenshots/07e-reconciliacao.png)
+![Reconciliação fechando depois de uma queda do connector e de um evento envenenado](docs/screenshots/07e-reconciliacao.png)
 
-Delivery is at-least-once, stated above the numbers, not in a footnote: after a resume the same event can arrive twice, and the unique index on `endToEndId` is what makes that safe. Ordering holds inside a partition, not across them.
+A entrega é at-least-once, dito acima dos números e não em nota de rodapé: depois de um resume o mesmo evento pode chegar duas vezes, e é o índice único em `endToEndId` que torna isso seguro. A ordenação vale dentro de uma partição, não entre partições.
 
-**What did it cost?** A throughput number alone invites the wrong reading — *so that's all Atlas does?* — because it never says whose ceiling was hit. The page reads the primary's CPU from the Atlas Admin API, cut to the run's own window, and puts it next to the TPS that produced it: **~1,600 TPS sustained over two minutes on an M20, at 29–53% primary CPU across runs** (the panel always shows the run in front of you, never a stored number). Two traps live here, and both were found by measuring rather than assuming. Atlas publishes process metrics one to two minutes late, so a panel queried right after a 30s run describes the cluster *before* the load — it now says `metricas_pendentes` instead of concluding. And a run shorter than the one-minute publish interval is averaged with the idle remainder of that minute: the same workload read 43% when it landed inside a bucket and 15% when it straddled two, so short runs are labelled a floor.
+**Quanto custou?** Um número de vazão sozinho convida à leitura errada — *então é só isso que o Atlas faz?* — porque nunca diz de quem foi o teto atingido. A página lê a CPU do primário pela Atlas Admin API, recortada à janela da própria execução, e a coloca ao lado do TPS que a produziu: **~1.600 TPS sustentados por dois minutos em um M20, com 29–53% de CPU do primário entre execuções** (o painel sempre mostra a execução à sua frente, nunca um número guardado). Duas armadilhas moram aqui, e as duas foram achadas medindo, não supondo. O Atlas publica métricas de processo com um a dois minutos de atraso, então um painel consultado logo depois de uma execução de 30s descreve o cluster *antes* da carga — agora ele diz `metricas_pendentes` em vez de concluir. E uma execução menor que o intervalo de publicação de um minuto é promediada com o restante ocioso daquele minuto: a mesma carga leu 43% quando caiu dentro de um bucket e 15% quando ficou entre dois, então execuções curtas são rotuladas como piso.
 
-The last panel answers the question that follows *does it work?* — **what leaves the design**. It compares the components each path requires, without inventing a saving: the Kafka row stays right whenever the event must reach systems outside Atlas, and that is why it is in the demo, working.
+O último painel responde à pergunta que vem depois de *funciona?* — **o que sai do desenho**. Ele compara os componentes que cada caminho exige, sem inventar economia: a linha do Kafka continua certa sempre que o evento precisa chegar a sistemas fora do Atlas, e é por isso que ele está na demo, funcionando.
 
-## Module 08 — the signal, while it happens
+## Módulo 08 — o sinal, enquanto acontece
 
-A second processor reads the same change stream, groups the card channel by cardholder in a 30s hopping window and runs haversine in MQL. Impossible travel surfaces in event time, not from a scan someone remembers to run.
+Um segundo processor lê o mesmo change stream, agrupa o canal de cartão por portador em uma janela hopping de 30s e roda haversine em MQL. A viagem impossível aparece em tempo de evento, não em um scan que alguém lembra de rodar.
 
-![Impossible travel detected in event time, plotted on the inline SVG map](docs/screenshots/08-geo.png)
+![Viagem impossível detectada em tempo de evento, plotada no mapa SVG embutido](docs/screenshots/08-geo.png)
 
-Planted pairs and emergent ones are counted separately — the guarantee must not become the evidence. The map is inline SVG with a hand-written projection: no tiles, no runtime request, works with the venue's network down.
+Pares plantados e pares emergentes são contados separadamente — a garantia não pode virar a evidência. O mapa é SVG inline com uma projeção escrita à mão: sem tiles, sem requisição em runtime, funciona com a rede do local caída.
 
-The retrospective panel answers the two questions an operations team asks before anything else: **how many alerts does this put in the queue** (pairs evaluated, flagged, rate, alerts per day) and **what does the query cost** — measured in both scopes, full scan against a per-client cut. Investigation starts at the contested purchase, not at a place name: pick a flagged case and one `$search` returns what exists around *that terminal*, with fuzzy name matching kept as a refinement for the cloned-merchant case.
+O painel retrospectivo responde às duas perguntas que um time de operações faz antes de qualquer outra: **quantos alertas isto coloca na fila** (pares avaliados, sinalizados, taxa, alertas por dia) e **quanto custa a query** — medida nos dois escopos, varredura completa contra um recorte por cliente. A investigação começa na compra contestada, não em um nome de lugar: escolha um caso sinalizado e um `$search` retorna o que existe em volta *daquele terminal*, com casamento fuzzy de nome mantido como refinamento para o caso de estabelecimento clonado.
 
-Output is a **risk signal** for policy, never an automatic decision — and explicitly not a fraud engine, which an issuer already has.
+A saída é um **sinal de risco** para política, nunca uma decisão automática — e explicitamente não é um motor antifraude, que um emissor já tem.
 
-## More screenshots
+## Mais screenshots
 
-| Hot / Cold Tiering | Aggregation Pipeline |
+| Tiering quente/frio | Aggregation Pipeline |
 |---|---|
-| ![Hot/Cold Tiering: archived documents still queryable](docs/screenshots/02-hotcold.png) | ![Aggregation pipeline stages and results](docs/screenshots/03-aggregations.png) |
+| ![Tiering quente/frio: documentos arquivados ainda consultáveis](docs/screenshots/02-hotcold.png) | ![Estágios e resultados do aggregation pipeline](docs/screenshots/03-aggregations.png) |
 
-| Schema Validation | Change Streams |
+| Validação de schema | Change Streams |
 |---|---|
-| ![Schema validation rejecting a bad document](docs/screenshots/04-schema.png) | ![Change stream feed with pre/post images](docs/screenshots/05-changestreams.png) |
+| ![Validação de schema rejeitando um documento inválido](docs/screenshots/04-schema.png) | ![Feed do change stream com pre/post images](docs/screenshots/05-changestreams.png) |
 
-| ACID Transactions | Module 07, three columns |
+| Transações ACID | Módulo 07, três colunas |
 |---|---|
-| ![Transaction stepped through with rollback](docs/screenshots/06-transactions.png) | ![Change Streams, Kafka and ASP side by side](docs/screenshots/07b-streaming-colunas.png) |
+| ![Transação percorrida passo a passo com rollback](docs/screenshots/06-transactions.png) | ![Change Streams, Kafka e ASP lado a lado](docs/screenshots/07b-streaming-colunas.png) |
 
-## Security
+## Segurança
 
-Some of these demos genuinely destroy things — they drop indexes, `collMod` validation rules, create and delete Online Archives. So the blast radius stays local: the launcher binds to `127.0.0.1`, browser mutations are accepted only from configured origins, remote mutations need `DEMO_ADMIN_TOKEN`, bodies are capped, errors return a request id instead of a trace.
+Algumas dessas demos destroem coisas de verdade — elas removem índices, fazem `collMod` em regras de validação, criam e apagam Online Archives. Por isso o raio de impacto permanece local: o lançador escuta em `127.0.0.1`, mutações do navegador só são aceitas de origens configuradas, mutações remotas exigem `DEMO_ADMIN_TOKEN`, corpos são limitados, e erros retornam um id de requisição em vez de um trace.
 
-**Never point this at anything but a disposable demo cluster.**
+A aplicação também fecha o cliente de streaming pelo lifespan do FastAPI e devolve cabeçalhos de endurecimento do navegador. O `/api/health` continua público; autorização de mutação não torna o laboratório Kafka embutido pronto para produção.
 
-On a shared network set a long random `DEMO_ADMIN_TOKEN` in `backend/.env` and mirror it as `VITE_DEMO_API_TOKEN`. The bundled Kafka stack is a single-node lab — no TLS, SASL, ACLs or Schema Registry.
+**Nunca aponte isto para nada além de um cluster de demonstração descartável.**
+
+Em rede compartilhada, defina um `DEMO_ADMIN_TOKEN` longo e aleatório em `backend/.env` e espelhe-o como `VITE_DEMO_API_TOKEN`. A stack Kafka embutida é um laboratório de nó único — sem TLS, SASL, ACLs ou Schema Registry.
 
 ## Stack
 
-Python 3.11 · FastAPI · PyMongo · React 18 · Vite · MongoDB Atlas. Module 07 optionally needs a local Kafka broker and an ASP instance.
+Python 3.11 · FastAPI · PyMongo · React 18 · Vite · MongoDB Atlas. O módulo 07 opcionalmente precisa de um broker Kafka local e de uma instância de ASP.
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 157 unit tests, Mongo stubbed, no cluster needed
+pytest             # 157 testes unitários, Mongo stubado, sem necessidade de cluster
 ruff check backend
 ```
 
 [`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/SESSION_HANDOFF.md`](docs/SESSION_HANDOFF.md)
 
-## License
+## Licença
 
 MIT
