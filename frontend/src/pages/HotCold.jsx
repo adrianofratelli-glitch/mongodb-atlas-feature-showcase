@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { useApi } from '../hooks/useApi'
+import Limites from '../components/Limites'
 
 export default function HotCold() {
   const { call, loading } = useApi()
@@ -223,6 +224,18 @@ export default function HotCold() {
           }
         </div>
       </div>
+      <Limites
+        titulo="O que o Online Archive custa"
+        itens={[
+          <>Dado arquivado é <strong>somente leitura</strong>. Não há update nem delete sobre o que já foi arquivado; corrigir um documento antigo exige trazê-lo de volta.</>,
+          <>A consulta ao namespace unificado passa pelo <strong>Data Federation sobre object storage</strong>, não pelo cluster: a latência é de segundos, não de milissegundos. É bom para investigação e relatório, não para caminho transacional.</>,
+          <>Os <strong>campos de partição são escolhidos na criação</strong> e governam tudo depois. Consulta que não filtra por eles varre o arquivo inteiro — e você paga por dado varrido.</>,
+          <>O arquivamento é um <strong>job agendado</strong>, não contínuo: existe uma janela em que o documento já venceu a regra e ainda está quente.</>,
+          <>O namespace unificado exige a <strong>connection string federada</strong>, diferente da do cluster. Nem todo driver, ferramenta de BI ou operador se comporta igual através dela.</>,
+          <>Exige M10+. Não existe em tier compartilhado.</>,
+        ]}
+      />
+
     </div>
   )
 }

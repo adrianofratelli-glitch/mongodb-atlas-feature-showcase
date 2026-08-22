@@ -97,6 +97,7 @@ body::after {
 .banner-info    { background: rgba(6,182,212,.08);  border: 1px solid rgba(6,182,212,.25);  color: #9fdbea; }
 .banner-success { background: rgba(0,237,100,.08);  border: 1px solid rgba(0,237,100,.25);  color: #9ff5c8; }
 .banner-warning { background: rgba(249,115,22,.08); border: 1px solid rgba(249,115,22,.3);  color: #fbc28a; }
+.banner-error   { background: rgba(255,105,96,.08); border: 1px solid rgba(255,105,96,.35); color: #ffb3ae; }
 
 /* ── Cards ───────────────────────────────────────────────────────────────── */
 .card {
@@ -644,7 +645,12 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   border: 1px solid var(--border-subtle); }
 .geo-metrica.vencedora { border-color: rgba(0,237,100,.35); background: rgba(0,237,100,.06); }
 
-.geo-mapa { position: relative; width: 100%; border-radius: 10px; overflow: hidden;
+/* A caixa segue a proporção real da projeção (37,90° de longitude corrigida por
+   cos(-15°) contra 40,1° de latitude). Sem isso a caixa fica larga, o mapa é
+   centralizado com `meet` e sobram duas faixas mortas nas laterais. `altura`
+   vira piso, não altura fixa. */
+.geo-mapa { position: relative; width: 100%; aspect-ratio: 97.56 / 100;
+  border-radius: 10px; overflow: hidden;
   background: radial-gradient(120% 90% at 50% 0%, rgba(0,237,100,.05), rgba(255,255,255,.015) 60%);
   border: 1px solid var(--border-subtle); }
 .geo-mapa-selo { position: absolute; right: 7px; top: 6px; font-family: var(--font-mono);

@@ -3,6 +3,7 @@ import { Light as SyntaxHighlighter } from 'react-syntax-highlighter'
 import js from 'react-syntax-highlighter/dist/esm/languages/hljs/javascript'
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs'
 import { useApi } from '../hooks/useApi'
+import Limites from '../components/Limites'
 
 SyntaxHighlighter.registerLanguage('javascript', js)
 
@@ -310,6 +311,18 @@ export default function Reindexacao() {
           </button>
         )}
       </div>
+      <Limites
+        titulo="O que a construção online não resolve"
+        itens={[
+          <>A construção <strong>não é grátis</strong>: ela concorre por CPU, IO e cache com a carga que está rodando. "Sem downtime" quer dizer que a coleção continua legível e gravável, não que o cluster não sente.</>,
+          <>A build híbrida segura um <strong>lock exclusivo curto no início e no fim</strong>. É de milissegundos a segundos, não o tempo da construção — mas não é zero, e sob carga alta ele aparece na cauda da latência.</>,
+          <>Cada build usa memória própria (<code>maxIndexBuildMemoryUsageMegabytes</code>, 200 MB por padrão) e transborda para disco acima disso. Várias builds simultâneas somam.</>,
+          <>Índice único falha <strong>no commit</strong>, no fim. Uma coleção com duplicata joga fora horas de construção e não avisa antes.</>,
+          <>O rolling build do Atlas constrói <strong>um nó por vez e tira esse nó da rotação</strong> enquanto trabalha: durante a janela você roda com menos capacidade e menos redundância. Exige M10+.</>,
+          <>Não há rollback parcial: um índice interrompido é removido e recomeçado do zero.</>,
+        ]}
+      />
+
     </div>
   )
 }

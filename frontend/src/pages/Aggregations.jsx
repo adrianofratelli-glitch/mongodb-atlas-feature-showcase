@@ -3,6 +3,7 @@ import { Light as SyntaxHighlighter } from 'react-syntax-highlighter'
 import js from 'react-syntax-highlighter/dist/esm/languages/hljs/javascript'
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs'
 import { useApi } from '../hooks/useApi'
+import Limites from '../components/Limites'
 
 SyntaxHighlighter.registerLanguage('javascript', js)
 
@@ -146,38 +147,32 @@ db.produtos.aggregate([
 const DESCRIPTIONS = {
   lookup: {
     title: '$lookup com sub-pipeline',
-    what: 'Realiza joins entre coleções diretamente no banco. O sub-pipeline embutido projeta apenas os campos necessários do lado joined — sem trazer dados desnecessários para a aplicação.',
-    why: 'O $group varre as avaliações e o $topN guarda só as 3 melhores por produto (memória limitada). O join usa o índice produto_id_1 do lado produtos — e o sub-pipeline traz só os campos usados.',
+    linha: 'Join entre coleções dentro do banco — sem o N+1 na aplicação, sem ETL para juntar depois.',
     index: 'produto_id_1 (produtos) — usado pelo $lookup',
   },
   facet: {
     title: '$facet — múltiplas agregações em um único round-trip',
-    what: 'Executa diversas pipelines de agregação independentes sobre o mesmo conjunto de dados numa única passada — N visões (categorias, faixas de preço, marcas) chegam juntas em um único comando.',
-    why: 'Um único comando retorna distribuição por categoria, faixas de preço e top marcas — sem N queries e N round-trips. O $match inicial em em_estoque usa índice para reduzir o working set antes de ramificar.',
+    linha: 'Um dashboard inteiro em um comando: N recortes numa passada, sobre o mesmo instante do dado.',
     index: 'em_estoque_1',
   },
   union: {
     title: '$unionWith — unir resultados de múltiplas coleções',
-    what: 'Concatena resultados de pipelines sobre coleções diferentes em um único retorno — como um UNION SQL, mas dentro de uma agregação e suportando schemas distintos.',
-    why: 'Cada lado usa sort + limit sobre um índice (sem $group caro). O resultado unifica reviews recentes de avaliacoes com produtos destaque de produtos em uma única resposta.',
+    linha: 'Coleções com formatos diferentes num feed só, ordenado e paginado pelo banco.',
     index: 'data_-1 (avaliacoes) + total_av_idx (produtos)',
   },
   group: {
     title: '$group + $addFields — métricas e campos derivados',
-    what: '$group agrupa documentos e calcula acumuladores (soma, média, min, max). $addFields injeta campos calculados sobre os grupos — percentuais, razões, labels condicionais.',
-    why: 'O $match inicial em em_estoque usa índice para reduzir o working set antes do $group. Campos derivados como amplitude_preco (max − min) chegam prontos do banco — sem cálculos na aplicação.',
+    linha: 'Métrica calculada sobre o dado corrente — no lugar da tabela de resumo e do job que a mantém.',
     index: 'em_estoque_1',
   },
   window: {
     title: '$setWindowFields — Window Functions',
-    what: 'Calcula rank dentro de partições, somas acumuladas e médias móveis — o equivalente ao OVER (PARTITION BY) do SQL — sem agrupar nem remover linhas do resultado.',
-    why: 'Working set de 100 docs criado com match + sort + limit via índice ANTES das janelas. As janelas rodam sobre um conjunto mínimo, não sobre a coleção inteira.',
+    linha: 'Rank, soma acumulada e média móvel sem sair do banco operacional — o OVER (PARTITION BY) do SQL.',
     index: 'cat_total_av_idx (categoria + total_avaliacoes) → limit 100 docs',
   },
   bucket: {
     title: '$bucketAuto — faixas automáticas de distribuição',
-    what: 'Distribui documentos em N grupos de tamanho aproximadamente igual, calculando automaticamente os limites de cada faixa a partir dos dados reais — sem definir boundaries manualmente.',
-    why: 'Ideal para histogramas onde os limites ideais não são conhecidos. O $match inicial usa índice para reduzir o working set antes da distribuição.',
+    linha: 'Faixas calculadas a partir da distribuição real, não fixadas no código.',
     index: 'em_estoque_1',
   },
 }
@@ -329,7 +324,6 @@ export default function Aggregations() {
   const { call, loading } = useApi()
   const [tab,      setTab]      = useState('lookup')
   const [results,  setResults]  = useState({})
-  const [showCode, setShowCode] = useState({})
 
   const ENDPOINTS = {
     lookup: '/aggregations/lookup',
@@ -375,39 +369,29 @@ export default function Aggregations() {
         <div><span className="agg-step">3</span><strong>Resultado</strong><small>{activeTab.output}</small></div>
       </div>
 
-      {/* Feature card */}
-      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {/* Uma linha, o código executável e o botão. A explicação é narrada na
+          call; a tela carrega o que a narração não carrega — a query e o
+          resultado. O código deixou de ficar atrás de "Ver código": mostrar
+          quão pouco se escreve É o argumento. */}
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div>
-          <h2 style={{ fontSize: 17, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 6 }}>
-            {desc.title}
-          </h2>
-          <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', lineHeight: 1.65, marginBottom: 8 }}>
-            {desc.what}
-          </p>
-          <div className="banner banner-success">
-            <span>💡</span>
-            <div><strong>Por que usar:</strong> {desc.why}</div>
-          </div>
+          <h2 style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>{desc.title}</h2>
+          <p style={{ fontSize: 13.5, color: 'var(--text-secondary)', margin: 0 }}>{desc.linha}</p>
         </div>
+
+        <SyntaxHighlighter language="javascript" style={atomOneDark}
+          customStyle={{ borderRadius: 6, fontSize: 12, margin: 0 }}>
+          {CODE[tab]}
+        </SyntaxHighlighter>
 
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           <button className="btn btn-primary" onClick={run} disabled={loading}>
             {loading ? <><span className="spinner" /> Executando...</> : '▶ Executar'}
           </button>
-          <button className="btn btn-default btn-sm" onClick={() => setShowCode(s => ({ ...s, [tab]: !s[tab] }))}>
-            {showCode[tab] ? '▲ Ocultar código' : '▼ Ver código'}
-          </button>
           <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-secondary)' }}>
             índice: <code>{desc.index}</code>
           </span>
         </div>
-
-        {showCode[tab] && (
-          <SyntaxHighlighter language="javascript" style={atomOneDark}
-            customStyle={{ borderRadius: 6, fontSize: 12, margin: 0 }}>
-            {CODE[tab]}
-          </SyntaxHighlighter>
-        )}
       </div>
 
       {/* Results */}
@@ -426,9 +410,22 @@ export default function Aggregations() {
       {!res && (
         <div className="agg-empty-state">
           <span>▷</span>
-          <div><strong>Resultado ainda não materializado</strong><small>Execute a pipeline para provar o resultado com dados reais do cluster.</small></div>
+          <div><strong>Execute para ver o resultado do cluster</strong></div>
         </div>
       )}
+      <Limites
+        titulo="Onde perde para SQL maduro"
+        itens={[
+          <><strong>100 MB por stage.</strong> Acima disso é preciso <code>allowDiskUse</code>, e aí a stage passa a fazer IO. O limite é por stage, então um <code>$group</code> de alta cardinalidade estoura antes do que a intuição sugere.</>,
+          <><strong>16 MB por documento</strong>, na entrada, no meio e na saída do pipeline. Um <code>$group</code> que acumula array cresce até bater nisso.</>,
+          <><code>$lookup</code> <strong>não é um join com otimizador</strong>: não há escolha entre hash join e merge join. Sem índice adequado na coleção estrangeira, ele degrada muito além do que o mesmo join degradaria num RDBMS.</>,
+          <>O planner é <strong>heurístico e baseado em plan cache</strong>, sem as estatísticas de cardinalidade que um otimizador de custo maduro usa. Menos previsível em consulta ad-hoc complexa.</>,
+          <>Sem CTE recursiva. Hierarquia é <code>$graphLookup</code>, com o mesmo teto de memória e sem o poder de expressão de uma recursiva.</>,
+          <>Em cluster sharded, o merge das partições acontece num nó só — pipeline pesado concentra trabalho no shard primário ou no mongos.</>,
+          <><strong>Não é SQL.</strong> O conhecimento, as queries e as ferramentas de BI do time não portam direto. Atlas SQL e o BI Connector existem, mas são outra superfície, com limites próprios — e não são o que esta página demonstra.</>,
+        ]}
+      />
+
     </div>
   )
 }

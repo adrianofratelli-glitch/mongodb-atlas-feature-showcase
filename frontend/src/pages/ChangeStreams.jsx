@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useApi } from '../hooks/useApi'
+import Limites from '../components/Limites'
 
 const OP_STYLE = {
   insert: { bg: 'rgba(0,237,100,.08)', border: 'rgba(0,237,100,.3)', text: '#00ED64', label: 'NOVA TRANSAÇÃO' },
@@ -288,6 +289,19 @@ export default function ChangeStreams() {
           ))}
         </div>
       </div>
+      <Limites
+        titulo="O que Change Streams não substituem"
+        itens={[
+          <><strong>A janela do oplog é o SLA real.</strong> O resume token só funciona enquanto o ponto dele ainda estiver no oplog. Consumidor parado além dessa janela não retoma: exige resync completo.</>,
+          <><strong>At-least-once, não exactly-once.</strong> Depois de um resume o mesmo evento pode chegar de novo — é o índice único na chave de negócio que torna isso seguro, como o módulo 07 demonstra.</>,
+          <>Ordem vale <strong>dentro de uma partição</strong>, nunca entre partições. Escalar por partições é trocar ordem global por vazão, conscientemente.</>,
+          <><strong>Não é um broker.</strong> Sem consumer group, sem replay para além do oplog, sem dead letter, sem fan-out durável. Quando o evento precisa sair do Atlas para outros sistemas, o Kafka Connector continua sendo a resposta certa — e está no módulo 07, funcionando.</>,
+          <>Pre/post images são <strong>opt-in por coleção</strong>, ocupam armazenamento e têm retenção própria. Não vêm de graça e não são retroativas.</>,
+          <>Cada stream aberto é um cursor consumindo conexão e recurso do cluster. Centenas de consumidores é decisão de dimensionamento, não detalhe.</>,
+          <>Evento acima de 16 MB falha.</>,
+        ]}
+      />
+
     </div>
   )
 }

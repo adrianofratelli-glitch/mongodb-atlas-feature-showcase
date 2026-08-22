@@ -3,6 +3,7 @@ import { Light as SyntaxHighlighter } from 'react-syntax-highlighter'
 import js from 'react-syntax-highlighter/dist/esm/languages/hljs/javascript'
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs'
 import { useApi } from '../hooks/useApi'
+import Limites from '../components/Limites'
 
 SyntaxHighlighter.registerLanguage('javascript', js)
 
@@ -118,7 +119,18 @@ export default function SchemaValidation() {
       <div className="banner banner-info">
         <span>ℹ️</span>
         <div>
-          MongoDB Atlas suporta <strong>JSON Schema validation completo</strong> — enum, regex, ranges, campos required — aplicado direto na camada do banco, sem mudar o código da aplicação. Siga os passos abaixo para ver ao vivo.
+          <strong>JSON Schema aplicado pelo banco</strong> — enum, regex, ranges, required. Vale para todo escritor, não só para a aplicação.
+        </div>
+      </div>
+
+      {/* Uma linha, porque o apresentador narra. O argumento é *quem escreve*:
+          validar na aplicação vale enquanto ela for a única a gravar, e em base
+          com alguns anos ela nunca é. */}
+      <div className="banner banner-info">
+        <span>🧩</span>
+        <div style={{ fontSize: 13 }}>
+          Validar na aplicação vale enquanto ela for a única a escrever. Job de carga, ETL, script
+          pelo shell e serviço legado não passam por ela — <strong>pelo validador do banco, sim.</strong>
         </div>
       </div>
 
@@ -255,6 +267,19 @@ export default function SchemaValidation() {
           </div>
         </div>
       </details>
+      <Limites
+        titulo="O que a validação de schema não é"
+        itens={[
+          <><strong>Não há chave estrangeira.</strong> O banco não impõe integridade referencial entre coleções. Um <code>pedidoId</code> apontando para nada é um documento válido.</>,
+          <>A validação é <strong>por documento</strong>. Não existe CHECK entre linhas, entre coleções ou agregado ("a soma das parcelas tem de bater com o total").</>,
+          <>Aplicar um validador <strong>não valida o que já está gravado</strong>. Uma coleção pode ficar cheia de documentos que violam o próprio validador dela, e nada acusa até a próxima escrita.</>,
+          <><code>validationLevel: moderate</code> ignora documentos pré-existentes; <code>validationAction: warn</code> só registra em log e <strong>aceita a escrita</strong>. Confira qual está valendo antes de chamar isso de garantia.</>,
+          <>É <strong>opt-in por coleção</strong>. Coleção nova nasce sem validador nenhum.</>,
+          <>Não é transacional entre coleções, e Atlas Triggers rodam depois do fato — não servem para impor invariante no momento da escrita.</>,
+          <>Não há versionamento nem ferramenta de migração de schema embutida: a evolução do validador é processo seu.</>,
+        ]}
+      />
+
     </div>
   )
 }

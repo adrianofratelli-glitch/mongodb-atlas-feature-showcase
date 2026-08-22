@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useCallback, useState, useEffect } from 'react'
 import { useIntervaloVisivel } from './hooks/usePolling'
 
+const Tese = lazy(() => import('./pages/Tese'))
 const Reindexacao = lazy(() => import('./pages/Reindexacao'))
 const HotCold = lazy(() => import('./pages/HotCold'))
 const Aggregations = lazy(() => import('./pages/Aggregations'))
@@ -11,6 +12,9 @@ const Streaming = lazy(() => import('./pages/Streaming'))
 const Geo = lazy(() => import('./pages/Geo'))
 
 const MODULES = [
+  // A tese abre a lista e é o destino padrão. Ver a nota no topo de Tese.jsx:
+  // entrar pela feature 01 faz a demo ser lida como catálogo.
+  { key: 'tese',    num: '00', title: 'A tese',               subtitle: 'o que esta demo prova, e o que ela não prova',   color: '#00ED64', component: Tese },
   { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Hybrid build sem bloqueio prolongado',            color: '#00ED64', component: Reindexacao },
   { key: 'hotcold', num: '02', title: 'Hot / Cold Tiering',   subtitle: 'Online Archive — dados históricos automáticos',  color: '#06b6d4', component: HotCold },
   { key: 'agg',     num: '03', title: 'Aggregation Pipeline', subtitle: '$lookup, $facet, $setWindowFields e mais',       color: '#a855f7', component: Aggregations },
@@ -89,7 +93,7 @@ function fmtCount(n) {
 export default function App() {
   const [active, setActive] = useState(() => {
     const hash = window.location.hash.slice(1)
-    return MODULES.some(m => m.key === hash) ? hash : 'reindex'
+    return MODULES.some(m => m.key === hash) ? hash : 'tese'
   })
   const [stats, setStats] = useState(null)
   const [preflight, setPreflight] = useState(null)
@@ -266,7 +270,9 @@ export default function App() {
           <div style={{ maxWidth: 980, margin: '0 auto' }} key={active} className="fade-in">
             {/* Page header */}
             <div style={{ marginBottom: 26 }}>
-              <div className="kicker" style={{ color: mod.color, marginBottom: 10 }}>Módulo {mod.num}</div>
+              <div className="kicker" style={{ color: mod.color, marginBottom: 10 }}>
+                {mod.key === 'tese' ? 'Abertura' : `Módulo ${mod.num}`}
+              </div>
               <h1 style={{
                 fontSize: 30, fontWeight: 800, color: 'var(--text-primary)',
                 letterSpacing: '-.03em', lineHeight: 1.1,
