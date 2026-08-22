@@ -8,6 +8,11 @@ FastAPI + React 18. UI em pt-BR. Sem LLM.
 
 ## Os oito módulos
 
+A aplicação abre numa página de **tese**, não no módulo 01: nenhuma das oito capacidades é
+exclusiva do MongoDB, e o argumento não é a capacidade — é a convergência de todas elas
+sobre o mesmo dado, no mesmo cluster, na mesma linguagem. A página também diz o que a demo
+*não* prova (não é benchmark competitivo, não estima economia, não substitui o warehouse).
+
 | Módulo | O que o Atlas faz |
 |---|---|
 | **01** Reindexação online | Construção de índice em rolling, sem downtime. O `live_monitor.py` imprime a latência de leitura/escrita enquanto acontece. |
@@ -15,11 +20,13 @@ FastAPI + React 18. UI em pt-BR. Sem LLM.
 | **03** Aggregation Pipeline | `$lookup`, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto`. |
 | **04** Validação de schema | JSON Schema aplicado pelo banco, não pela aplicação. |
 | **05** Change Streams | Feed ordenado de inserts/updates/deletes com pre/post-images. |
-| **06** Transações ACID | Transações multi-documento percorridas passo a passo na tela, rollback incluído. |
+| **06** Transações ACID | Transações multi-documento percorridas passo a passo, rollback incluído — e medidas: latência com `majority`, o custo sobre a mesma escrita num documento só, e o comportamento sob contenção. |
 | **07** Streaming | Change Streams, Kafka Connector e Atlas Stream Processing sobre as mesmas escritas. |
 | **08** Risco geográfico | Viagem impossível em tempo de evento + `$search` com texto, filtro geográfico e facetas. |
 
-Todo módulo tem deep link: `/#agg`, `/#streams`, `/#tx`, …
+Cada módulo declara onde a capacidade dele **não** vai, antes de alguém perguntar.
+
+Todo módulo tem deep link: `/#tese`, `/#agg`, `/#streams`, `/#tx`, …
 
 **Módulo 01 — o índice é construído enquanto as leituras seguem fluindo:**
 
@@ -48,7 +55,8 @@ Uma vez configurado, o `bin/overview` substitui tudo isso:
 ./bin/overview down         # para tudo; o cluster fica intocado
 ```
 
-**Rode `overview down` ao terminar** — um stream processor é cobrado por segundo.
+**Rode `overview down` ao terminar** — um stream processor é cobrado por segundo. Como rede de segurança, o `up` já
+agenda esse `down` para 45 minutos depois; `overview manter` cancela e `overview adiar 30` reagenda.
 
 Detalhes: [setup de Streaming](docs/setup-streaming.md) · [setup de Geo](docs/setup-geo.md) · [referência](docs/reference.md).
 
@@ -76,7 +84,7 @@ Um segundo processor lê o mesmo change stream, agrupa o canal de cartão por po
 
 ![Viagem impossível detectada em tempo de evento, plotada no mapa SVG embutido](docs/screenshots/08-geo.png)
 
-Pares plantados e pares emergentes são contados separadamente — a garantia não pode virar a evidência. O mapa é SVG inline com uma projeção escrita à mão: sem tiles, sem requisição em runtime, funciona com a rede do local caída.
+Pares plantados e pares emergentes são contados separadamente — a garantia não pode virar a evidência. O mapa é SVG inline: malha estadual do IBGE embutida no bundle, projeção equiretangular corrigida por `cos(lat)`, sem tiles e sem requisição em runtime — funciona com a rede do local caída. Definir `VITE_GOOGLE_MAPS_KEY` acrescenta um alternador para o Google Maps; o padrão continua sendo a malha local.
 
 O painel retrospectivo responde às duas perguntas que um time de operações faz antes de qualquer outra: **quantos alertas isto coloca na fila** (pares avaliados, sinalizados, taxa, alertas por dia) e **quanto custa a query** — medida nos dois escopos, varredura completa contra um recorte por cliente. A investigação começa na compra contestada, não em um nome de lugar: escolha um caso sinalizado e um `$search` retorna o que existe em volta *daquele terminal*, com casamento fuzzy de nome mantido como refinamento para o caso de estabelecimento clonado.
 
@@ -94,7 +102,7 @@ A saída é um **sinal de risco** para política, nunca uma decisão automática
 
 | Transações ACID | Módulo 07, três colunas |
 |---|---|
-| ![Transação percorrida passo a passo com rollback](docs/screenshots/06-transactions.png) | ![Change Streams, Kafka e ASP lado a lado](docs/screenshots/07b-streaming-colunas.png) |
+| ![Custo medido da transação multi-documento contra a mesma escrita num documento só](docs/screenshots/06-transactions.png) | ![Change Streams, Kafka e ASP lado a lado](docs/screenshots/07b-streaming-colunas.png) |
 
 ## Segurança
 
@@ -112,7 +120,7 @@ Python 3.11 · FastAPI · PyMongo · React 18 · Vite · MongoDB Atlas. O módul
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 157 testes unitários, Mongo stubado, sem necessidade de cluster
+pytest             # 165 testes unitários, Mongo stubado, sem necessidade de cluster
 ruff check backend
 ```
 

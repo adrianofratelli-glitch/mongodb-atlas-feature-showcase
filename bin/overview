@@ -7,6 +7,14 @@
 #   overview down       # para app/ASP/Kafka; não altera o cluster
 #   overview status     # o que está de pé
 #   overview logs       # acompanha o log do backend
+#   overview manter     # cancela o desligamento automático
+#   overview adiar 30   # reagenda o desligamento para daqui a 30 min
+#
+# DESLIGAMENTO AUTOMÁTICO: por padrão o `up` agenda um `down` para 45 minutos
+# depois — a duração típica da apresentação. Existe porque um processor de ASP
+# esquecido é cobrado por segundo, e esquecer é o modo de falha real, não o
+# improvável. Se a reunião passar disso, `overview adiar 30` reagenda; para
+# desligar o agendamento de vez, OVERVIEW_AUTO_DOWN_MIN=0 ou `overview manter`.
 #
 # Por padrão ASP e Kafka sobem porque a aba de Streaming agora e ao vivo.
 # O processor ASP cobra por segundo: finalize sempre com `overview down`.
@@ -21,8 +29,16 @@ BASE="$(cd "$(dirname "$(readlink "${BASH_SOURCE[0]}" || echo "${BASH_SOURCE[0]}
 [[ -d "$BASE/backend" ]] || BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 BACKEND_LOG="${TMPDIR:-/tmp}/overview-backend.log"
+AUTO_PID="${TMPDIR:-/tmp}/overview-autodown.pid"
+AUTO_PRAZO="${TMPDIR:-/tmp}/overview-autodown.deadline"
+AUTO_LOG="${TMPDIR:-/tmp}/overview-autodown.log"
+AUTO_MIN="${OVERVIEW_AUTO_DOWN_MIN:-45}"
+SELF="$BASE/bin/overview"
 FRONTEND_LOG="${TMPDIR:-/tmp}/overview-frontend.log"
-URL="http://localhost:5174/#streaming"
+# Abre na tese, não no módulo 07. Entrar por uma feature faz a demo ser lida
+# como catálogo, e um time de dados compara catálogo item a item com o que já
+# opera. A página de abertura declara o argumento e os não-objetivos primeiro.
+URL="http://localhost:5174/#tese"
 
 azul()  { printf "\033[36m%s\033[0m\n" "$1"; }
 verde() { printf "\033[32m%s\033[0m\n" "$1"; }
@@ -42,6 +58,61 @@ espera_url() {
     sleep 1
   done
   return 1
+}
+
+# ── Desligamento automático ─────────────────────────────────────────────────
+# O risco que isto cobre não é técnico: é a demo que termina, todo mundo fecha o
+# notebook e o processor de ASP segue cobrando a noite inteira. O agendamento é
+# sempre cancelado no `down` e recriado no `up` — um timer órfão de uma sessão
+# anterior derrubando uma sessão nova seria pior que o problema original.
+
+cancela_autodown() {
+  local pid
+  if [[ -f "$AUTO_PID" ]]; then
+    pid="$(cat "$AUTO_PID" 2>/dev/null || true)"
+    if [[ -n "$pid" ]]; then
+      # Mata o filho `sleep` junto: derrubar só o bash deixaria o sleep
+      # rodando e ninguém para executá-lo depois, mas o processo fica de pé.
+      pkill -P "$pid" 2>/dev/null || true
+      kill "$pid" 2>/dev/null || true
+    fi
+    rm -f "$AUTO_PID"
+  fi
+  rm -f "$AUTO_PRAZO"
+}
+
+agenda_autodown() {
+  local min="${1:-$AUTO_MIN}"
+  cancela_autodown
+  if [[ ! "$min" =~ ^[0-9]+$ ]] || (( min == 0 )); then
+    echo "   desligamento automático: desativado"
+    return 0
+  fi
+  nohup bash -c "sleep $(( min * 60 )); \"$SELF\" down" >>"$AUTO_LOG" 2>&1 &
+  echo $! > "$AUTO_PID"
+  # Sem o disown, cancelar o agendamento imprime "Terminated: 15" no terminal
+  # do apresentador — parece erro no meio da demo, e não é.
+  disown %% 2>/dev/null || true
+  date -v +"${min}"M +%s > "$AUTO_PRAZO" 2>/dev/null || \
+    date -d "+${min} minutes" +%s > "$AUTO_PRAZO" 2>/dev/null || \
+    echo "" > "$AUTO_PRAZO"
+  local hora
+  hora="$(date -v +"${min}"M +%H:%M 2>/dev/null || date -d "+${min} minutes" +%H:%M 2>/dev/null || echo "?")"
+  printf "\033[33m⏱  Desligamento automático às %s (em %s min).\033[0m\n" "$hora" "$min"
+  echo "   cancelar: overview manter   ·   adiar: overview adiar 30"
+}
+
+restante_autodown() {
+  local prazo agora
+  [[ -f "$AUTO_PRAZO" ]] || { echo "auto-down: não agendado"; return 0; }
+  prazo="$(cat "$AUTO_PRAZO" 2>/dev/null || true)"
+  [[ "$prazo" =~ ^[0-9]+$ ]] || { echo "auto-down: agendado (prazo desconhecido)"; return 0; }
+  agora="$(date +%s)"
+  if (( prazo <= agora )); then
+    echo "auto-down: vencido"
+  else
+    echo "auto-down: em $(( (prazo - agora + 59) / 60 )) min"
+  fi
 }
 
 subir() {
@@ -105,10 +176,43 @@ else:
   echo
   verde "✅ Pronto: $URL"
   echo "   parar tudo: overview down"
+  agenda_autodown "$AUTO_MIN"
   command -v open >/dev/null && open "$URL"
 }
 
+# 8002 e 5174 são reservadas a esta PoV no PORTS.md do workspace, mas reserva é
+# convenção, não garantia — e agora o `down` também dispara sozinho 45 min depois,
+# sem ninguém olhando. Matar por porta às cegas encerraria a PoV do vizinho que
+# tenha subido ali por engano. A regra do workspace (ver reap-povs.sh) é
+# preservar quem não é nosso, então confirmamos o dono antes: comando ou cwd têm
+# de apontar para este diretório.
+dono_do_workspace() {
+  local pid="$1"
+  # Salvaguarda: se BASE degenerar para "/" ou para um caminho curto, o grep
+  # casaria com qualquer processo da máquina e a checagem viraria decoração.
+  # Nesse caso é mais seguro não reivindicar propriedade de nada.
+  [[ ${#BASE} -gt 8 && "$BASE" != "/" ]] || return 1
+  ps -o command= -p "$pid" 2>/dev/null | grep -Fq "$BASE" && return 0
+  lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep -Fq "n$BASE" && return 0
+  return 1
+}
+
+mata_porta() {
+  local porta="$1" rotulo="$2" pid
+  for pid in $(pids_ouvindo "$porta"); do
+    if dono_do_workspace "$pid"; then
+      kill "$pid" 2>/dev/null || true
+      echo "   $rotulo (:$porta) encerrado"
+    else
+      ruim "   :$porta ocupada por processo de fora desta PoV (pid $pid) — preservado"
+    fi
+  done
+}
+
 derrubar() {
+  # Primeiro o timer: se o `down` falhar no meio, um agendamento vivo poderia
+  # disparar sobre a próxima sessão.
+  cancela_autodown
   azul "▶ Finalizando a execução PIX..."
   local limpeza_ok=1 token resposta
   token="$(grep -E '^DEMO_ADMIN_TOKEN=' "$BASE/backend/.env" 2>/dev/null | head -n1 | cut -d= -f2- | sed -e 's/^["'\'']//' -e 's/["'\'']$//' -e 's/\r$//' || true)"
@@ -127,11 +231,8 @@ sys.exit(0 if d.get("finalizado") and d.get("restantes") == 0 else 1)'; then
   fi
 
   azul "▶ Parando frontend e backend..."
-  local pids
-  pids="$(pids_ouvindo 5174)"
-  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
-  pids="$(pids_ouvindo 8002)"
-  [[ -z "$pids" ]] || kill $pids 2>/dev/null || true
+  mata_porta 5174 "frontend"
+  mata_porta 8002 "backend"
   if "$BASE/scripts/ambiente.sh" down; then
     # A limpeza direta do ambiente é a verificação final e também cobre API
     # indisponível ou encerrada no meio da chamada.
@@ -166,7 +267,16 @@ case "${1:-up}" in
     porta_ativa 8002 && echo "backend : UP (:8002)" || echo "backend : DOWN"
     porta_ativa 5174 && echo "frontend: UP (:5174)" || echo "frontend: DOWN"
     "$BASE/scripts/ambiente.sh" status
+    restante_autodown
     ;;
   logs)    tail -f "$BACKEND_LOG" ;;
-  *)       echo "Uso: overview [--ao-vivo|--replay] [up|down|status|logs]" >&2; exit 1 ;;
+  manter|keep)
+    cancela_autodown
+    verde "⏱  Desligamento automático cancelado."
+    echo "   lembre-se: o processor de ASP é cobrado por segundo — rode 'overview down' ao terminar"
+    ;;
+  adiar|estender)
+    agenda_autodown "${2:-30}"
+    ;;
+  *)       echo "Uso: overview [--ao-vivo|--replay] [up|down|status|logs|manter|adiar <min>]" >&2; exit 1 ;;
 esac

@@ -894,7 +894,7 @@ design.
 Validado depois da implementação atual:
 
 ```bash
-backend/venv/bin/python -m pytest -q backend/tests  # 157 passed
+backend/venv/bin/python -m pytest -q backend/tests  # 165 passed
 npm --prefix frontend run build                    # build do Vite passou
 git diff --check                                   # passou
 ```
@@ -994,3 +994,117 @@ aconteceu.
 2. Leia apenas a seção relevante do `ARCHITECTURE.md`.
 3. Para trabalho de streaming, inspecione `backend/routers/streaming.py`, seus testes
    correspondentes e a coluna relevante do frontend, juntos.
+
+## O módulo 06 passou a ser medido, e a demo passou a abrir por uma tese (2026-08-21)
+
+Auditoria da PoV inteira para uma apresentação a time de dados de banco. O
+diagnóstico não foi de acabamento: **os módulos 07 e 08 argumentam, os módulos
+01 a 06 demonstravam.** Um grep confirmava — só `Geo.jsx` e `Streaming.jsx`
+tinham limite declarado. E limite declarado é o que mais separa esta PoV de uma
+demo de vendedor.
+
+A frase que o módulo 06 exibia era *"o MongoDB reverte automaticamente —
+nenhuma coleção fica com dados parciais"*. Um DBA de Postgres lê isso e pensa
+"isso é uma transação, meu banco faz desde 1995". Demo de paridade de feature
+convida à resposta **"já temos isso"** e deixa a objeção para a reunião
+seguinte, onde ninguém do nosso lado está presente.
+
+Quatro mudanças:
+
+1. **`components/Limites.jsx`**, aplicado aos oito módulos. Cada item é
+   verificável na documentação do produto ou medido aqui. Os desconfortáveis são
+   os que valem: sem chave estrangeira; validador não valida o que já está
+   gravado; a janela do oplog é o SLA real do Change Stream; `$lookup` não tem
+   otimizador de join; transação não é o caminho barato.
+
+2. **`POST /transactions/benchmark`** — o módulo 06 medido como o 07 foi.
+   Transação multi-documento × a mesma intenção num documento só × contenção na
+   mesma chave, com `majority` nas duas pontas. O número desconfortável é
+   proposital: no MongoDB a escrita de um documento já é atômica, e precisar de
+   transação multi-documento em toda escrita costuma ser modelo relacional
+   transplantado. Esconder isso não sobrevive à primeira pergunta da sala.
+
+   A armadilha que quase virou vergonha no palco: a primeira medição deu p50 de
+   1.057 ms e teria dito a um banco que transação no MongoDB leva um segundo. O
+   RTT puro até o cluster era 262 ms — a máquina estava numa rota ruim, o mesmo
+   problema de WARP/VPN que o módulo 07 já documentava. O endpoint agora mede o
+   RTT com `ping` puro **antes** de tudo, reporta `limitado_pela_rede` acima de
+   40 ms e diz na tela que **o número a levar é a razão (4,1×) e a contagem de
+   viagens (~4), não o absoluto** — esses não mudam com o enlace.
+
+   Duas outras armadilhas viraram teste: `with_transaction` não expõe os
+   retries, então eles são contados pelas entradas no callback; e o
+   `getParameter` do `transactionLifetimeLimitSeconds` é negado ao usuário da
+   aplicação em vários tiers, então a resposta diz `indisponível` em vez de citar
+   o padrão de cabeça.
+
+3. **`pages/Tese.jsx` (`/#tese`) virou a página de entrada.** Declara o
+   argumento (convergência, não capacidade — nenhuma das oito é exclusiva) e os
+   não-objetivos: não é benchmark competitivo, não estima economia, não
+   substitui o warehouse, não é desenho de produção. Sem número de economia de
+   propósito: custo estimado é a primeira coisa desmontada na sala.
+
+4. **Módulos 03 e 04 reposicionados de "veja a feature" para "o que sai do
+   desenho".** Cada agregação diz qual componente ela dispensa; o 04 diz o que
+   de fato muda — validar na aplicação vale enquanto a aplicação for a única a
+   escrever, e em base com alguns anos ela nunca é (job de carga, ETL, script de
+   correção pelo shell, serviço legado, time vizinho).
+
+Lacunas conhecidas e não fechadas: criptografia (a PoV de Queryable Encryption é
+um repositório à parte e é provavelmente o diferencial mais forte para banco),
+backup/PITR e RPO/RTO além de um failover, multi-região e residência de dado
+para BACEN/LGPD. Nenhum desses tem módulo aqui.
+
+## A tela emagreceu porque o apresentador narra (2026-08-21, mesma sessão)
+
+Correção de rota sobre a mudança anterior. A PoV é apresentada com narração ao
+vivo, e a tela estava repetindo o que sai da boca de quem apresenta. Princípio
+aplicado às oito abas: **fica visível o que a narração não carrega** — a query,
+o comando e o resultado do cluster. O que explica conceito saiu.
+
+- Módulo 03: `what` + `why` + `substitui` viraram **uma linha** por agregação, e
+  o pipeline passou a ficar **sempre visível** em vez de atrás de "Ver código" —
+  mostrar quão pouco se escreve é o argumento. 675 → 152 palavras.
+- Módulo 06: banners e notas encurtados. 73 → 27.
+- Página de tese: 255 → 72 palavras.
+- Módulos 04 e 08: os blocos de contexto viraram uma frase cada.
+- Títulos dos blocos de limite perderam o sufixo "— dito antes da pergunta".
+
+Os blocos de limite **continuam**, sempre em `<details>` fechado: custo zero de
+tela e munição quando a pergunta vier. O módulo 07 ficou praticamente intacto
+(~425 palavras) porque ali o texto já é uma linha por coluna — é comparação de
+três caminhos lado a lado, densidade legítima, não prosa.
+
+## Desligamento automático do ambiente (2026-08-21)
+
+O `overview up` passou a agendar um `overview down` para **45 minutos** depois
+(`OVERVIEW_AUTO_DOWN_MIN`; 0 desliga). O risco coberto não é técnico: é a demo
+que termina, todo mundo fecha o notebook e o processor de ASP segue cobrando por
+segundo. 45 min é a duração típica da apresentação — `overview adiar 30`
+reagenda, `overview manter` cancela.
+
+Duas decisões que o timer exigiu:
+
+- **O `down` cancela o agendamento antes de qualquer outra coisa.** Sem isso, um
+  timer órfão de uma sessão anterior derrubaria uma sessão nova.
+- **`disown` no processo agendado**, senão cancelar imprime `Terminated: 15` no
+  terminal do apresentador, que no meio da demo parece erro.
+
+Achado no caminho: o symlink `/opt/homebrew/bin/overview` apontava para
+`/Users/adriano.fratelli/Documents/PoVs/mdboverview/bin/overview`, pasta que não
+existe mais — `overview` dava "command not found". Repontado para esta PoV.
+
+### O `down` deixou de matar por porta às cegas
+
+O `derrubar()` encerrava quem estivesse escutando em 8002/5174 sem checar de
+quem era o processo. Enquanto o `down` era manual isso passava; com o
+agendamento automático ele passa a disparar 45 min depois, sem ninguém olhando —
+e a reserva no `PORTS.md` é convenção, não garantia.
+
+Agora `dono_do_workspace()` confirma pelo comando ou pelo cwd que o PID pertence
+a esta pasta, e preserva qualquer outro dono com aviso na tela. É a mesma regra
+que o `reap-povs.sh` do workspace já aplicava (`SKIP` para quem não é nosso).
+
+Salvaguarda que o teste revelou: se `BASE` degenerar para `/` ou para um caminho
+curto, `grep -F "$BASE"` casaria com todo processo da máquina e a checagem
+viraria decoração. Abaixo de 9 caracteres a função não reivindica nada.

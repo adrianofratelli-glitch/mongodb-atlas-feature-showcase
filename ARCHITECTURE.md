@@ -46,7 +46,7 @@ são alcançáveis pelo `EventSource`, que não consegue enviar o cabeçalho `X-
 | `/aggregations` | `GET /lookup`, `GET /facet`, `GET /union-with`, `GET /group-advanced`, `GET /window-functions`, `GET /bucket-auto` |
 | `/schema` | `GET /status`, `POST /step1-create-collection`, `POST /step2-insert-without-schema`, `POST /step3-activate-schema`, `POST /step4-insert-invalid`, `POST /insert-valid`, `GET /documents`, `DELETE /reset` |
 | `/change-streams` | `POST /start`, `POST /trigger`, `GET /feed` (SSE), `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
-| `/transactions` | `GET /status`, `POST /executar`, `POST /reset` |
+| `/transactions` | `GET /status`, `POST /executar`, `POST /benchmark`, `POST /reset` |
 | `/streaming` | veja abaixo |
 | `/geo` | `GET /status`, `GET /municipios`, `GET /sinais-ao-vivo`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
 
@@ -217,10 +217,34 @@ rodando em threads (cursores do PyMongo) publicam por
 `loop.call_soon_threadsafe`. Um assinante lento tem seu quadro mais antigo descartado,
 em vez de bloquear o produtor.
 
+## Ciclo de vida do ambiente
+
+`bin/overview` orquestra ASP/Kafka (via `scripts/ambiente.sh`), backend e frontend. O
+ciclo de vida do cluster Atlas continua manual — o launcher nunca pausa, retoma,
+redimensiona nem muda auto-scaling.
+
+O `up` agenda um `down` automático para **45 minutos** depois (`OVERVIEW_AUTO_DOWN_MIN`;
+0 desliga), porque um processor de ASP esquecido é cobrado por segundo. `overview manter`
+cancela, `overview adiar <min>` reagenda, `overview status` mostra o tempo restante. O
+agendamento é cancelado no `down` e recriado no `up`, para que um timer de uma sessão
+anterior nunca derrube uma sessão nova.
+
+O `down` encerra backend (`:8002`) e frontend (`:5174`) junto com ASP e Kafka, mas
+`dono_do_workspace()` confirma antes — por comando ou cwd — que o PID pertence a este
+diretório, e preserva qualquer outro dono com aviso. A reserva de portas no `PORTS.md` do
+workspace é convenção, não garantia.
+
 ## Frontend
 
-- `src/App.jsx` — casca, sidebar, roteamento por hash (`/#agg`, `/#streams`, `/#tx`, `/#streaming`).
-- `src/pages/` — um componente por módulo; `src/components/` — `DemoFlow`, `QueryBlock`.
+- `src/App.jsx` — casca, sidebar, roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`).
+  A rota padrão é `/#tese`.
+- `src/pages/` — um componente por módulo, mais `Tese.jsx` (abertura: a tese e os
+  não-objetivos, ~70 palavras).
+- `src/components/` — `DemoFlow`, `QueryBlock`, `Limites` (bloco de limite declarado, em
+  `<details>` fechado, usado pelos oito módulos) e `MapaBrasil` (mapa SVG do módulo 08:
+  malha estadual do IBGE em `src/data/brasil-uf.js`, projeção equiretangular corrigida por
+  `cos(-15°)`, zoom automático com o raio do `$geoWithin` desenhado como elipse, e um
+  alternador opcional para o Google Maps sob `VITE_GOOGLE_MAPS_KEY`).
 - `src/hooks/useApi.js` — wrapper de fetch que adiciona `X-Demo-Token`. Aborts esperados
   causados pelo unmount de um módulo são silenciosos; timeouts e falhas reais ainda disparam
   um erro global. O `App.jsx` deduplica toasts de erro idênticos por oito
@@ -230,8 +254,13 @@ em vez de bloquear o produtor.
 
 A UI segue uma hierarquia de prova primeiro, documentada em
 `docs/SESSION_HANDOFF.md`: o Streaming expõe os três caminhos no primeiro
-viewport de notebook, o de agregações usa `Origem → Pipeline → Resultado`, e definições
-grandes de código são reveladas progressivamente.
+viewport de notebook e o de agregações usa `Origem → Pipeline → Resultado`.
+
+**A tela é enxuta porque o apresentador narra.** Fica visível o que a narração não
+carrega — a query, o comando e o resultado do cluster; prosa que explica conceito foi
+removida. O módulo 03 mostra o pipeline **sempre aberto**, não atrás de "Ver código":
+mostrar quão pouco se escreve é o argumento. Limite declarado e não-objetivo ficam
+colapsados, com custo zero de tela.
 
 ## Infraestrutura externa
 
