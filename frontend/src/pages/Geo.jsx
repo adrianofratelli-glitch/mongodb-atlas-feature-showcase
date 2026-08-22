@@ -2,131 +2,14 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import { useIntervaloVisivel } from '../hooks/usePolling'
 import QueryBlock from '../components/QueryBlock'
+import MiniMapa from '../components/MapaBrasil'
 
-// Bounding box do Brasil. A projeção é linear de propósito: a apresentação é em
-// auditório com rede ruim, então o mapa é SVG local, sem tiles e sem dependência
-// nova no frontend — silhueta, arco e halos são todos desenhados aqui.
-const BBOX = { oeste: -74.2, leste: -33.8, norte: 5.6, sul: -34.2 }
 const CATEGORIAS = ['alimentação', 'combustível', 'farmácia', 'vestuário', 'serviços']
 
 // "2239.8 ms" obriga a plateia a contar casas; acima de 1 s a unidade muda.
 const fmtDuracao = (ms) => (ms == null
   ? '—'
   : ms >= 1000 ? `${(ms / 1000).toFixed(1).replace('.', ',')} s` : `${Math.round(ms)} ms`)
-
-function projetar([lng, lat]) {
-  const x = ((lng - BBOX.oeste) / (BBOX.leste - BBOX.oeste)) * 100
-  const y = ((BBOX.norte - lat) / (BBOX.norte - BBOX.sul)) * 100
-  return [x, y]
-}
-
-// Silhueta ESQUEMÁTICA do Brasil, ~60 vértices em [lon, lat], embutida no
-// bundle. Não é cartografia: é referência visual para o olho localizar o ponto.
-// Continua sem Leaflet, sem tiles e sem nenhuma requisição em runtime — o mapa
-// tem de renderizar igual com a rede do auditório fora do ar.
-const CONTORNO_BR = [
-  [-51.8, 4.3], [-50.0, 1.8], [-48.5, -0.8], [-44.3, -2.4], [-41.8, -2.9],
-  [-38.5, -3.7], [-35.2, -5.8], [-34.8, -7.1], [-35.5, -9.5], [-37.0, -11.0],
-  [-38.5, -12.9], [-39.0, -15.0], [-38.9, -17.3], [-39.7, -19.6], [-40.9, -21.5],
-  [-42.0, -22.9], [-44.5, -23.3], [-46.6, -24.0], [-48.5, -25.5], [-48.6, -27.0],
-  [-50.0, -29.0], [-51.2, -31.0], [-52.3, -33.0], [-53.4, -33.7], [-53.5, -32.5],
-  [-55.6, -30.9], [-57.6, -30.2], [-56.0, -28.5], [-54.5, -27.5], [-54.6, -25.6],
-  [-54.3, -24.0], [-55.0, -22.3], [-57.6, -22.1], [-57.8, -20.0], [-58.2, -19.8],
-  [-58.4, -17.2], [-60.2, -16.3], [-60.5, -15.1], [-62.0, -13.0], [-63.9, -12.5],
-  [-65.3, -11.0], [-66.8, -9.8], [-68.7, -11.0], [-70.6, -11.0], [-70.6, -9.5],
-  [-72.2, -9.8], [-73.2, -7.3], [-74.0, -7.5], [-73.0, -6.0], [-70.0, -4.3],
-  [-69.4, -1.1], [-69.9, 0.6], [-67.9, 1.7], [-67.1, 2.8], [-64.5, 4.1],
-  [-63.4, 3.9], [-62.1, 4.1], [-60.7, 5.2], [-60.0, 4.5], [-59.0, 4.5],
-  [-57.5, 3.4], [-56.0, 2.0], [-54.5, 2.3],
-]
-
-const PATH_BR = CONTORNO_BR
-  .map((c, i) => `${i ? 'L' : 'M'}${projetar(c).map(v => v.toFixed(2)).join(' ')}`)
-  .join(' ') + ' Z'
-
-function MiniMapa({ pontos = [], linha = null, altura = 260, rotuloLinha = null }) {
-  const [hover, setHover] = useState(null)
-  // Identificador único por instância: dois mapas na mesma página compartilhariam
-  // os <defs> e o segundo herdaria o gradiente do primeiro.
-  const uid = React.useId().replace(/:/g, '')
-  return (
-    <div className="geo-mapa" style={{ height: altura }}>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img"
-        aria-label="Mapa esquemático do Brasil com os pontos da consulta">
-        <defs>
-          <linearGradient id={`br-${uid}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#00ED64" stopOpacity=".10" />
-            <stop offset="100%" stopColor="#00684A" stopOpacity=".16" />
-          </linearGradient>
-          <radialGradient id={`halo-${uid}`}>
-            <stop offset="0%" stopColor="#fff" stopOpacity=".55" />
-            <stop offset="100%" stopColor="#fff" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-
-        {/* Paralelos e meridianos como referência, atrás do país. */}
-        {[20, 40, 60, 80].map(v => (
-          <g key={v}>
-            <line x1={v} y1="0" x2={v} y2="100" stroke="rgba(255,255,255,.04)" strokeWidth=".3" />
-            <line x1="0" y1={v} x2="100" y2={v} stroke="rgba(255,255,255,.04)" strokeWidth=".3" />
-          </g>
-        ))}
-
-        <path d={PATH_BR} fill={`url(#br-${uid})`} stroke="rgba(0,237,100,.45)"
-          strokeWidth=".45" strokeLinejoin="round" />
-
-        {linha && (() => {
-          const [x1, y1] = projetar(linha.de)
-          const [x2, y2] = projetar(linha.para)
-          // Arco em vez de reta: duas cidades ligadas por uma linha reta somem
-          // dentro da silhueta; a curva sai do corpo do país e se lê de longe.
-          const [mx, my] = [(x1 + x2) / 2, (y1 + y2) / 2]
-          const [dx, dy] = [x2 - x1, y2 - y1]
-          const arco = `M${x1} ${y1} Q${mx - dy * 0.22} ${my + dx * 0.22} ${x2} ${y2}`
-          return (
-            <g>
-              <path d={arco} fill="none" stroke="#ff6960" strokeWidth=".55"
-                strokeDasharray="2.5 1.8" strokeLinecap="round">
-                <animate attributeName="stroke-dashoffset" from="8.6" to="0"
-                  dur="1.1s" repeatCount="indefinite" />
-              </path>
-              {rotuloLinha && (
-                <text x={mx - dy * 0.13} y={my + dx * 0.13} fill="#ff6960" fontSize="3.4"
-                  fontWeight="700" textAnchor="middle" style={{ paintOrder: 'stroke' }}
-                  stroke="rgba(0,30,43,.85)" strokeWidth="1.1">{rotuloLinha}</text>
-              )}
-            </g>
-          )
-        })()}
-
-        {pontos.map((p, i) => {
-          const [x, y] = projetar(p.coord)
-          return (
-            <g key={i} onMouseEnter={() => setHover(p)} onMouseLeave={() => setHover(null)}>
-              {p.destaque && (
-                <>
-                  <circle cx={x} cy={y} r="4.5" fill={`url(#halo-${uid})`} />
-                  <circle cx={x} cy={y} r="1.6" fill="none" stroke={p.cor || 'var(--accent)'} strokeWidth=".35">
-                    <animate attributeName="r" values="1.6;4.2;1.6" dur="2s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values=".9;0;.9" dur="2s" repeatCount="indefinite" />
-                  </circle>
-                </>
-              )}
-              <circle cx={x} cy={y} r={p.destaque ? 1.5 : 0.85}
-                fill={p.cor || 'var(--accent)'} opacity={p.destaque ? 1 : 0.7}
-                stroke={p.destaque ? 'rgba(0,30,43,.9)' : 'none'} strokeWidth=".3" />
-            </g>
-          )
-        })}
-      </svg>
-      {hover && <div className="geo-mapa-tip">{hover.rotulo}</div>}
-      {pontos.length === 0 && !linha && (
-        <div className="geo-mapa-vazio">Execute uma consulta para plotar os pontos</div>
-      )}
-      <span className="geo-mapa-selo">contorno esquemático · WGS84 · sem tiles</span>
-    </div>
-  )
-}
 
 function LinhaPlano({ plano, referencia }) {
   const melhor = (campo) => referencia != null && plano[campo] != null && plano[campo] <= referencia
@@ -318,12 +201,9 @@ export default function Geo() {
           )}
         </div>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
-          O gerador do <strong>módulo 07</strong> emite dois canais no mesmo stream: PIX, que{' '}
-          <strong>não carrega coordenada</strong>, e compra presencial com cartão, que carrega a do terminal.
-          Um segundo processor do <strong>Atlas Stream Processing</strong> lê o mesmo change stream, agrupa por
-          cartão numa janela deslizante de 30 s e calcula haversine ali dentro — o resultado cai em{' '}
-          <code>{aoVivo?.colecao || 'geo.sinais_ao_vivo'}</code> antes de qualquer analista perguntar.
-          Os painéis abaixo continuam valendo: eles respondem a investigação retrospectiva, que é outra pergunta.
+          Um segundo processor do <strong>Atlas Stream Processing</strong> lê o mesmo change stream do
+          módulo 07, agrupa por cartão em janela de 30 s e calcula haversine ali dentro. O sinal cai em{' '}
+          <code>{aoVivo?.colecao || 'geo.sinais_ao_vivo'}</code> em tempo de evento.
         </p>
 
         {aoVivo?.total > 0 && (
@@ -444,13 +324,10 @@ export default function Geo() {
           Investigar 90 dias sem tirar o histórico do banco
         </h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
-          Duas compras presenciais do mesmo cliente, distantes demais para o tempo entre elas — a assinatura
-          clássica de cartão clonado. Como <strong>cada ponto é um terminal físico</strong>, a contradição é
-          geográfica, não uma suspeita sobre o aparelho de quem paga. O cálculo roda{' '}
-          <strong>inteiro no banco</strong>: <code>$setWindowFields</code> particiona por cliente,{' '}
-          <code>$shift</code> traz a compra anterior e a distância sai de haversine em operadores MQL
-          nativos — sem <code>$function</code> e <strong>sem transportar o histórico para fazer o cálculo</strong>.
-          Isso evita manter uma cópia especializada e sua sincronização apenas para esta análise.
+          Duas compras presenciais do mesmo cliente, distantes demais para o tempo entre elas.{' '}
+          <code>$setWindowFields</code> particiona por cliente, <code>$shift</code> traz a compra anterior e
+          a distância sai de haversine em MQL nativo. <strong>O histórico não sai do banco</strong> — nenhuma
+          cópia especializada para manter.
         </p>
         {/* Posicionamento explícito. Sem esta frase a aba soa como se disputasse
             com o motor antifraude do cliente — uma disputa que ela perde e que
@@ -695,14 +572,11 @@ export default function Geo() {
           O portador contesta esta compra. O que existe em volta do terminal?
         </h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
-          A investigação começa numa transação, não num município: escolha um caso sinalizado acima
-          (ou cole um <code>endToEndId</code>) e o centro passa a ser a coordenada{' '}
-          <strong>daquele terminal</strong>. Um único <code>$search</code> responde o entorno:{' '}
-          <code>filter</code> de <code>geoWithin</code> e de categoria, <code>$searchMeta</code> para
-          as facetas e, quando o analista suspeita de nome parecido — o padrão clássico de
-          estabelecimento clonado —, um <code>must</code> de texto com <code>fuzzy</code>.
-          <strong> A alternativa usual é um motor de busca ao lado</strong>, sincronizado por CDC, com
-          contrato e operação próprios. Aqui é o mesmo cluster, no mesmo índice.
+          Escolha um caso sinalizado acima e o centro passa a ser a coordenada{' '}
+          <strong>daquele terminal</strong>. Um <code>$search</code> responde o entorno:{' '}
+          <code>geoWithin</code> + categoria em <code>filter</code>, facetas em <code>$searchMeta</code>,{' '}
+          <code>fuzzy</code> de nome para estabelecimento clonado.{' '}
+          <strong>Sem um motor de busca ao lado, sincronizado por CDC.</strong>
         </p>
 
         <div className="geo-controles">
@@ -814,7 +688,8 @@ export default function Geo() {
               )}
             </div>
             <div className="col" style={{ minWidth: 260 }}>
-              <MiniMapa pontos={pontosBusca} />
+              <MiniMapa pontos={pontosBusca} ajustar
+                circulo={busca?.centro ? { centro: busca.centro, raioKm: Number(raioBusca) } : null} />
             </div>
           </div>
         )}
@@ -904,7 +779,7 @@ export default function Geo() {
       {/* Limite declarado: um DBA que ouve a limitação acredita no resto. */}
       <details className="card">
         <summary style={{ cursor: 'pointer', fontSize: 13.5, fontWeight: 600 }}>
-          Onde o geo do MongoDB não vai — dito antes da pergunta
+          Onde o geo do MongoDB não vai
         </summary>
         <ul style={{ marginTop: 10, paddingLeft: 18, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
           <li>Não há álgebra de geometria: sem <code>buffer</code>, <code>union</code>,{' '}
