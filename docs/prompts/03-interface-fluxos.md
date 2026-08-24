@@ -3,6 +3,21 @@
 > Terceiro dos três prompts. Oito capacidades, cada uma tendo que se provar sozinha na frente de alguém cético.
 
 ---
+## Contrato visual do portfólio (v2)
+
+Esta UI participa da assinatura MongoDB Dark das PoVs. O arquivo
+`src/pov-signature.css` é uma cópia sincronizada entre os onze frontends e deve
+ser importado **depois** do stylesheet local. O contêiner raiz carrega
+`data-pov-shell`, existe um `.pov-skip-link` para `#conteudo-principal` e o
+`index.html` declara pt-BR, dark color scheme, theme color e o favicon comum.
+
+A camada compartilhada é dona da document rail, foco, touch targets e redução de
+movimento. Este arquivo continua dono do fluxo e das exceções de domínio: não
+achate uma tela operacional num template de landing page e não remova a tese
+visual específica desta PoV. Qualquer mudança na assinatura precisa ser
+replicada nas onze cópias e validada em 1440, 768 e 360 px, além do build de
+produção e do estado offline.
+
 
 ## Duas regras que valem pra todos os módulos
 
