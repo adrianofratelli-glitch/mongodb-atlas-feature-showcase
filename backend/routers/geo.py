@@ -265,7 +265,11 @@ def status():
     fraudes = {}
     if ARQUIVO_FRAUDES.exists():
         dados = json.loads(ARQUIVO_FRAUDES.read_text(encoding="utf-8"))
-        fraudes = {"clientes": len(dados.get("clientes", [])), "limite_kmh": dados.get("limite_kmh")}
+        # A lista vai inteira para a UI: os campos da aba de Geo são seleções,
+        # não texto livre — um clienteId digitado errado devolve tela vazia e no
+        # palco isso é lido como "a demo não achou nada".
+        ids = sorted(c["clienteId"] if isinstance(c, dict) else c for c in dados.get("clientes", []))
+        fraudes = {"clientes": len(ids), "limite_kmh": dados.get("limite_kmh"), "lista": ids}
 
     return {
         "db": GEO_DB,
@@ -506,7 +510,8 @@ def impossible_travel(
             "leitura": (
                 "Varredura completa é o modo de investigação: roda sob demanda, sobre o recorte "
                 "que o analista pedir. Para decisão no fluxo, o caminho é o sinal em event time do "
-                "painel 00, que calcula na passagem e não varre histórico. Em produção, o recorte "
+                "processor geoSinais30s do módulo 07, que calcula na passagem e não varre "
+                "histórico. Em produção, o recorte "
                 "por cliente ou por período é o que mantém este mesmo pipeline barato — filtrar "
                 "antes da janela reduz o universo, e o índice de clienteId sustenta o filtro."
             ),

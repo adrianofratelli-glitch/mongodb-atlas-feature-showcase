@@ -1,10 +1,25 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useApi } from '../hooks/useApi'
-import { useIntervaloVisivel } from '../hooks/usePolling'
 import QueryBlock from '../components/QueryBlock'
 import MiniMapa from '../components/MapaBrasil'
 
 const CATEGORIAS = ['alimentação', 'combustível', 'farmácia', 'vestuário', 'serviços']
+
+// Nenhum campo desta aba é texto livre. Um clienteId digitado errado ou um raio
+// fora de escala devolvem tela vazia, e no palco isso é lido como "a demo não
+// encontrou nada" — não como erro de digitação. Toda opção abaixo existe no
+// dataset gerado por scripts/seed_geo.py.
+const LIMITES_KMH = [300, 600, 900, 1200, 2000]
+const RAIOS_BUSCA_KM = [5, 10, 25, 50, 100, 200]
+const RAIOS_EXPLAIN_KM = [10, 25, 50, 100, 500]
+// Prefixos de nome que o seed usa ao montar o catálogo de estabelecimentos
+// (CATEGORIAS em scripts/seed_geo.py); refinar por um nome inexistente devolve
+// zero resultado e parece falha do $search.
+const TERMOS = [
+  'Restaurante', 'Padaria', 'Lanchonete', 'Cafeteria', 'Pizzaria', 'Mercado',
+  'Posto', 'Auto Posto', 'Farmácia', 'Drogaria', 'Loja', 'Boutique',
+  'Magazine', 'Barbearia', 'Oficina', 'Lavanderia', 'Salão',
+]
 
 // "2239.8 ms" obriga a plateia a contar casas; acima de 1 s a unidade muda.
 const fmtDuracao = (ms) => (ms == null
@@ -42,12 +57,6 @@ function LinhaPlano({ plano, referencia }) {
 
 export default function Geo() {
   const { call } = useApi()
-  // Instância separada para o poll do painel ao vivo. `loading` do useApi é um
-  // único sinal para TODAS as chamadas do componente: com o poll de 4 s na mesma
-  // instância, os três botões da aba entravam em "carregando" e ficavam
-  // DESABILITADOS por ~1 s a cada ciclo, sem ninguém ter clicado. No palco isso
-  // é um clique que não faz nada.
-  const { call: callPoll } = useApi()
   // Cada ação controla o próprio estado: rodar a detecção não pode desabilitar
   // a busca do painel ao lado.
   const [ocupado, setOcupado] = useState({})
@@ -83,22 +92,10 @@ export default function Geo() {
   const [categorias, setCategorias] = useState([])
   const [busca, setBusca] = useState(null)
 
-  // 00 — sinal em event time, materializado pelo processor do módulo 07
-  const [aoVivo, setAoVivo] = useState(null)
-  const [sinalSel, setSinalSel] = useState(null)
-
   useEffect(() => {
     call('/geo/status').then(d => d && setStatus(d))
     call('/geo/municipios').then(d => d && setMunicipios(d.municipios || []))
   }, [])
-
-  // O painel ao vivo lê uma coleção que só muda quando o gerador da aba 07 está
-  // rodando; 4 s é rápido o bastante para o sinal aparecer durante a fala e
-  // lento o bastante para não competir com as três colunas do módulo anterior.
-  useIntervaloVisivel(useCallback(async () => {
-    const d = await callPoll('/geo/sinais-ao-vivo')
-    if (d) setAoVivo(d)
-  }, [callPoll]), 4000, true)
 
   const centro = municipios[centroIdx]?.centro || null
 
@@ -146,6 +143,17 @@ export default function Geo() {
     cor: '#06b6d4',
   })), [busca])
 
+  // Os clientes ofertados são os que o seed plantou (backend lê fraud_seeds.json):
+  // a opção existe no dataset, então nenhuma seleção devolve tela vazia por engano.
+  // O valor selecionado entra na lista mesmo quando não foi plantado (um caso
+  // emergente vindo do botão "investigar este cliente"), senão o <select> ficaria
+  // exibindo uma opção que não existe.
+  const clientesPlantados = useMemo(() => {
+    const base = status?.fraudes_plantadas?.lista || []
+    const extras = [clienteId, clienteFiltro].filter(c => c && !base.includes(c))
+    return [...base, ...extras].sort()
+  }, [status, clienteId, clienteFiltro])
+
   const semDados = status && status.transacoes === 0
 
   return (
@@ -187,133 +195,6 @@ export default function Geo() {
         </div>
       )}
 
-      {/* ── 00 · O sinal saindo do stream, não de uma varredura ─────────────
-          Esta é a junção com o módulo 07: o mesmo commit que alimenta as três
-          colunas alimenta este cálculo, dentro da janela, sem segundo motor. */}
-      <section className="card geo-live">
-        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'baseline' }}>
-          <div>
-            <div className="kicker" style={{ marginBottom: 8, color: '#00ED64' }}>00 · Em event time</div>
-            <h2 style={{ fontSize: 18, marginBottom: 6 }}>O sinal sai na passagem, não numa varredura</h2>
-          </div>
-          {aoVivo?.total > 0 && (
-            <span className="badge badge-green">{aoVivo.total} detectados nesta execução</span>
-          )}
-        </div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 14 }}>
-          Um segundo processor do <strong>Atlas Stream Processing</strong> lê o mesmo change stream do
-          módulo 07, agrupa por cartão em janela de 30 s e calcula haversine ali dentro. O sinal cai em{' '}
-          <code>{aoVivo?.colecao || 'geo.sinais_ao_vivo'}</code> em tempo de evento.
-        </p>
-
-        {aoVivo?.total > 0 && (
-          <div className="geo-live-contagem">
-            <div>
-              <span>{aoVivo.plantados}</span>
-              <small>plantados pelo gerador — sinal garantido para a demo</small>
-            </div>
-            <div>
-              <span style={{ color: aoVivo.emergentes ? '#00ED64' : 'var(--text-secondary)' }}>{aoVivo.emergentes}</span>
-              <small>
-                emergentes — ninguém armou; o pipeline achou no tráfego.{' '}
-                <strong>Zero é o resultado esperado</strong> com dado sintético.
-              </small>
-            </div>
-          </div>
-        )}
-
-        {/* Um contador que quase sempre marca zero precisa dizer por quê ANTES
-            de alguém perguntar. Caso contrário "0 emergentes" é lido como "só
-            acha o que vocês plantaram" — e a leitura correta é o contrário:
-            tráfego aleatório não fabrica coincidência, então um emergente,
-            quando aparece, é achado de verdade. */}
-        {aoVivo?.total > 0 && (
-          <div className="banner banner-info" style={{ marginTop: 12, marginBottom: 0 }}>
-            <span>ℹ️</span>
-            <div>
-              Um sinal <strong>emergente</strong> exige duas compras do <em>mesmo cartão</em>, longe uma da
-              outra, dentro da mesma janela de 30 s. O gerador sorteia cada compra entre milhares de cartões
-              independentes, então essa coincidência praticamente não ocorre: <strong>o normal é zero</strong>,
-              e é assim que se sabe que o número plantado não está sendo inflado. Com tráfego real de um
-              emissor — mesmo cartão comprando várias vezes por dia — é este contador que se move, sem trocar
-              uma linha do processor.
-            </div>
-          </div>
-        )}
-
-        {!aoVivo?.total && (
-          <div className="banner banner-info" style={{ marginBottom: 0 }}>
-            <span>▶</span>
-            <div>
-              Nenhum sinal ainda. Rode o fluxo no <strong>módulo 07 · Streaming</strong> e volte: os primeiros
-              pares aparecem cerca de 30 s depois do início, quando a primeira janela fecha.
-            </div>
-          </div>
-        )}
-
-        {aoVivo?.sinais?.length > 0 && (
-          <div className="row" style={{ marginTop: 12, alignItems: 'flex-start' }}>
-            <div className="col" style={{ minWidth: 340 }}>
-              <div className="geo-tabela-wrap">
-                <table className="geo-tabela">
-                  <thead>
-                    <tr><th>cartão</th><th>km</th><th>min</th><th>km/h</th><th>trajeto</th><th>origem</th></tr>
-                  </thead>
-                  <tbody>
-                    {aoVivo.sinais.map(s => (
-                      <tr key={s._id} className={sinalSel?._id === s._id ? 'sel' : ''}
-                        onClick={() => setSinalSel(s)}>
-                        <td><code>{s.clienteId}</code></td>
-                        <td>{s.km}</td>
-                        <td>{s.minutos}</td>
-                        <td style={{ color: '#ff6960', fontWeight: 700 }}>{s.kmh}</td>
-                        <td>{s.de?.municipio} → {s.para?.municipio}</td>
-                        <td>
-                          <span className={`badge ${s.origem === 'emergente' ? 'badge-green' : 'badge-gray'}`}>
-                            {s.origem}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-            <div className="col" style={{ minWidth: 260 }}>
-              <MiniMapa
-                pontos={sinalSel ? [
-                  { coord: sinalSel.de.coordinates, rotulo: `origem — ${sinalSel.de.municipio}`, cor: '#06b6d4', destaque: true },
-                  { coord: sinalSel.para.coordinates, rotulo: `destino — ${sinalSel.para.municipio}`, cor: '#ff6960', destaque: true },
-                ] : []}
-                linha={sinalSel ? { de: sinalSel.de.coordinates, para: sinalSel.para.coordinates } : null}
-                rotuloLinha={sinalSel ? `${sinalSel.km} km · ${sinalSel.minutos} min` : null}
-              />
-              {sinalSel && (
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 8 }}>
-                  terminais <code>{sinalSel.de.terminal}</code> → <code>{sinalSel.para.terminal}</code>
-                  <br />detectado pela janela às {new Date(sinalSel.detectadoEm).toLocaleTimeString('pt-BR')}
-                </div>
-              )}
-              {!sinalSel && (
-                <div style={{ fontSize: 12, color: 'var(--text-disabled)', marginTop: 8 }}>
-                  Clique num sinal para traçar o percurso.
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        <div className="banner banner-warning" style={{ marginTop: 12, marginBottom: 0 }}>
-          <span>⚠️</span>
-          <div>
-            A janela agrupa por <strong>tempo de chegada</strong>; a velocidade usa o instante de{' '}
-            <strong>captura de cada compra</strong>, que chega atrasada do adquirente. Pares abaixo de 200 km ou
-            de 1 minuto são descartados: ali &quot;velocidade&quot; é ruído de captura simultânea, não deslocamento.
-            Continua sendo sinal para compor política, nunca decisão automática.
-          </div>
-        </div>
-      </section>
-
       {/* ── 01 · Sinal de risco ─────────────────────────────────────────── */}
       <section className="card">
         <div className="kicker" style={{ marginBottom: 8, color: '#ff6960' }}>01 · Investigação retrospectiva</div>
@@ -329,6 +210,28 @@ export default function Geo() {
           a distância sai de haversine em MQL nativo. <strong>O histórico não sai do banco</strong> — nenhuma
           cópia especializada para manter.
         </p>
+        {/* A pergunta que a tela deixava sem resposta: "isso está rodando ONDE?".
+            Sem a origem explícita, o painel parece cálculo local do frontend. */}
+        {status && (
+          <div className="geo-origem">
+            <div>
+              <small>onde roda</small>
+              <span>agregação no cluster Atlas</span>
+            </div>
+            <div>
+              <small>coleção</small>
+              <span><code>{status.db}.{status.colecao}</code></span>
+            </div>
+            <div>
+              <small>documentos varridos</small>
+              <span>{status.transacoes.toLocaleString('pt-BR')}</span>
+            </div>
+            <div>
+              <small>índice do recorte</small>
+              <span><code>cliente_ts_idx</code></span>
+            </div>
+          </div>
+        )}
         {/* Posicionamento explícito. Sem esta frase a aba soa como se disputasse
             com o motor antifraude do cliente — uma disputa que ela perde e que
             não precisa travar: o argumento é a cópia de dados que some. */}
@@ -345,14 +248,18 @@ export default function Geo() {
 
         <div className="geo-controles">
           <label>limite (km/h)
-            <input type="number" min="1" value={limiteKmh} onChange={e => setLimiteKmh(e.target.value)} />
+            <select value={limiteKmh} onChange={e => setLimiteKmh(Number(e.target.value))}>
+              {LIMITES_KMH.map(v => <option key={v} value={v}>{v} km/h</option>)}
+            </select>
           </label>
           <button className="btn btn-sm btn-primary" onClick={() => rodarViagens(false)} disabled={ocupado.viagens}>
             {ocupado.viagens ? <><span className="spinner" /> Calculando…</> : 'Varrer a coleção inteira'}
           </button>
           <label>recorte por cliente
-            <input value={clienteFiltro} placeholder="CLI00007"
-              onChange={e => setClienteFiltro(e.target.value)} />
+            <select value={clienteFiltro} onChange={e => setClienteFiltro(e.target.value)}>
+              <option value="">— escolha um cliente —</option>
+              {clientesPlantados.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </label>
           <button className="btn btn-sm" onClick={() => rodarViagens(true)}
             disabled={ocupado.viagens || !clienteFiltro.trim()}
@@ -580,25 +487,35 @@ export default function Geo() {
         </p>
 
         <div className="geo-controles">
-          <label>compra contestada (endToEndId)
-            <input value={ancoraId} placeholder="cole ou escolha um caso acima"
-              onChange={e => setAncoraId(e.target.value)} style={{ minWidth: 230 }} />
+          <label>compra contestada
+            <select value={ancoraId} onChange={e => setAncoraId(e.target.value)} style={{ minWidth: 260 }}>
+              <option value="">— centro no município selecionado —</option>
+              {(viagens?.resultados || []).map(v => (
+                <option key={v.endToEndId} value={v.endToEndId}>
+                  {v.clienteId} · {v.para.municipio}/{v.para.uf} · {v.km} km em {v.minutos} min
+                </option>
+              ))}
+            </select>
           </label>
-          <label>raio: {raioBusca} km
-            <input type="range" min="1" max="300" value={raioBusca}
-              onChange={e => setRaioBusca(e.target.value)} />
+          <label>raio (km)
+            <select value={raioBusca} onChange={e => setRaioBusca(Number(e.target.value))}>
+              {RAIOS_BUSCA_KM.map(v => <option key={v} value={v}>{v} km</option>)}
+            </select>
           </label>
           <label>refinar por nome (opcional)
-            <input value={termo} placeholder="ex.: nome parecido com o do recibo"
-              onChange={e => setTermo(e.target.value)} />
+            <select value={termo} onChange={e => setTermo(e.target.value)}>
+              <option value="">— sem refinamento —</option>
+              {TERMOS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
           </label>
           <button className="btn btn-sm btn-primary" onClick={rodarBusca}
             disabled={ocupado.busca || (!ancoraId.trim() && !centro)}>
             {ocupado.busca ? <><span className="spinner" /> Buscando…</> : 'Ver o entorno'}
           </button>
-          {!ancoraId.trim() && (
+          {!viagens?.resultados?.length && (
             <span style={{ fontSize: 11.5, color: 'var(--text-disabled)' }}>
-              sem uma compra escolhida, o centro cai no município selecionado no painel de planos
+              rode o painel 01 para escolher uma compra contestada; sem ela o centro cai no
+              município selecionado em “Como o índice sustenta isso”
             </span>
           )}
         </div>
@@ -738,7 +655,9 @@ export default function Geo() {
 
         <div className="geo-controles">
           <label>clienteId
-            <input value={clienteId} onChange={e => setClienteId(e.target.value)} />
+            <select value={clienteId} onChange={e => setClienteId(e.target.value)}>
+              {clientesPlantados.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
           </label>
           <label>status
             <select value={statusTx} onChange={e => setStatusTx(e.target.value)}>
@@ -751,8 +670,9 @@ export default function Geo() {
             </select>
           </label>
           <label>raio (km)
-            <input type="number" min="1" max="5000" value={raioExplain}
-              onChange={e => setRaioExplain(e.target.value)} />
+            <select value={raioExplain} onChange={e => setRaioExplain(Number(e.target.value))}>
+              {RAIOS_EXPLAIN_KM.map(v => <option key={v} value={v}>{v} km</option>)}
+            </select>
           </label>
           <button className="btn btn-sm btn-primary" onClick={rodarExplain} disabled={ocupado.explain || !centro}>
             {ocupado.explain ? <><span className="spinner" /> Executando…</> : 'Comparar planos'}

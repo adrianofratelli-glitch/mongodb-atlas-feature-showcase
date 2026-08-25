@@ -376,13 +376,17 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-garantia-tag { flex-shrink: 0; font-family: var(--font-mono); font-size: 9px; font-weight: 700;
   letter-spacing: .08em; text-transform: uppercase; color: var(--accent); padding-top: 2px; }
 
-/* Painel do sinal em event time: é a ponte entre os módulos 07 e 08, e a
-   borda verde o separa dos painéis retrospectivos que vêm abaixo. */
-.geo-live { border-left: 3px solid var(--accent); }
-.geo-live-contagem { display: flex; gap: 26px; flex-wrap: wrap; margin-bottom: 12px; }
-.geo-live-contagem > div { display: flex; flex-direction: column; gap: 2px; }
-.geo-live-contagem span { font-family: var(--font-mono); font-size: 26px; font-weight: 700; line-height: 1; }
-.geo-live-contagem small { font-size: 11px; color: var(--text-secondary); }
+/* Procedência da consulta: onde ela roda e sobre qual coleção. Fica em destaque
+   porque sem isso o painel pode ser lido como cálculo no frontend. */
+.geo-origem { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px; margin-bottom: 14px; padding: 11px 14px; border-radius: 10px;
+  border: 1px solid rgba(0,237,100,.22); background: rgba(0,237,100,.05);
+  border-left: 3px solid var(--accent); }
+.geo-origem > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.geo-origem small { font-size: 10px; color: var(--text-secondary); font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: .06em; }
+.geo-origem span { font-size: 13px; color: var(--text-primary); }
+.geo-origem code { font-size: 12.5px; color: var(--accent); }
 
 /* Volume operacional do sinal retrospectivo: o denominador ao lado do número
    de casos. É o que um time de risco pergunta antes da qualidade da regra. */
