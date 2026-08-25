@@ -61,7 +61,7 @@ responsabilidades por arquivo. A versão curta:
 │   └── tests/                   # pytest; não exige cluster ao vivo
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx              # Casca, sidebar, roteamento por hash
+│   │   ├── App.jsx              # Casca, seletor compacto, roteamento por hash
 │   │   ├── index.css            # Tokens de design e estilos base
 │   │   ├── hooks/useApi.js      # Wrapper de fetch
 │   │   ├── components/          # DemoFlow, QueryBlock

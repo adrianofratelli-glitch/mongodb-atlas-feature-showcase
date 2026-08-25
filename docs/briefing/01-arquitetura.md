@@ -1,6 +1,6 @@
 # Atlas Feature Showcase — arquitetura e princípios
 
-> Primeiro dos três prompts que eu uso pra levantar essa PoV do zero. Os oito módulos, a arquitetura, a segurança do backend e a operação. Coleções, índices e pipelines em `02-mongodb.md`; tela e roteiro em `03-interface-fluxos.md`.
+> Primeira das três partes do briefing desta PoV. Os oito módulos, a arquitetura, a segurança do backend e a operação. Coleções, índices e pipelines em `02-mongodb.md`; tela e roteiro em `03-interface-fluxos.md`.
 
 ---
 

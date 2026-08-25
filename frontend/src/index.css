@@ -238,6 +238,23 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+.module-picker {
+  display: flex; align-items: center; gap: 10px; margin: -8px 0 22px;
+  padding-bottom: 16px; border-bottom: 1px solid var(--border-subtle);
+}
+.module-picker label { color: var(--text-secondary); font-size: 12px; font-weight: 700; }
+.module-picker select {
+  min-height: 42px; flex: 0 1 360px; padding: 0 12px;
+  border: 1px solid var(--border-subtle); border-radius: 8px;
+  background: var(--bg-card); color: var(--text-primary); font: 600 13px var(--font-body);
+}
+.module-picker span { margin-left: auto; color: var(--text-secondary); font: 11px var(--font-mono); }
+@media (max-width: 640px) {
+  .module-picker { align-items: stretch; flex-direction: column; }
+  .module-picker select { flex-basis: auto; width: 100%; }
+  .module-picker span { margin-left: 0; }
+}
+
 /* ── Flow animation (Redis vs Change Streams demos) ─────────────────────── */
 .flow-wrap { position: relative; margin: 4px 0 2px; padding: 16px 10px 8px; background: rgba(255,255,255,.02); border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; }
 .flow-track { position: relative; width: 100%; }

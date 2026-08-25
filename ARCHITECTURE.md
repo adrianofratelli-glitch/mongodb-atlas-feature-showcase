@@ -236,7 +236,7 @@ workspace é convenção, não garantia.
 
 ## Frontend
 
-- `src/App.jsx` — casca, sidebar, roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`).
+- `src/App.jsx` — casca, seletor compacto e roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`).
   A rota padrão é `/#tese`.
 - `src/pages/` — um componente por módulo, mais `Tese.jsx` (abertura: a tese e os
   não-objetivos, ~70 palavras).

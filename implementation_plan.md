@@ -8,8 +8,8 @@ Um showcase interativo que exercita **oito capacidades centrais do Atlas contra 
 
 | Arquivo | O que responde |
 |---|---|
-| [`docs/prompts/01-arquitetura.md`](docs/prompts/01-arquitetura.md) | os oito módulos, arquitetura e portas, os dois middlewares, o módulo de Streaming e as injeções de falha, replay, ferramental de operação, armadilhas, ordem de trabalho |
-| [`docs/prompts/02-mongodb.md`](docs/prompts/02-mongodb.md) | separação de databases, índices do Geo com o racional, os três pipelines (`explain-compare`, `$setWindowFields`, `$search`), reconciliação em três checagens, seed e limpeza |
-| [`docs/prompts/03-interface-fluxos.md`](docs/prompts/03-interface-fluxos.md) | as duas regras de tela, `useApi`, disciplina de polling, layout do módulo 07, roteiro de demo |
+| [`docs/briefing/01-arquitetura.md`](docs/briefing/01-arquitetura.md) | os oito módulos, arquitetura e portas, os dois middlewares, o módulo de Streaming e as injeções de falha, replay, ferramental de operação, armadilhas, ordem de trabalho |
+| [`docs/briefing/02-mongodb.md`](docs/briefing/02-mongodb.md) | separação de databases, índices do Geo com o racional, os três pipelines (`explain-compare`, `$setWindowFields`, `$search`), reconciliação em três checagens, seed e limpeza |
+| [`docs/briefing/03-interface-fluxos.md`](docs/briefing/03-interface-fluxos.md) | as duas regras de tela, `useApi`, disciplina de polling, layout do módulo 07, roteiro de demo |
 
 Se for ler só um: o **01**, pela ordem de trabalho. O Streaming consome o projeto inteiro se vier primeiro.

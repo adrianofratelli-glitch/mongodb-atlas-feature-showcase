@@ -1,6 +1,6 @@
 # Atlas Feature Showcase — MongoDB: databases, índices e pipelines
 
-> Segundo dos três prompts. Tudo que roda contra o cluster: separação de databases, índices por módulo, os pipelines do Geo, o contrato de streaming e as três checagens da reconciliação.
+> Segunda parte do briefing. Tudo que roda contra o cluster: separação de databases, índices por módulo, os pipelines do Geo, o contrato de streaming e as três checagens da reconciliação.
 
 ---
 

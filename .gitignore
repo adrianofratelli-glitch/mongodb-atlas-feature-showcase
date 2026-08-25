@@ -23,3 +23,8 @@ Thumbs.db
 backend/.env.bak-*
 tmp/
 .playwright-mcp/
+
+# Instruções locais de ferramenta — não versionar
+CLAUDE.md
+AGENTS.md
+.claude/

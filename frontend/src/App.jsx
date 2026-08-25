@@ -99,15 +99,6 @@ export default function App() {
   const [preflight, setPreflight] = useState(null)
   // O cluster tem auto-scaling: anunciar um tier fixo faria a tela mentir.
   const [cluster, setCluster] = useState(null)
-  // Barra fixa aberta por padrão; o alfinete solta e a escolha persiste.
-  const [sidebarHover, setSidebarHover] = useState(false)
-  const [sidebarFixa, setSidebarFixa] = useState(() => {
-    try { return localStorage.getItem('sidebarFixa') !== 'false' } catch { return true }
-  })
-  const sidebarAberta = sidebarHover || sidebarFixa
-  useEffect(() => {
-    try { localStorage.setItem('sidebarFixa', String(sidebarFixa)) } catch { /* modo privado */ }
-  }, [sidebarFixa])
   const refreshPreflight = useCallback(() => {
     fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
   }, [])
@@ -146,7 +137,8 @@ export default function App() {
   const Component = mod.component
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div data-pov-shell style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <a className="pov-skip-link" href="#conteudo-principal">Pular para o conteúdo</a>
       {/* ── Top nav (sticky, blurred) ── */}
       <header className="app-header" style={{
         position: 'sticky', top: 0, zIndex: 50,
@@ -191,88 +183,18 @@ export default function App() {
       </header>
 
       <div className="app-shell-body" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
-        {/* ── Sidebar: fixa aberta por padrão (preferência em localStorage) ──
-            O alfinete solta a barra para o modo retrátil: o módulo Streaming
-            tem três colunas lado a lado e às vezes precisa dessa largura. */}
-        <aside
-          className={`app-sidebar${sidebarAberta ? ' aberta' : ''}`}
-          aria-label="Módulos da demonstração"
-          onMouseEnter={() => setSidebarHover(true)}
-          onMouseLeave={() => setSidebarHover(false)}
-        >
-          <div className="sb-topo">
-            <span className="kicker sb-so-aberta">Módulos</span>
-            <button
-              className="sb-pin"
-              aria-pressed={sidebarFixa}
-              aria-label={sidebarFixa ? 'Soltar barra lateral' : 'Fixar barra lateral aberta'}
-              title={sidebarFixa ? 'Soltar a barra (volta a recolher)' : 'Fixar a barra aberta'}
-              onClick={() => setSidebarFixa(v => !v)}
-            >{sidebarFixa ? '📌' : '📍'}</button>
-          </div>
-
-          {MODULES.map(m => (
-            <button key={m.key} aria-current={active === m.key ? 'page' : undefined}
-              title={`${m.num} · ${m.title}`}
-              onClick={() => setActive(m.key)}
-              className="sb-item"
-              style={{
-                background: active === m.key ? `${m.color}10` : 'transparent',
-                borderLeft: `3px solid ${active === m.key ? m.color : 'transparent'}`,
-              }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{
-                  fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 600,
-                  letterSpacing: '.1em', color: active === m.key ? m.color : 'var(--text-disabled)',
-                }}>{m.num}</span>
-                <span className="sb-so-aberta" style={{
-                  fontWeight: active === m.key ? 700 : 500, fontSize: 13.5,
-                  color: active === m.key ? m.color : 'var(--text-primary)',
-                  letterSpacing: '-.01em', whiteSpace: 'nowrap',
-                }}>
-                  {m.title}
-                </span>
-              </div>
-              <span className="sb-so-aberta" style={{ fontSize: 11, color: 'var(--text-secondary)', paddingLeft: 26, lineHeight: 1.45 }}>{m.subtitle}</span>
-            </button>
-          ))}
-
-          <div className="sb-so-aberta">
-
-          {/* Dataset info */}
-          <div style={{
-            margin: '22px 14px 0', padding: 16,
-            background: 'rgba(255,255,255,.02)', borderRadius: 14,
-            border: '1px solid var(--border-subtle)',
-          }}>
-            <div className="kicker" style={{ marginBottom: 10, fontSize: 10 }}>Dataset</div>
-            <div style={{ fontSize: 12.5, display: 'flex', flexDirection: 'column', gap: 5, color: 'var(--text-primary)' }}>
-              <div>📦 <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.produtos)}</strong> produtos</div>
-              <div>⭐ <strong style={{ fontFamily: 'var(--font-mono)' }}>{fmtCount(stats?.avaliacoes)}</strong> avaliações</div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: 11, marginTop: 5, fontFamily: 'var(--font-mono)' }}>MongoDB Atlas {cluster?.tier || '…'}</div>
-            </div>
-          </div>
-
-          <div style={{ margin: '12px 14px 0', padding: 12, borderRadius: 10, border: '1px solid var(--border-subtle)', fontSize: 11 }}>
-            <div className="kicker" style={{ marginBottom: 7 }}>Pré-voo</div>
-            <div style={{ color: preflight?.ready ? 'var(--accent)' : '#fbbf24', fontWeight: 700 }}>
-              {preflight?.ready ? '✓ Ambiente pronto' : '⚠ Verificação necessária'}
-            </div>
-            {preflight?.checks && Object.entries(preflight.checks).filter(([, c]) => !c.ok).map(([key, check]) => (
-              <div key={key} style={{ color: 'var(--text-secondary)', marginTop: 5 }}>{key}: {check.message}</div>
-            ))}
-          </div>
-          </div>
-        </aside>
-
         {/* ── Main ── */}
-        <main className="app-main" style={{ flex: 1, overflowY: 'auto', padding: '32px 36px', background: 'var(--bg-primary)' }}>
+        <main id="conteudo-principal" tabIndex={-1} className="app-main" style={{ flex: 1, overflowY: 'auto', padding: '32px 36px', background: 'var(--bg-primary)' }}>
           <div style={{ maxWidth: 980, margin: '0 auto' }} key={active} className="fade-in">
+            <div className="module-picker">
+              <label htmlFor="module-select">Cenário</label>
+              <select id="module-select" value={active} onChange={(event) => setActive(event.target.value)}>
+                {MODULES.map(m => <option key={m.key} value={m.key}>{m.num} · {m.title}</option>)}
+              </select>
+              <span>{stats ? `${fmtCount(stats.produtos + stats.avaliacoes)} documentos` : 'Atlas ao vivo'}</span>
+            </div>
             {/* Page header */}
-            <div style={{ marginBottom: 26 }}>
-              <div className="kicker" style={{ color: mod.color, marginBottom: 10 }}>
-                {mod.key === 'tese' ? 'Abertura' : `Módulo ${mod.num}`}
-              </div>
+            <div style={{ marginBottom: 20 }}>
               <h1 style={{
                 fontSize: 30, fontWeight: 800, color: 'var(--text-primary)',
                 letterSpacing: '-.03em', lineHeight: 1.1,

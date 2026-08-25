@@ -1,8 +1,15 @@
 # Atlas Feature Showcase — interface, fluxos e roteiro
 
-> Terceiro dos três prompts. Oito capacidades, cada uma tendo que se provar sozinha na frente de alguém cético.
+> Terceira parte do briefing. Oito capacidades, cada uma tendo que se provar sozinha na frente de alguém cético.
 
 ---
+## Estado atual — modo palco
+
+Não há sidebar. Um seletor compacto troca os oito módulos e preserva os hashes
+de deep-link. A abertura é uma única tese de convergência; cada módulo mantém
+somente a ação, o resultado medido e o `QueryBlock` que prova o caminho usado.
+O detalhamento abaixo permanece como contrato operacional dos módulos.
+
 ## Contrato visual do portfólio (v2)
 
 Esta UI participa da assinatura MongoDB Dark das PoVs. O arquivo
