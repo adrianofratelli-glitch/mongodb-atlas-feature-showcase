@@ -124,7 +124,7 @@ pytest             # 165 testes unitários, Mongo stubado, sem necessidade de cl
 ruff check backend
 ```
 
-[`ARCHITECTURE.md`](ARCHITECTURE.md) · [`docs/SESSION_HANDOFF.md`](docs/SESSION_HANDOFF.md)
+[`ARCHITECTURE.md`](ARCHITECTURE.md)
 
 ## Licença
 

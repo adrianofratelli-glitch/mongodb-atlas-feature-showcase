@@ -87,7 +87,7 @@ TPS_MAX = 15_000
 CONCEPT_TPS = min(TPS_MAX, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "200"))))
 # Modo de escrita da demo. "individual" é o padrão porque é o que corresponde a
 # um PIX real: uma transação, um insert. Ele só se tornou viável com o cluster
-# na mesma região do gerador — ver docs/SESSION_HANDOFF.md.
+# na mesma região do gerador.
 MODO_ESCRITA_PADRAO = os.getenv("STREAMING_MODO_ESCRITA", "individual").strip() or "individual"
 if MODO_ESCRITA_PADRAO not in ("individual", "lote"):
     MODO_ESCRITA_PADRAO = "individual"

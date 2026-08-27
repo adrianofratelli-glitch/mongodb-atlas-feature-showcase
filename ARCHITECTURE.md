@@ -252,8 +252,7 @@ workspace é convenção, não garantia.
   `pages/Streaming.jsx`).
 - O estado vive apenas no estado do React — sem `localStorage`/`sessionStorage`.
 
-A UI segue uma hierarquia de prova primeiro, documentada em
-`docs/SESSION_HANDOFF.md`: o Streaming expõe os três caminhos no primeiro
+A UI segue uma hierarquia de prova primeiro: o Streaming expõe os três caminhos no primeiro
 viewport de notebook e o de agregações usa `Origem → Pipeline → Resultado`.
 
 **A tela é enxuta porque o apresentador narra.** Fica visível o que a narração não

@@ -38,7 +38,6 @@ responsabilidades por arquivo. A versão curta:
 │   ├── create_search_index_geo.sh # Índice do Atlas Search para o módulo Geo
 │   └── generate-streaming-guide.py # Regenera o PDF do apresentador a partir do Markdown
 ├── docs/
-│   ├── SESSION_HANDOFF.md        # Decisões atuais, evidências e estado operacional
 │   ├── roteiro-apresentacao-streaming.md  # Roteiro editável do apresentador
 │   └── roteiro-apresentacao-streaming.pdf # Guia de duas páginas gerado para o apresentador
 ├── backend/
