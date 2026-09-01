@@ -51,7 +51,18 @@ export function useApi() {
         } catch { /* corpo não-JSON, mantém só o status */ }
         throw new Error(detail)
       }
-      return await res.json()
+      const body = await res.json()
+      const technical = body?.pipeline ?? body?.query ?? body?.explain ?? {
+        http: {
+          method: fetchOptions.method || 'GET',
+          path: `/api${path}`,
+          note: 'Esta operação é de control plane ou escrita; não há explain de leitura associado.',
+        },
+      }
+      window.dispatchEvent(new CustomEvent('api-query-executed', {
+        detail: { path, technical },
+      }))
+      return body
     } catch (e) {
       // Navegar entre módulos desmonta a tela e cancela suas requisições.
       // Esse cancelamento é esperado e não deve virar um falso erro global.

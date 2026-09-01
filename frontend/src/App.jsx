@@ -1,5 +1,6 @@
 import React, { lazy, Suspense, useCallback, useState, useEffect } from 'react'
 import { useIntervaloVisivel } from './hooks/usePolling'
+import QueryBlock from './components/QueryBlock'
 
 const Tese = lazy(() => import('./pages/Tese'))
 const Reindexacao = lazy(() => import('./pages/Reindexacao'))
@@ -99,13 +100,21 @@ export default function App() {
   const [preflight, setPreflight] = useState(null)
   // O cluster tem auto-scaling: anunciar um tier fixo faria a tela mentir.
   const [cluster, setCluster] = useState(null)
+  const [lastQuery, setLastQuery] = useState(null)
   const refreshPreflight = useCallback(() => {
     fetch('/api/preflight').then(r => r.json()).then(setPreflight).catch(() => setPreflight({ ready: false }))
   }, [])
 
   useEffect(() => {
     window.history.replaceState(null, '', `#${active}`)
+    setLastQuery(null)
   }, [active])
+
+  useEffect(() => {
+    const remember = (event) => setLastQuery(event.detail)
+    window.addEventListener('api-query-executed', remember)
+    return () => window.removeEventListener('api-query-executed', remember)
+  }, [])
 
   // Deep-link: reage a mudanças de hash com a app aberta
   useEffect(() => {
@@ -203,6 +212,16 @@ export default function App() {
             <Suspense fallback={<div className="card">Carregando módulo…</div>}>
               <Component />
             </Suspense>
+            {lastQuery && (
+              <div style={{ marginTop: 12 }}>
+                <QueryBlock
+                  label={`Ver query / chamada executada · ${lastQuery.path}`}
+                  query={typeof lastQuery.technical === 'string'
+                    ? lastQuery.technical
+                    : JSON.stringify(lastQuery.technical, null, 2)}
+                />
+              </div>
+            )}
           </div>
         </main>
       </div>
