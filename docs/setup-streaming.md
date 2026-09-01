@@ -241,6 +241,40 @@ fluxo é só PIX e o painel de tempo de evento do módulo 08 fica vazio),
 `ATLAS_TIER_INICIAL` (só a expectativa do preflight), `ATLAS_MIN_TIER`
 (apenas documentação) e `KAFKA_CONSUMER_GROUP`.
 
+## Processor em FAILED: `Resume of change stream was not possible`
+
+```
+Resume of change stream was not possible. The processor's most recent
+checkpoint's resume point is no longer in the oplog.
+```
+
+Os processors ficaram parados mais tempo que a janela do oplog do cluster fonte, e
+o resume token do último checkpoint saiu do oplog. Pipeline e conexões estão
+íntegros — compare `details.checkpoint.timestamp` do erro com a janela do oplog.
+
+Processor em `FAILED` **não aceita** `stop()` ("stream processor must be running in
+order to be stopped"). Vá direto pro start, sem checkpoint:
+
+```js
+sp.pixJanelas5s.start({ tier: "SP10", resumeFromCheckpoint: false })
+sp.geoSinais30s.start({ tier: "SP10", resumeFromCheckpoint: false })
+```
+
+Ou, dos dois de uma vez, `~/scripts/start-processors.sh`.
+
+Subir sem checkpoint é seguro **nestes dois**: `pixJanelas5s` faz `$merge` em
+`pix.metricas_janela` e `geoSinais30s` em `geo.sinais_ao_vivo`, os dois com `_id`
+determinístico — reprocessar sobrescreve em vez de duplicar. O que se perde é a
+lacuna: as janelas do período parado não são reprocessadas, o gerador precisa rodar
+de novo pra repovoar o painel.
+
+Isso **não** vale pro `ordersToIceberg` da PoV `iceberg-mongodb-lakehouse`, que
+divide o mesmo workspace `spi-inter-pix`: lá o sink não é idempotente e subir sem
+checkpoint duplica a tabela. Ver o `docs/TROUBLESHOOTING.md` daquele repo.
+
+Ocorrido em 2026-09-01, com checkpoints de 2026-08-27, nos três processors ao mesmo
+tempo.
+
 ## Valores das transações
 
 O tráfego real de pagamentos é desbalanceado: muitas transferências pequenas e algumas grandes que
