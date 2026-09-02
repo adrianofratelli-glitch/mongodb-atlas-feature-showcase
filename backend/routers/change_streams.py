@@ -95,23 +95,41 @@ def _watch_worker(generation: int, ready: threading.Event):
             ready.set()
             deadline = time.time() + 120
             while time.time() < deadline:
-                with _state_lock:
-                    if not _state["active"] or generation != _state["generation"]:
-                        break
+                # try_next() é I/O de rede — fica FORA do lock de propósito.
+                # Mas a decisão "esta geração ainda é a ativa?" e o append (ou
+                # o descarte) do evento resultante precisam estar na MESMA
+                # seção crítica: checar a generation aqui, liberar o lock, e só
+                # reconferir depois — separadamente, dentro de um segundo
+                # `with _state_lock` — abria uma janela entre check e append em
+                # que um /start concorrente podia trocar a generation no meio,
+                # de modo que a checagem e a decisão de appendar respondiam a
+                # duas fotografias diferentes do estado. Uma única aquisição de
+                # lock por iteração, cobrindo leitura da generation + append,
+                # fecha essa janela.
                 change = stream.try_next()
+                event = None
                 if change:
                     op   = change["operationType"]
                     doc  = change.get("fullDocument") or {}
                     prev = change.get("fullDocumentBeforeChange") or {}
                     info = _resumo(op, doc, prev)
-                    _append_event({
+                    event = {
                         "ts":        datetime.now().strftime("%H:%M:%S.%f")[:-3],
                         "operation": op,
                         "texto":     info["texto"],
                         "detalhe":   info["detalhe"],
                         "alerta":    info["alerta"],
-                    }, generation)
-                else:
+                    }
+                with _state_lock:
+                    if not _state["active"] or generation != _state["generation"]:
+                        break
+                    if event is not None:
+                        _state["events"].append(event)
+                        excedente = len(_state["events"]) - 250
+                        if excedente > 0:
+                            del _state["events"][:excedente]
+                            _state["seq_base"] += excedente
+                if event is None:
                     time.sleep(0.15)
     except Exception as e:
         logger.exception("Change Stream worker falhou")

@@ -544,7 +544,7 @@ def _preflight_com_mongo_stub(monkeypatch):
     monkeypatch.setattr(streaming, "_cluster_info_sync",
                         lambda: {"tier": "M20", "autoscaling": {"ativo": True, "min": "M20",
                                                                 "max": "M30"}, "escalou": False})
-    return streaming.preflight_checks()
+    return asyncio.run(streaming.preflight_checks())
 
 
 def test_fora_do_modo_ao_vivo_asp_e_kafka_nao_reprovam(monkeypatch):
@@ -632,7 +632,7 @@ def test_preflight_aceita_m30_dentro_do_autoscaling(monkeypatch):
         lambda: {"tier": "M30", "autoscaling": {"ativo": True, "min": "M20", "max": "M30"}, "escalou": True},
     )
 
-    checks = streaming.preflight_checks()
+    checks = asyncio.run(streaming.preflight_checks())
 
     assert checks["cluster_tier"]["ok"] is True
     assert "M20→M30" in checks["cluster_tier"]["message"]
@@ -755,7 +755,7 @@ def test_preflight_reprova_indice_de_reconciliacao_ausente_ou_ttl_divergente(mon
         lambda: {"tier": "M20", "autoscaling": None, "escalou": False},
     )
 
-    check = streaming.preflight_checks()["streaming_indices"]
+    check = asyncio.run(streaming.preflight_checks())["streaming_indices"]
     assert check["ok"] is False
     assert "run_id" in check["message"]
     assert str(streaming.TTL_SECONDS) in check["message"]

@@ -1,14 +1,40 @@
+import time
+
 from fastapi import APIRouter, Query
 from database import db
 
 router = APIRouter(prefix="/aggregations", tags=["Aggregations"])
+
+# Cache curto do /lookup, por `limit`: o $group inicial varre `avaliacoes`
+# inteira sem índice cobrindo esse padrão (o índice de seed_data.py em
+# produto_id só ajuda o $lookup seguinte, não o $group). Em `--full`
+# (1M avaliações) isso é um COLLSCAN completo a cada chamada — sem cache,
+# cada refresh da tela durante a demo repete o scan. O dado não muda com
+# frequência (produtos/avaliações são semeados, não escritos ao vivo), então
+# um TTL curto elimina o scan repetido sem esconder uma mudança real por
+# muito tempo. Mesmo padrão de `_cluster_cache`/`_folga_cache` em
+# `streaming.py`.
+LOOKUP_CACHE_TTL_S = 45
+_lookup_cache: dict[int, dict] = {}
 
 
 @router.get("/lookup")
 def lookup_produtos_avaliacoes(limit: int = Query(5, ge=1, le=20)):
     """`$lookup` com sub-pipeline — parte de avaliacoes para garantir join sempre populado.
     O $group varre as avaliações (grupo não usa índice); quem usa índice é o
-    $lookup, via produto_id_1 do lado produtos. $topN limita a memória do acumulador."""
+    $lookup, via produto_id_1 do lado produtos. $topN limita a memória do acumulador.
+
+    Custo esperado em `--full` (1M avaliações): COLLSCAN completo no $group —
+    sem índice cobrindo `produto_id` como chave de agrupamento sobre a coleção
+    inteira. Por isso o resultado é cacheado por `limit` por
+    `LOOKUP_CACHE_TTL_S` segundos: refreshes repetidos da tela durante a demo
+    reaproveitam o último resultado em vez de repetir o scan.
+    """
+    agora = time.monotonic()
+    cache = _lookup_cache.get(limit)
+    if cache and agora - cache["ts"] < LOOKUP_CACHE_TTL_S:
+        return cache["dados"]
+
     pipeline = [
         {"$group": {
             "_id": "$produto_id",
@@ -47,7 +73,9 @@ def lookup_produtos_avaliacoes(limit: int = Query(5, ge=1, le=20)):
             "top_reviews":   1,
         }},
     ]
-    return {"results": list(db["avaliacoes"].aggregate(pipeline, allowDiskUse=True))}
+    resultado = {"results": list(db["avaliacoes"].aggregate(pipeline, allowDiskUse=True))}
+    _lookup_cache[limit] = {"ts": agora, "dados": resultado}
+    return resultado
 
 
 @router.get("/facet")

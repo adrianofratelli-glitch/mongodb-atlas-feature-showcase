@@ -2,6 +2,7 @@ from fastapi import APIRouter, Path, Query
 from database import db
 from datetime import datetime, timedelta, timezone
 import json
+import math
 import requests
 import logging
 from requests.auth import HTTPDigestAuth
@@ -74,6 +75,40 @@ def _atlas_request(method: str, url: str, **kwargs) -> dict:
 
 SAMPLE_SIZE = 5_000
 
+# Cutoff default de 365 dias, usado até que o usuário crie de fato uma regra
+# de Online Archive com outro `expire_after_days` (30-3650). A partir daí,
+# `/distribution` e `/archive-simulation` passam a usar o valor real
+# configurado — sem isto a simulação continuava fixa em 365 dias mesmo depois
+# do usuário escolher, digamos, 90 ou 730 em `POST /online-archive/create`,
+# e a demo mostrava um corte que não é o que foi de fato provisionado. Mesmo
+# padrão de estado em runtime já usado neste módulo/arquivo pelo Atlas
+# (nenhum global novo de infraestrutura, só um dict simples).
+_ultimo_archive_cfg = {"expire_after_days": 365}
+
+
+def _cutoff_atual() -> tuple[datetime, int]:
+    dias = _ultimo_archive_cfg["expire_after_days"]
+    return datetime.now(timezone.utc) - timedelta(days=dias), dias
+
+
+def _margem_erro_estimada(count_extrapolado: int, sampled_count: int, sampled_total: int, total_docs: int) -> float:
+    """
+    Margem de erro (1 desvio-padrão) do count extrapolado a partir de `$sample`.
+
+    `count` já é `round(p_amostral * total_docs)` — uma extrapolação, não uma
+    contagem exata. O erro padrão de uma proporção amostral p com tamanho de
+    amostra n é `sqrt(p*(1-p)/n)`; convertido para a escala do count
+    extrapolado (multiplicando por total_docs), isso vira a margem de erro
+    absoluta que falta no payload hoje. Mesmo rigor que streaming.py e
+    transactions.py já aplicam a métricas medidas — aqui a métrica é
+    estimada, então a margem é a honestidade equivalente.
+    """
+    if sampled_total <= 0 or total_docs <= 0:
+        return 0.0
+    p = sampled_count / sampled_total
+    erro_padrao_proporcao = math.sqrt(max(p * (1 - p), 0) / sampled_total)
+    return round(erro_padrao_proporcao * total_docs, 1)
+
 
 @router.get("/distribution")
 def data_distribution():
@@ -81,6 +116,10 @@ def data_distribution():
     Distribuição de documentos por ano. Para resposta instantânea na demo,
     roda sobre uma amostra aleatória ($sample) e extrapola as contagens para
     o total da coleção, em vez de varrer os 5M de documentos.
+
+    Cada `count` é uma extrapolação, não uma contagem exata — por isso cada
+    bucket carrega `margem_erro_estimada` (1 desvio-padrão do erro binomial
+    da proporção amostral, na mesma escala do count extrapolado).
     """
     pipeline = [
         {"$sample": {"size": SAMPLE_SIZE}},
@@ -93,14 +132,16 @@ def data_distribution():
     total_docs   = db[COLLECTION].estimated_document_count()
     sampled      = sum(r["count"] for r in result) or 1
     factor       = total_docs / sampled  # extrapola amostra → total
-    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
+    cutoff, cutoff_dias = _cutoff_atual()
 
     rows = []
     for r in result:
         year = r["_id"]
+        count_extrapolado = round(r["count"] * factor)
         rows.append({
             "year": year,
-            "count": round(r["count"] * factor),
+            "count": count_extrapolado,
+            "margem_erro_estimada": _margem_erro_estimada(count_extrapolado, r["count"], sampled, total_docs),
             "avg_preco": round(r["avg_preco"] or 0, 2),
             "tier": (
                 "🔥 Hot (ativo)" if year and year > cutoff.year
@@ -113,17 +154,19 @@ def data_distribution():
         "sampled": True,
         "sample_size": SAMPLE_SIZE,
         "total_docs": total_docs,
+        "cutoff_dias": cutoff_dias,
         "note": (
             f"Estimativa a partir de uma amostra de {SAMPLE_SIZE:,} documentos "
-            "(resposta instantânea). Documentos com mais de 1 ano seriam movidos "
-            "automaticamente para o Online Archive."
+            "(resposta instantânea); cada count carrega margem_erro_estimada "
+            "(1 desvio-padrão). Documentos com mais de "
+            f"{cutoff_dias} dias seriam movidos automaticamente para o Online Archive."
         ),
     }
 
 
 @router.get("/archive-simulation")
 def archive_simulation():
-    cutoff = datetime.now(timezone.utc) - timedelta(days=365)
+    cutoff, cutoff_dias = _cutoff_atual()
 
     # Amostra para split hot/cold instantâneo, extrapolado para o total.
     pipeline = [
@@ -142,8 +185,17 @@ def archive_simulation():
     hot_count  = round(total * sampled_hot  / sampled)
     cold_count = round(total * sampled_cold / sampled)
     return {
-        "hot":  {"count": hot_count,  "pct": round(hot_count / total * 100, 1) if total else 0, "tier": "Cluster Atlas", "latency": "latência depende do tier e da região"},
-        "cold": {"count": cold_count, "pct": round(cold_count / total * 100, 1) if total else 0, "tier": "Online Archive (Object Storage)", "latency": "latência depende da consulta federada"},
+        "hot":  {
+            "count": hot_count, "pct": round(hot_count / total * 100, 1) if total else 0,
+            "margem_erro_estimada": _margem_erro_estimada(hot_count, sampled_hot, sampled, total),
+            "tier": "Cluster Atlas", "latency": "latência depende do tier e da região",
+        },
+        "cold": {
+            "count": cold_count, "pct": round(cold_count / total * 100, 1) if total else 0,
+            "margem_erro_estimada": _margem_erro_estimada(cold_count, sampled_cold, sampled, total),
+            "tier": "Online Archive (Object Storage)", "latency": "latência depende da consulta federada",
+        },
+        "cutoff_dias": cutoff_dias,
         "savings_estimate": "Potencial de redução de storage: valide com região, retenção, compressão e padrão de leitura",
         "transparencia": "Endpoint federado dedicado — uma única query lê hot + cold, sem mudar o código de leitura",
     }
@@ -231,6 +283,9 @@ def create_online_archive(expire_after_days: int = Query(365, ge=30, le=3650)):
         result = _atlas_request("POST", url, json=payload)
     except AtlasUnavailable as e:
         return {"atlas_error": str(e)}
+    # A simulação (`/distribution`, `/archive-simulation`) passa a usar este
+    # cutoff real em vez do default de 365 dias — ver `_cutoff_atual()`.
+    _ultimo_archive_cfg["expire_after_days"] = expire_after_days
     return {
         "archive_id": result.get("id") or result.get("_id"),
         "status": result.get("state"),

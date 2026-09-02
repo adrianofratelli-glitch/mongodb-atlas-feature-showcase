@@ -94,7 +94,10 @@ def test_preflight_reports_required_collections(monkeypatch):
     monkeypatch.setattr(main, "db", FakeDatabase())
     # As checagens do módulo Streaming falam com Atlas/Kafka de verdade; aqui o
     # foco é o reporte das coleções da POC.
-    monkeypatch.setattr(main.streaming, "preflight_checks", dict)
+    async def _vazio():
+        return {}
+
+    monkeypatch.setattr(main.streaming, "preflight_checks", _vazio)
     response = client.get("/preflight")
     assert response.status_code == 200
     assert response.json()["ready"] is True
@@ -105,10 +108,10 @@ def test_preflight_reprova_quando_o_streaming_precisa_de_acao(monkeypatch):
     """A coleção cheia antes da demo tem que reprovar o pré-voo, não passar batido."""
     monkeypatch.setattr(main, "readiness", lambda: (True, "MongoDB conectado"))
     monkeypatch.setattr(main, "db", FakeDatabase())
-    monkeypatch.setattr(
-        main.streaming, "preflight_checks",
-        lambda: {"streaming_colecao": {"ok": False, "message": "5000000 documentos — rode o Reset"}},
-    )
+    async def _colecao_cheia():
+        return {"streaming_colecao": {"ok": False, "message": "5000000 documentos — rode o Reset"}}
+
+    monkeypatch.setattr(main.streaming, "preflight_checks", _colecao_cheia)
     response = client.get("/preflight")
     assert response.status_code == 503
     assert response.json()["ready"] is False
@@ -118,13 +121,13 @@ def test_preflight_nao_reprova_por_kafka_ou_asp_ausentes(monkeypatch):
     """Kafka e ASP são opcionais: aparecem no diagnóstico, mas não travam o pré-voo."""
     monkeypatch.setattr(main, "readiness", lambda: (True, "MongoDB conectado"))
     monkeypatch.setattr(main, "db", FakeDatabase())
-    monkeypatch.setattr(
-        main.streaming, "preflight_checks",
-        lambda: {
+    async def _kafka_asp_ausentes():
+        return {
             "streaming_kafka": {"ok": False, "message": "Connect indisponível"},
             "streaming_asp": {"ok": False, "message": "ASP_ENABLED=false"},
-        },
-    )
+        }
+
+    monkeypatch.setattr(main.streaming, "preflight_checks", _kafka_asp_ausentes)
     response = client.get("/preflight")
     assert response.status_code == 200
     assert response.json()["ready"] is True

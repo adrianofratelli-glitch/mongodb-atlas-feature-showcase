@@ -1855,18 +1855,25 @@ async def rede():
     return await asyncio.to_thread(_medir_rtt)
 
 
-def preflight_checks() -> dict[str, dict[str, Any]]:
+async def preflight_checks() -> dict[str, dict[str, Any]]:
     """
     Checagens do módulo Streaming para o /preflight global.
 
     Sem isto, o comando que o apresentador roda para dizer "estou pronto"
     respondia ok sem olhar para nada do módulo 07 — processor parado, connector
     com task morta e índice TTL divergente passavam batido.
+
+    `async def` de propósito: esta função faz I/O de rede síncrono (Atlas Admin
+    API, Kafka Connect REST) por baixo, e cada chamada é envolvida aqui em
+    `asyncio.to_thread` — mesmo padrão do resto do arquivo (ex. `_medir_rtt`
+    acima). Isso remove a dependência implícita de o CHAMADOR também ser
+    síncrono: antes, uma rota `async def` que chamasse isto direto travaria o
+    event loop por até alguns segundos por connector.
     """
     checks: dict[str, dict[str, Any]] = {}
 
     try:
-        indices = {i["name"]: i for i in sdb[COL_TX].list_indexes()}
+        indices = {i["name"]: i for i in await asyncio.to_thread(lambda: list(sdb[COL_TX].list_indexes()))}
         ttl = next((i for i in indices.values() if dict(i.get("key", {})) == {"ts": 1}), None)
         ttl_ok = bool(ttl) and ttl.get("expireAfterSeconds") == TTL_SECONDS
         unique_ok = "endToEndId_unique" in indices
@@ -1888,7 +1895,7 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
                 else f"{'; '.join(faltantes)}; corrigidos no primeiro start do gerador"
             ),
         }
-        docs = sdb[COL_TX].estimated_document_count()
+        docs = await asyncio.to_thread(sdb[COL_TX].estimated_document_count)
         checks["streaming_colecao"] = {
             "ok": docs < DROP_ACIMA_DE,
             "message": f"{docs} documentos" + ("" if docs < DROP_ACIMA_DE else " — rode o Reset antes da demo"),
@@ -1896,7 +1903,7 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
     except PyMongoError as exc:
         checks["streaming_colecao"] = {"ok": False, "message": f"inacessível: {type(exc).__name__}"}
 
-    info = _cluster_info_sync()
+    info = await asyncio.to_thread(_cluster_info_sync)
     auto = info.get("autoscaling") or {}
     if auto.get("ativo"):
         checks["cluster_tier"] = {
@@ -1922,8 +1929,8 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
         }
         return checks
 
-    ok_asp, detalhe_asp, tier = _asp_reachable()
-    atraso = _asp_atraso_s() if ok_asp else None
+    ok_asp, detalhe_asp, tier = await asyncio.to_thread(_asp_reachable)
+    atraso = await asyncio.to_thread(_asp_atraso_s) if ok_asp else None
     if atraso is not None and atraso > ASP_ATRASO_ALERTA_S:
         ok_asp, detalhe_asp = False, f"processor {tier} drenando backlog ({atraso:.0f}s) — rode o Reset"
     if tier and tier not in detalhe_asp:
@@ -1931,7 +1938,7 @@ def preflight_checks() -> dict[str, dict[str, Any]]:
     checks["streaming_asp"] = {"ok": ok_asp, "message": detalhe_asp}
 
     try:
-        connector = _connector_status_sync()
+        connector = await asyncio.to_thread(_connector_status_sync)
         checks["streaming_kafka"] = {
             "ok": connector["estado"] == "RUNNING",
             "message": f"{connector['estado']} — {connector['detalhe']}",
@@ -2787,7 +2794,12 @@ def classifica_connectors(
 
 def _connector_status_sync() -> dict[str, Any]:
     """
-    Estado agregado dos connectors da PoV.
+    Estado agregado dos connectors da PoV — I/O de rede SÍNCRONO (`requests`).
+
+    Chame sempre via `asyncio.to_thread` a partir de um `async def` (nunca
+    direto de dentro de uma rota assíncrona) — mesmo padrão já usado alhures
+    neste arquivo. `preflight_checks()`, abaixo, é `async def` justamente para
+    tornar isso estrutural em vez de depender da assinatura do chamador.
 
     Com o consumo particionado existe mais de um connector publicando no mesmo
     tópico; a coluna precisa de UM veredito. E o estado é rebaixado pela saúde

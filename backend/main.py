@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import uuid
@@ -108,26 +109,31 @@ def health_ready():
 
 
 @app.get("/preflight")
-def preflight():
-    mongo_ok, mongo_message = readiness()
+async def preflight():
+    # async de propósito: streaming.preflight_checks() (e as demais checagens
+    # abaixo) fazem I/O de rede/Mongo síncrono internamente, envolvido em
+    # asyncio.to_thread. Chamar isso de uma rota `def` síncrona funcionava por
+    # acidente (o FastAPI já roda `def` em threadpool); aqui a rota é `async`
+    # e cada checagem bloqueante precisa do próprio `await`/`to_thread`.
+    mongo_ok, mongo_message = await asyncio.to_thread(readiness)
     checks = {
         "mongo_uri": {"ok": bool(settings.mongo_uri), "message": "configurada" if settings.mongo_uri else "ausente"},
         "mongodb": {"ok": mongo_ok, "message": mongo_message},
-        "atlas_admin_api": streaming.preflight_atlas_admin(),
+        "atlas_admin_api": await asyncio.to_thread(streaming.preflight_atlas_admin),
         "mutation_guard": {
             "ok": True,
             "message": "token obrigatório" if settings.demo_admin_token else "somente localhost/origens permitidas",
         },
     }
     if mongo_ok:
-        names = set(db.list_collection_names())
+        names = set(await asyncio.to_thread(db.list_collection_names))
         for collection in ("produtos", "avaliacoes"):
             checks[f"collection_{collection}"] = {
                 "ok": collection in names,
                 "message": "disponível" if collection in names else "execute seed_data.py",
             }
-        checks.update(streaming.preflight_checks())
-        checks.update(geo.preflight_checks())
+        checks.update(await streaming.preflight_checks())
+        checks.update(await asyncio.to_thread(geo.preflight_checks))
 
     # Kafka, ASP e o módulo Geo são opcionais: a UI mostra "não configurado" e o
     # resto roda. Eles aparecem no diagnóstico, mas não reprovam o pré-voo.
