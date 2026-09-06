@@ -102,3 +102,8 @@ Abrir cada módulo direto pela URL, disparar a operação, e mostrar o número e
 - `/preflight` limpo — inclusive a sonda real da Admin API (o IP de saída muda com VPN).
 - `pgrep -f "uvicorn main:app"` devolvendo **um** PID.
 - Notebook fora de VPN, senão a coluna de latência mede a rota e não o cluster.
+
+
+## Comportamento de resiliência integrado
+
+Impedir sobreposição de polling lento; ignorar chamadas com sinal já abortado. A implementação vigente está em `main`; consulte o estado atual de `../../REVIEW.md` para validação e propostas não aplicadas.
