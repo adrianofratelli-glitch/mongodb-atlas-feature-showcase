@@ -46,3 +46,15 @@ Auditoria do ambiente instalado, não de uma resolução limpa do manifesto; fer
 Varredura por padrões de chaves privadas, chaves Anthropic/AWS e URI MongoDB autenticada no histórico Git local alcançável: nenhuma credencial real confirmada; matches encontrados eram placeholders conhecidos. Limite: não é scanner de entropia, não cobre objetos inacessíveis, texto em screenshots nem logs externos.
 
 Nenhum import/referência estática a `_shared/grove_client.py` foi encontrado nesta PoV. Configuração própria de gateway/ambiente não constitui dependência de código desse módulo. `_shared` permaneceu intocado; consumidores externos/dinâmicos não são garantidos por busca estática. Relatório separado: `../REVIEW_SHARED.md`.
+
+
+## Fechamento final — 2026-09-05
+
+Esta seção atualiza o estado dos achados históricos acima.
+
+- Aplicado/reavaliado: pip atualizado no ambiente; pypdf auxiliar atualizado para 6.16.1 sem adicionar dependência não utilizada ao manifesto.
+- Validação: 165 testes; npm sem achados.
+- Propostas e limites restantes: Starlette 1.2.1 → ≥1.3.1: corrige parsing/URL, mas requer compatibilidade com FastAPI; core não alterado. pytest 8.4.2 → 9.0.3: corrige advisory local, exige validação de plugins/CI. ASP/Kafka/failover/reconciliação precisam de janela e ambiente de integração; não disparados. Seletor de oito módulos mantém a exceção narrativa estabelecida.
+- pip-audit atual: pytest 8.4.2: PYSEC-2026-1845; starlette 1.2.1: PYSEC-2026-249, PYSEC-2026-248
+- Ambiente: pip 26.2.1 nos ambientes que possuem pip; FinScope mantém uv sem pip. Essa atualização local não altera arquivos de dependências das PoVs.
+- `_shared`: nenhum importador estático comprovado nesta PoV; apenas smoke consome o helper no inventário.
