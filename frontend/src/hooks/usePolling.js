@@ -28,12 +28,18 @@ export function useVisivel() {
 export function useIntervaloVisivel(fn, ms, ativo = true) {
   const visivel = useVisivel()
   const ref = useRef(fn)
+  const inFlight = useRef(false)
   ref.current = fn
 
   useEffect(() => {
     if (!ativo || !visivel) return undefined
     let vivo = true
-    const tick = () => { if (vivo) ref.current() }
+    const tick = async () => {
+      if (!vivo || inFlight.current) return
+      inFlight.current = true
+      try { await ref.current() }
+      finally { inFlight.current = false }
+    }
     tick()
     const t = setInterval(tick, ms)
     return () => { vivo = false; clearInterval(t) }

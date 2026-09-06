@@ -20,7 +20,7 @@ export function useApi() {
   }, [])
 
   const call = useCallback(async (path, options = {}) => {
-    if (!mounted.current) return null
+    if (!mounted.current || options.signal?.aborted) return null
     const { timeoutMs: requestedTimeout = REQUEST_TIMEOUT_MS, ...fetchOptions } = options
     const timeoutMs = Number.isFinite(requestedTimeout)
       ? Math.max(1_000, Math.min(requestedTimeout, 300_000))
