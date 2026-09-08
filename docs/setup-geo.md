@@ -17,6 +17,12 @@ python scripts/seed_geo.py --ensure   # mantém se estiver atual; recria se esti
 ./scripts/create_search_index_geo.sh  # cria/atualiza e espera até READY
 ```
 
+O script também mantém `geo.transacoes_geonear` — uma cópia via `$out` com um
+único índice `2dsphere`, dedicada ao operador `$geoNear` (que recusa rodar
+quando o campo tem mais de um índice 2dsphere, e `transacoes` tem dois de
+propósito). Os dois caminhos (`--drop` e `--ensure`) mantêm as duas coleções
+sincronizadas; nenhum script separado é necessário.
+
 ⚠️ **O `--drop` apaga a coleção, e o índice do Atlas Search vai junto.**
 Sempre rode `./scripts/create_search_index_geo.sh` depois, ou o painel 02 abre
 como `nao_configurado` no palco.

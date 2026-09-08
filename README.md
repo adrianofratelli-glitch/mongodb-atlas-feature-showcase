@@ -86,9 +86,11 @@ Um segundo processor lê o mesmo change stream, agrupa o canal de cartão por po
 
 Pares plantados e pares emergentes são contados separadamente — a garantia não pode virar a evidência. O mapa é SVG inline: malha estadual do IBGE embutida no bundle, projeção equiretangular corrigida por `cos(lat)`, sem tiles e sem requisição em runtime — funciona com a rede do local caída. Definir `VITE_GOOGLE_MAPS_KEY` acrescenta um alternador para o Google Maps; o padrão continua sendo a malha local.
 
-O painel retrospectivo responde às duas perguntas que um time de operações faz antes de qualquer outra: **quantos alertas isto coloca na fila** (pares avaliados, sinalizados, taxa, alertas por dia) e **quanto custa a query** — medida nos dois escopos, varredura completa contra um recorte por cliente. A investigação começa na compra contestada, não em um nome de lugar: escolha um caso sinalizado e um `$search` retorna o que existe em volta *daquele terminal*, com casamento fuzzy de nome mantido como refinamento para o caso de estabelecimento clonado.
+O painel retrospectivo responde às duas perguntas que um time de operações faz antes de qualquer outra: **quantos alertas isto coloca na fila** (pares avaliados, sinalizados, taxa, alertas por dia) e **quanto custa a query** — medida nos dois escopos, varredura completa contra um recorte por cliente. Cada par aparece marcado `sinalizada` (acima do limite de km/h) ou `aprovada` (dentro dele), intercalados na mesma tabela — as duas faces da mesma decisão, não só a fila de suspeitos.
 
-A saída é um **sinal de risco** para política, nunca uma decisão automática — e explicitamente não é um motor antifraude, que um emissor já tem.
+Um segundo painel roda os cinco operadores de consulta geoespacial do MongoDB lado a lado sobre a mesma geometria — `$geoWithin`, `$geoIntersects`, `$near`, `$nearSphere` e `$geoNear` — cada um com contagem, amostra real (identificador do documento, não rótulo inventado) e a query executada visível.
+
+A saída é um **sinal de risco** para política, nunca uma decisão automática.
 
 ## Mais screenshots
 

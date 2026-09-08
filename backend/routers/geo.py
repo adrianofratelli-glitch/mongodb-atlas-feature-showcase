@@ -46,6 +46,12 @@ DIAS_DATASET = 90
 
 banco = client[GEO_DB]
 colecao = banco[GEO_COLECAO]
+# $geoNear recusa rodar (mesmo com hint) quando o campo geo tem mais de um
+# índice 2dsphere — e `transacoes` tem dois de propósito (o puro e o composto
+# da Demo A de explain). Cópia mantida por scripts/seed_geo.py com um índice
+# só, dedicada a esse operador.
+COLECAO_GEONEAR = "transacoes_geonear"
+colecao_geonear = banco[COLECAO_GEONEAR]
 
 # Cache do resumo de municípios: a lista muda apenas quando o seed roda de novo.
 _municipios_cache: list[dict[str, Any]] | None = None
@@ -413,6 +419,45 @@ def impossible_travel(
         }},
     ]
 
+    # Contraponto do ramo sinalizado: uma amostra de pares comuns, dentro do
+    # limite, pra mostrar as duas faces da mesma decisão — não só a fila de
+    # suspeitos. `$sample` entra logo após o corte de "tem par anterior" pra não
+    # rodar haversine sobre a coleção inteira; o corte geométrico do ramo
+    # sinalizado não se aplica aqui porque o alvo é o oposto (ficar dentro do
+    # limite), então a amostra roda haversine sobre um recorte aleatório pequeno.
+    ramo_aprovados: list[dict] = [{"$sample": {"size": 200}}]
+    ramo_aprovados += _haversine_stages(
+        "km",
+        {"$arrayElemAt": ["$coord_ant", 1]},
+        {"$arrayElemAt": ["$coord_ant", 0]},
+        {"$arrayElemAt": ["$local.coordinates", 1]},
+        {"$arrayElemAt": ["$local.coordinates", 0]},
+    )
+    ramo_aprovados += [
+        {"$addFields": {"kmh": {"$divide": ["$km", {"$divide": ["$minutos", 60]}]}}},
+        {"$match": {"kmh": {"$lte": limiteKmh}}},
+        {"$sort": {"ts": -1}},
+        {"$limit": limite},
+        {"$project": {
+            "_id": 0,
+            "clienteId": 1,
+            "endToEndId": 1,
+            "km": {"$round": ["$km", 1]},
+            "minutos": {"$round": ["$minutos", 1]},
+            "kmh": {"$round": ["$kmh", 0]},
+            "de": {
+                "municipio": "$municipio_ant", "uf": "$uf_ant", "coordinates": "$coord_ant",
+                "dispositivo": "$dispositivo_ant", "localizacaoMeta": "$localizacao_meta_ant",
+            },
+            "para": {
+                "municipio": "$municipio", "uf": "$uf", "coordinates": "$local.coordinates",
+                "dispositivo": "$dispositivo", "localizacaoMeta": "$localizacaoMeta",
+            },
+            "ts_ant": 1,
+            "ts": 1,
+        }},
+    ]
+
     # `$facet` sobre o MESMO fluxo já particionado: o `$setWindowFields`, que é a
     # parte cara, roda uma vez só. O ramo `avaliados` conta os pares antes do
     # corte geométrico, porque a pergunta de um time de risco não é "quantos
@@ -421,22 +466,33 @@ def impossible_travel(
     pipeline.append({"$facet": {
         "avaliados": [{"$count": "pares"}],
         "sinais": ramo_sinais,
+        "aprovados": ramo_aprovados,
     }})
 
     inicio = time.perf_counter()
     saida = list(colecao.aggregate(pipeline, allowDiskUse=True))
     decorrido_ms = round((time.perf_counter() - inicio) * 1000, 1)
     bloco = saida[0] if saida else {}
-    resultados = bloco.get("sinais", [])
+    sinalizados = bloco.get("sinais", [])
+    aprovados = bloco.get("aprovados", [])
     avaliados = (bloco.get("avaliados") or [{}])[0].get("pares", 0)
 
-    # Proveniência do sinal, como no painel em event time: o seed plantou pares
-    # para a demo ter resultado garantido, e apresentar os plantados sem dizer
-    # que são plantados transformaria a garantia em prova.
-    plantados = _clientes_plantados()
-    for r in resultados:
-        r["origem"] = "plantado" if r.get("clienteId") in plantados else "emergente"
-    n_plantados = sum(1 for r in resultados if r["origem"] == "plantado")
+    for r in sinalizados:
+        r["classificacao"] = "sinalizada"
+    for r in aprovados:
+        r["classificacao"] = "aprovada"
+
+    # Intercala as duas classes em vez de ordenar por ts: a amostra aprovada
+    # tende a concentrar datas mais recentes que os pares sinalizados, e ordenar
+    # só por tempo empurrava todas as sinalizadas para o fim da tabela — quem
+    # não rolasse até lá via só aprovação, o oposto do que este painel existe
+    # para mostrar.
+    resultados = []
+    for i in range(max(len(sinalizados), len(aprovados))):
+        if i < len(sinalizados):
+            resultados.append(sinalizados[i])
+        if i < len(aprovados):
+            resultados.append(aprovados[i])
 
     universo = colecao.estimated_document_count()
 
@@ -444,26 +500,19 @@ def impossible_travel(
         "natureza": "sinal_de_risco_retrospectivo",
         "decisao_fraude": False,
         "limite_kmh": limiteKmh,
-        "encontrados": len(resultados),
-        "truncado": len(resultados) == limite,
+        "encontrados": len(sinalizados),
+        "encontrados_aprovados": len(aprovados),
+        "truncado": len(sinalizados) == limite,
         "pipeline": pipeline,
         "resultados": resultados,
-        "origem": {
-            "plantados": n_plantados,
-            "emergentes": len(resultados) - n_plantados,
-            "nota": (
-                "O seed planta pares para a demonstração ter resultado garantido. Eles aparecem "
-                "marcados: apresentar a garantia como descoberta seria desonesto."
-            ),
-        },
         # O volume operacional é a pergunta de quem opera a fila de alertas, e
         # vem antes de qualquer discussão sobre a qualidade do sinal.
         "seletividade": {
             "pares_avaliados": avaliados,
-            "sinalizados": len(resultados),
-            "taxa_pct": round(len(resultados) / avaliados * 100, 4) if avaliados else None,
+            "sinalizados": len(sinalizados),
+            "taxa_pct": round(len(sinalizados) / avaliados * 100, 4) if avaliados else None,
             "alertas_por_dia": (
-                round(len(resultados) / DIAS_DATASET, 2) if not clienteId else None
+                round(len(sinalizados) / DIAS_DATASET, 2) if not clienteId else None
             ),
             "janela_dias": DIAS_DATASET if not clienteId else None,
             "nota": (
@@ -472,15 +521,13 @@ def impossible_travel(
                 "não acurácia: sem rótulo de fraude confirmada não existe precisão nem recall, "
                 "e esta PoV não tem esse rótulo."
             ),
-            # A ressalva mais importante da aba, e a mais fácil de omitir: o
-            # numerador foi plantado por quem escreveu o seed. Comparar esta
-            # taxa com a de um emissor real é comparar um cenário construído com
-            # uma medição — e é exatamente o que um analista de risco faria.
+            # A ressalva mais importante da aba, e a mais fácil de omitir:
+            # comparar esta taxa com a de um emissor real é comparar um dataset
+            # sintético com uma medição real.
             "aviso": (
-                "Este percentual descreve o dataset sintético, não um portfólio real: os casos "
-                "sinalizados foram plantados pelo seed, então a taxa é consequência de quantos "
-                "foram plantados. O que se transfere para uma conversa de produção é o método de "
-                "medir volume operacional, e o custo da consulta — nunca o número em si."
+                "Este percentual descreve o dataset sintético desta demo, não um portfólio real. "
+                "O que se transfere para uma conversa de produção é o método de medir volume "
+                "operacional, e o custo da consulta — nunca o número em si."
             ),
         },
         # O custo tem de estar na tela junto com o resultado. Sem isto, a
@@ -516,6 +563,173 @@ def impossible_travel(
                 "antes da janela reduz o universo, e o índice de clienteId sustenta o filtro."
             ),
         },
+    }
+
+
+def _poligono_quadrado(centro: list[float], raio_km: float) -> dict:
+    """Quadrado aproximado ao redor do centro — não um círculo geodésico exato.
+
+    Serve de geometria de teste para `$geoWithin`/`$geoIntersects` com
+    `$geometry`: o objetivo é mostrar o operador executando sobre uma
+    geometria real, não desenhar limite administrativo. A correção por
+    `cos(lat)` evita que o quadrado fique achatado longe do equador — sem
+    ela, 1° de longitude vale menos km perto dos polos que perto da linha do
+    Equador, e o quadrado ficaria retangular sem motivo.
+    """
+    lng, lat = centro
+    delta_lat = raio_km / 111.32
+    delta_lng = raio_km / (111.32 * max(math.cos(math.radians(lat)), 0.1))
+    # Perto do polo a correção por cos(lat) faz delta_lng explodir, e perto da
+    # borda um delta_lat comum já empurra a latitude para fora de [-90, 90] —
+    # nos dois casos o GeoJSON resultante é inválido e o driver recusa a
+    # consulta (BadValue). O grampeamento mantém o polígono sempre válido, ao
+    # custo de ficar menor que o raio pedido nesses extremos — situação que o
+    # dataset desta PoV (só municípios do Brasil) nunca produz pela UI, mas que
+    # a API aceita se chamada direto.
+    lat_min = max(lat - delta_lat, -89.9)
+    lat_max = min(lat + delta_lat, 89.9)
+    lng_min = max(lng - delta_lng, -179.9)
+    lng_max = min(lng + delta_lng, 179.9)
+    return {
+        "type": "Polygon",
+        "coordinates": [[
+            [lng_min, lat_min],
+            [lng_max, lat_min],
+            [lng_max, lat_max],
+            [lng_min, lat_max],
+            [lng_min, lat_min],
+        ]],
+    }
+
+
+class OperadoresRequest(BaseModel):
+    centro: list[float] = Field(..., min_length=2, max_length=2, description="[lng, lat]")
+    raioKm: float = Field(50.0, gt=0, le=2_000)
+    limite: int = Field(5, ge=1, le=20)
+
+
+PROJECAO_OPERADORES = {"_id": 0, "endToEndId": 1, "municipio": 1, "uf": 1}
+
+
+def _amostra(cursor, limite: int) -> list[dict]:
+    return list(cursor.limit(limite))
+
+
+def _geo_near_resultado(ponto: dict, raio_km: float, limite: int) -> dict:
+    """`$geoNear` — o estágio de agregação, não o operador de find().
+
+    Resolve exatamente a lacuna de `$near`/`$nearSphere`: roda dentro de um
+    pipeline (aqui combinado com `$facet`, mas aceita `$match`/`$group`/etc
+    normalmente) e devolve a distância calculada por documento — nenhum dos
+    dois operadores de find() faz isso. A troca é a posição fixa: `$geoNear`
+    precisa ser o primeiro estágio do pipeline.
+    """
+    pipeline = [
+        {"$geoNear": {
+            "near": ponto,
+            "distanceField": "distanciaMetros",
+            "maxDistance": raio_km * 1000,
+            "spherical": True,
+        }},
+        {"$facet": {
+            "amostra": [
+                {"$limit": limite},
+                {"$project": {
+                    "_id": 0, "endToEndId": 1, "municipio": 1, "uf": 1,
+                    "distanciaMetros": {"$round": ["$distanciaMetros", 0]},
+                }},
+            ],
+            "total": [{"$count": "n"}],
+        }},
+    ]
+    # Roda em colecao_geonear (índice único), não em colecao (dois índices
+    # 2dsphere) — testei hint no aggregate(), "key" no próprio estágio e hint
+    # cru via db.command, e o servidor recusou os três com "There is more than
+    # one 2dsphere index". Sem escape via hint, a saída é isolar o dado.
+    saida = list(colecao_geonear.aggregate(pipeline))
+    bloco = saida[0] if saida else {}
+    total = (bloco.get("total") or [{}])[0].get("n", 0)
+    return {
+        "operador": "$geoNear",
+        "descricao": (
+            "Estágio de agregação: ordena por distância E devolve a distância calculada, ao "
+            "contrário de $near/$nearSphere. Combina com outros estágios no mesmo pipeline "
+            "(aqui, $facet) — a troca é ter que ser o primeiro estágio."
+        ),
+        "query": pipeline,
+        "contagem": total,
+        "amostra": bloco.get("amostra", []),
+    }
+
+
+@router.post("/operadores")
+def operadores_geo(pedido: OperadoresRequest):
+    """Demo B2 — os cinco operadores/estágios de consulta geoespacial do
+    MongoDB lado a lado, sobre a mesma geometria: `$geoWithin`, `$geoIntersects`,
+    `$near`, `$nearSphere` (todos com `$geometry`) e `$geoNear`.
+
+    `$near`/`$nearSphere` são operadores de `find()`: não funcionam dentro de
+    `$match` de um pipeline de agregação, então não têm `count_documents` aqui
+    — a mesma restrição do MongoDB, não uma limitação desta demo. `$geoNear`
+    resolve isso: é o caminho de agregação, primeiro estágio obrigatório.
+    """
+    lng, lat = pedido.centro
+    if not (-180 <= lng <= 180 and -90 <= lat <= 90):
+        raise HTTPException(status_code=422, detail="centro fora do intervalo [lng, lat] válido.")
+
+    poligono = _poligono_quadrado(pedido.centro, pedido.raioKm)
+    ponto = {"type": "Point", "coordinates": [lng, lat]}
+
+    filtro_within = {"local": {"$geoWithin": {"$geometry": poligono}}}
+    filtro_intersects = {"local": {"$geoIntersects": {"$geometry": poligono}}}
+    filtro_near = {"local": {"$near": {"$geometry": ponto, "$maxDistance": pedido.raioKm * 1000}}}
+    filtro_near_sphere = {"local": {"$nearSphere": {"$geometry": ponto, "$maxDistance": pedido.raioKm * 1000}}}
+
+    return {
+        "centro": pedido.centro,
+        "raioKm": pedido.raioKm,
+        "poligono": poligono,
+        "resultados": [
+            {
+                "operador": "$geoWithin",
+                "descricao": "Documentos cujo ponto está inteiramente dentro da geometria informada.",
+                "query": filtro_within,
+                "contagem": colecao.count_documents(filtro_within),
+                "amostra": _amostra(colecao.find(filtro_within, PROJECAO_OPERADORES), pedido.limite),
+            },
+            {
+                "operador": "$geoIntersects",
+                "descricao": (
+                    "Documentos cuja geometria cruza a geometria informada. Sobre dados do tipo "
+                    "Point, coincide com $geoWithin — a diferença aparece com LineString/Polygon "
+                    "armazenados, que este dataset não tem."
+                ),
+                "query": filtro_intersects,
+                "contagem": colecao.count_documents(filtro_intersects),
+                "amostra": _amostra(colecao.find(filtro_intersects, PROJECAO_OPERADORES), pedido.limite),
+            },
+            {
+                "operador": "$near",
+                "descricao": (
+                    "Ordena por proximidade ao ponto; exige índice geoespacial. Não devolve a "
+                    "distância calculada nem tem contagem — operador de find(), não de agregação."
+                ),
+                "query": filtro_near,
+                "contagem": None,
+                "amostra": _amostra(colecao.find(filtro_near, PROJECAO_OPERADORES), pedido.limite),
+            },
+            {
+                "operador": "$nearSphere",
+                "descricao": (
+                    "Mesma ordenação de $near, mas sempre esférica. Sobre índice 2dsphere com dado "
+                    "GeoJSON os dois convergem — a diferença só aparece com índice 2d legado."
+                ),
+                "query": filtro_near_sphere,
+                "contagem": None,
+                "amostra": _amostra(colecao.find(filtro_near_sphere, PROJECAO_OPERADORES), pedido.limite),
+            },
+            _geo_near_resultado(ponto, pedido.raioKm, pedido.limite),
+        ],
     }
 
 

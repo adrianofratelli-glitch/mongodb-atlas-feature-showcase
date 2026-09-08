@@ -55,7 +55,7 @@ responsabilidades por arquivo. A versão curta:
 │   │   ├── change_streams.py    # Observador de change stream
 │   │   ├── transactions.py      # Transações ACID multi-documento
 │   │   ├── streaming.py         # Gerador + Change Streams / Kafka / ASP (SSE)
-│   │   └── geo.py               # comparação de explain, viagem impossível, geo + $search
+│   │   └── geo.py               # viagem impossível, os 5 operadores geo, explain, geo + $search
 │   ├── data/                    # dados do módulo independentes de UF (fraud_seeds.json)
 │   └── tests/                   # pytest; não exige cluster ao vivo
 ├── frontend/

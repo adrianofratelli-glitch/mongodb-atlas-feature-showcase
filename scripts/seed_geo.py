@@ -286,6 +286,21 @@ INDICES_OBRIGATORIOS = {
     "categoria_local_idx",
 }
 
+COLECAO_GEONEAR = "transacoes_geonear"
+
+
+def garantir_colecao_geonear(banco, colecao) -> None:
+    """Coleção dedicada a `$geoNear` — só um índice 2dsphere em `local`.
+
+    `$geoNear` recusa rodar (mesmo com hint, testado em três formas) quando o
+    campo geo tem mais de um índice 2dsphere — e `transacoes` tem dois de
+    propósito: o puro (`local_2dsphere_idx`) e o composto da Demo A
+    (`cliente_status_local_idx`). Copiar via `$out` é mais barato que abrir
+    mão de um dos dois: mesmo dado, um índice a menos, sem tocar no gerador.
+    """
+    colecao.aggregate([{"$out": COLECAO_GEONEAR}])
+    banco[COLECAO_GEONEAR].create_index([("local", GEOSPHERE)], name="local_2dsphere_idx")
+
 
 def registrar_dataset(banco, alvo: int) -> None:
     banco["demo_metadata"].replace_one(
@@ -322,6 +337,12 @@ def verificar_prontidao(banco, colecao, alvo: int) -> tuple[bool, list[str]]:
     ausentes = sorted(INDICES_OBRIGATORIOS - indices)
     if ausentes:
         problemas.append("índices MongoDB ausentes: " + ", ".join(ausentes))
+
+    geonear = banco[COLECAO_GEONEAR]
+    if geonear.estimated_document_count() != alvo:
+        problemas.append(f"{COLECAO_GEONEAR} ausente ou com volume divergente (painel $geoNear)")
+    elif "local_2dsphere_idx" not in {i["name"] for i in geonear.list_indexes()}:
+        problemas.append(f"{COLECAO_GEONEAR} sem índice 2dsphere (painel $geoNear)")
 
     nome_search = os.getenv("GEO_SEARCH_INDEX", "idx_geo_estabelecimento").strip()
     try:
@@ -412,6 +433,8 @@ def main() -> int:
             print("validando índices idempotentes…")
             for nome in criar_indices(colecao):
                 print(f"  · {nome}")
+            garantir_colecao_geonear(banco, colecao)
+            print(f"  · {COLECAO_GEONEAR} (índice único, para $geoNear)")
             registrar_dataset(banco, alvo)
             cliente.close()
             return 0
@@ -470,6 +493,10 @@ def main() -> int:
         print("erro: total diferente do alvo — rode com --drop para recriar do zero", file=sys.stderr)
         cliente.close()
         return 1
+
+    print(f"criando {COLECAO_GEONEAR} (índice único, para $geoNear)…")
+    garantir_colecao_geonear(banco, colecao)
+
     registrar_dataset(banco, alvo)
     cliente.close()
     return 0

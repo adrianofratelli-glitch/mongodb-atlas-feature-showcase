@@ -48,7 +48,7 @@ são alcançáveis pelo `EventSource`, que não consegue enviar o cabeçalho `X-
 | `/change-streams` | `POST /start`, `POST /trigger`, `GET /feed` (SSE), `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
 | `/transactions` | `GET /status`, `POST /executar`, `POST /benchmark`, `POST /reset` |
 | `/streaming` | veja abaixo |
-| `/geo` | `GET /status`, `GET /municipios`, `GET /sinais-ao-vivo`, `POST /explain-compare`, `GET /impossible-travel`, `POST /search` |
+| `/geo` | `GET /status`, `GET /municipios`, `GET /sinais-ao-vivo`, `POST /explain-compare`, `GET /impossible-travel`, `POST /operadores`, `POST /search` |
 
 ### `/streaming` (módulo 07)
 
@@ -183,20 +183,34 @@ este modo não pode fazer.
 
 ### `/geo` (módulo 08)
 
-Tem banco próprio (`geo`, sobrescreva com `GEO_DB`). Duas coleções:
-`geo.transacoes`, o dataset versionado semeado por `scripts/seed_geo.py`, e
-`geo.sinais_ao_vivo`, que é dado de execução escrito pelo processor de ASP e limpo
-por `/streaming/reset` e `cleanup-streaming-data.py`. A coleção de dataset
-nunca é tocada por nenhum dos dois caminhos de limpeza.
+Tem banco próprio (`geo`, sobrescreva com `GEO_DB`). Três coleções:
+`geo.transacoes`, o dataset versionado semeado por `scripts/seed_geo.py`;
+`geo.transacoes_geonear`, cópia via `$out` da mesma coleção mantida com um único
+índice `2dsphere` — `$geoNear` recusa rodar (mesmo com hint, em qualquer forma)
+quando o campo tem mais de um índice 2dsphere, e `transacoes` tem dois de
+propósito (o puro e o composto da Demo A); e `geo.sinais_ao_vivo`, que é dado de
+execução escrito pelo processor de ASP e limpo por `/streaming/reset` e
+`cleanup-streaming-data.py`. As duas coleções de dataset (`transacoes` e
+`transacoes_geonear`) nunca são tocadas por nenhum dos dois caminhos de limpeza.
 
 | Método | Caminho | Descrição |
 |---|---|---|
 | `GET` | `/geo/sinais-ao-vivo` | Lê `geo.sinais_ao_vivo`, materializada pelo stream processor `geoSinais30s` enquanto o módulo 07 roda. Nada é calculado aqui — a janela já fez isso. Retorna os pares recentes mais contagens separadas de `plantados` e `emergentes`, porque juntá-las transformaria o sinal garantido da demo em evidência. |
 | `GET` | `/geo/status` | Contagem de documentos, a lista de índices lida da coleção e se o índice do Atlas Search existe. Nada é fixado no código da UI. |
 | `GET` | `/geo/municipios` | Municípios presentes no dataset com um ponto representativo, para que a UI possa centralizar uma consulta sem enviar uma tabela de coordenadas ao navegador. Cacheado em memória; a lista só muda quando o seed roda de novo. |
-| `POST` | `/geo/explain-compare` | A mesma consulta `$geoWithin` (`$centerSphere`) explicada duas vezes: com hint em `cliente_status_local_idx` (campos de igualdade primeiro, geo por último) e em `local_2dsphere_idx`. Retorna estágio vencedor, índice usado, `totalKeysExamined`, `totalDocsExamined`, `nReturned` e `executionTimeMillis` para cada um. Se a medição contradisser a nota didática, é a medição que aparece na tela. |
-| `GET` | `/geo/impossible-travel` | Sinal de risco retrospectivo: `$setWindowFields` particionado por `clienteId`, ordenado por `ts`, `$shift` puxando o timestamp anterior, coordenadas, dispositivo e procedência da localização, e então haversine em MQL puro. Ele retorna explicitamente `decisao_fraude: false`; nenhum documento sai do cluster para o cálculo. Um `$facet` também conta os pares avaliados **antes** do corte geométrico, então a resposta carrega seletividade (taxa, alertas por dia) ao lado dos casos, cada um rotulado `plantado`/`emergente` a partir de `fraud_seeds.json`. Aceita `clienteId` para estreitar a varredura — o recorte, não o hardware, é o que mantém isso viável sobre histórico real. |
-| `POST` | `/geo/search` | A vizinhança de uma **compra contestada**: passe `endToEndId` e o centro vira a coordenada cadastrada daquele terminal, com a âncora retornada junto dos resultados. Um `$search` com `geoWithin`, filtro opcional de categoria e facetas de `$searchMeta`; o `termo` é opcional e adiciona casamento fuzzy de nome para o caso de estabelecimento clonado. Sem termo, a cláusula de scoring é `exists` (um compound só de `filter` retorna tudo com score zero) e os resultados são ordenados por distância, com o desempate aplicado antes da deduplicação por terminal. Sem o índice, o endpoint retorna `estado: "nao_configurado"` em vez de resultados vazios. |
+| `POST` | `/geo/explain-compare` | A mesma consulta `$geoWithin` (`$centerSphere`) explicada duas vezes: com hint em `cliente_status_local_idx` (campos de igualdade primeiro, geo por último) e em `local_2dsphere_idx`. Retorna estágio vencedor, índice usado, `totalKeysExamined`, `totalDocsExamined`, `nReturned` e `executionTimeMillis` para cada um. Endpoint mantido, mas fora da UI redesenhada (ver abaixo). |
+| `GET` | `/geo/impossible-travel` | Sinal de risco retrospectivo: `$setWindowFields` particionado por `clienteId`, ordenado por `ts`, `$shift` puxando o timestamp anterior, coordenadas, dispositivo e procedência da localização, e então haversine em MQL puro. Ele retorna explicitamente `decisao_fraude: false`; nenhum documento sai do cluster para o cálculo. Um `$facet` com dois ramos roda sobre o mesmo `$setWindowFields` (a parte cara, uma vez só): `sinais` (acima do limite) e `aprovados` (`$sample` dentro do limite, a outra face da mesma decisão). Cada resultado carrega `classificacao: sinalizada|aprovada`; a lista final intercala as duas classes (não ordena só por `ts`) porque a amostra aprovada tende a concentrar datas recentes e empurrava as sinalizadas para o fim da tabela. Aceita `clienteId` para estreitar a varredura. |
+| `POST` | `/geo/operadores` | Os cinco operadores/estágios de consulta geoespacial do MongoDB lado a lado, sobre a mesma geometria (um centro + raio geram um polígono quadrado aproximado, com clamp de coordenadas perto do polo/antimeridiano): `$geoWithin`, `$geoIntersects` (ambos com `$geometry`), `$near`, `$nearSphere` (operadores de `find()`, sem `count_documents` — não funcionam dentro de `$match` de agregação, restrição do MongoDB) e `$geoNear` (estágio de agregação, roda em `geo.transacoes_geonear`, devolve contagem real via `$facet` e distância calculada por documento — a troca é ter que ser o primeiro estágio do pipeline). |
+| `POST` | `/geo/search` | A vizinhança de uma **compra contestada**: passe `endToEndId` e o centro vira a coordenada cadastrada daquele terminal, com a âncora retornada junto dos resultados. Um `$search` com `geoWithin`, filtro opcional de categoria e facetas de `$searchMeta`; o `termo` é opcional e adiciona casamento fuzzy de nome para o caso de estabelecimento clonado. Sem termo, a cláusula de scoring é `exists` (um compound só de `filter` retorna tudo com score zero) e os resultados são ordenados por distância, com o desempate aplicado antes da deduplicação por terminal. Sem o índice, o endpoint retorna `estado: "nao_configurado"` em vez de resultados vazios. Endpoint mantido, mas fora da UI redesenhada (ver abaixo). |
+
+A UI (`frontend/src/pages/Geo.jsx`) foi redesenhada para dois painéis simples:
+**01 · Investigação retrospectiva** (`/impossible-travel`, tabela sinalizada/aprovada
+intercalada) e **02 · Operadores de consulta geoespacial** (`/operadores`, os cinco
+lado a lado). As seções de impacto para o banco, contestação (`/search`) e comparação
+de planos (`/explain-compare`) saíram da tela — os endpoints continuam ativos e
+testados, só não estão mais no fluxo visível. Texto de posicionamento longo
+("isto não é um motor antifraude...") foi removido de propósito: a tela mostra
+query/comando/resultado, o apresentador narra o resto.
 
 As checagens de geo entram no `/preflight`, mas nunca o reprovam: o módulo é opcional,
 do mesmo jeito que Kafka e ASP.

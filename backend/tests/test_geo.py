@@ -274,10 +274,17 @@ def test_preflight_geo_e_read_only_e_exige_search_ready(monkeypatch):
                 "documentos": 40,
             }
 
+    class ColecaoGeonear:
+        def estimated_document_count(self):
+            return 40
+
+        def list_indexes(self):
+            return [{"name": "local_2dsphere_idx"}]
+
     class Banco:
         def __getitem__(self, nome):
-            assert nome == "demo_metadata"
-            return Metadata()
+            assert nome in ("demo_metadata", seed_geo.COLECAO_GEONEAR)
+            return Metadata() if nome == "demo_metadata" else ColecaoGeonear()
 
     class Colecao:
         def estimated_document_count(self):
@@ -341,35 +348,31 @@ def test_haversine_km_bate_com_distancia_conhecida():
     assert math.isclose(seed_geo.haversine_km(0, 0, 0, 0), 0, abs_tol=1e-9)
 
 
-def test_impossible_travel_marca_pares_plantados_e_calcula_seletividade(monkeypatch):
-    """Contar sinais sem denominador não responde "quantos alertas por dia".
-
-    E apresentar um par plantado sem dizer que é plantado transforma a garantia
-    da demo em prova — o mesmo erro que o painel em event time já evita.
-    """
+def test_impossible_travel_calcula_seletividade(monkeypatch):
+    """Contar sinais sem denominador não responde "quantos alertas por dia"."""
     class FalsaColecao:
         def aggregate(self, _pipeline, **_kwargs):
             return iter([{
                 "avaliados": [{"pares": 148_000}],
                 "sinais": [
-                    {"clienteId": "CLI00001", "km": 2691.6, "minutos": 5.0, "kmh": 32299.0},
-                    {"clienteId": "CLI99999", "km": 1200.0, "minutos": 12.0, "kmh": 6000.0},
+                    {"clienteId": "CLI00001", "km": 2691.6, "minutos": 5.0, "kmh": 32299.0, "ts": 2},
+                    {"clienteId": "CLI99999", "km": 1200.0, "minutos": 12.0, "kmh": 6000.0, "ts": 1},
                 ],
+                "aprovados": [],
             }])
 
         def estimated_document_count(self):
             return 150_000
 
     monkeypatch.setattr(geo, "colecao", FalsaColecao())
-    monkeypatch.setattr(geo, "_clientes_plantados", lambda: {"CLI00001"})
 
     # `clienteId=None` explícito: chamada direta não passa pelo FastAPI, e o
     # default é um objeto `Query`, que é truthy.
     resposta = geo.impossible_travel(limiteKmh=900, clienteId=None)
 
-    origens = {r["clienteId"]: r["origem"] for r in resposta["resultados"]}
-    assert origens == {"CLI00001": "plantado", "CLI99999": "emergente"}
-    assert resposta["origem"] == {"plantados": 1, "emergentes": 1, "nota": resposta["origem"]["nota"]}
+    assert {r["clienteId"] for r in resposta["resultados"]} == {"CLI00001", "CLI99999"}
+    assert all(r["classificacao"] == "sinalizada" for r in resposta["resultados"])
+    assert "origem" not in resposta
 
     sel = resposta["seletividade"]
     assert sel["pares_avaliados"] == 148_000
