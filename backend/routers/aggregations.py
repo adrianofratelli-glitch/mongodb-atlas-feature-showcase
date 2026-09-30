@@ -1,0 +1,264 @@
+import time
+
+from fastapi import APIRouter, Query
+from database import db
+
+router = APIRouter(prefix="/aggregations", tags=["Aggregations"])
+
+# Cache curto do /lookup, por `limit`: o $group inicial varre `avaliacoes`
+# inteira sem índice cobrindo esse padrão (o índice de seed_data.py em
+# produto_id só ajuda o $lookup seguinte, não o $group). Em `--full`
+# (1M avaliações) isso é um COLLSCAN completo a cada chamada — sem cache,
+# cada refresh da tela durante a demo repete o scan. O dado não muda com
+# frequência (produtos/avaliações são semeados, não escritos ao vivo), então
+# um TTL curto elimina o scan repetido sem esconder uma mudança real por
+# muito tempo. Mesmo padrão de `_cluster_cache`/`_folga_cache` em
+# `streaming.py`.
+LOOKUP_CACHE_TTL_S = 45
+_lookup_cache: dict[int, dict] = {}
+
+
+@router.get("/lookup")
+def lookup_produtos_avaliacoes(limit: int = Query(5, ge=1, le=20)):
+    """`$lookup` com sub-pipeline — parte de avaliacoes para garantir join sempre populado.
+    O $group varre as avaliações (grupo não usa índice); quem usa índice é o
+    $lookup, via produto_id_1 do lado produtos. $topN limita a memória do acumulador.
+
+    Custo esperado em `--full` (1M avaliações): COLLSCAN completo no $group —
+    sem índice cobrindo `produto_id` como chave de agrupamento sobre a coleção
+    inteira. Por isso o resultado é cacheado por `limit` por
+    `LOOKUP_CACHE_TTL_S` segundos: refreshes repetidos da tela durante a demo
+    reaproveitam o último resultado em vez de repetir o scan.
+    """
+    agora = time.monotonic()
+    cache = _lookup_cache.get(limit)
+    if cache and agora - cache["ts"] < LOOKUP_CACHE_TTL_S:
+        return {**cache["dados"], "cache": {"reutilizado": True, "idade_segundos": round(agora - cache["ts"], 1)}}
+
+    pipeline = [
+        {"$group": {
+            "_id": "$produto_id",
+            "total_reviews": {"$sum": 1},
+            "avg_nota":      {"$avg": "$nota"},
+            # $topN (5.2+): guarda só as 3 melhores por grupo — memória limitada,
+            # sem $push do array inteiro + $slice depois.
+            "top_reviews":   {"$topN": {
+                "output": {"usuario": "$usuario", "nota": "$nota", "titulo": "$titulo"},
+                "sortBy": {"nota": -1},
+                "n": 3,
+            }},
+        }},
+        {"$sort": {"total_reviews": -1}},
+        {"$limit": limit},
+        # Sub-pipeline: busca somente os campos necessários do produto
+        {"$lookup": {
+            "from":          "produtos",
+            "localField":    "_id",
+            "foreignField":  "produto_id",
+            "as":            "produto",
+            "pipeline": [
+                {"$project": {"nome": 1, "categoria": 1, "preco": 1, "marca": 1, "_id": 0}},
+            ],
+        }},
+        {"$unwind": "$produto"},
+        {"$project": {
+            "_id":           0,
+            "produto_id":    "$_id",
+            "nome":          "$produto.nome",
+            "categoria":     "$produto.categoria",
+            "preco":         "$produto.preco",
+            "marca":         "$produto.marca",
+            "total_reviews": 1,
+            "avg_nota":      {"$round": ["$avg_nota", 2]},
+            "top_reviews":   1,
+        }},
+    ]
+    resultado = {"results": list(db["avaliacoes"].aggregate(pipeline, allowDiskUse=True)), "pipeline": pipeline, "colecao": "avaliacoes", "cache": {"reutilizado": False, "idade_segundos": 0}}
+    _lookup_cache[limit] = {"ts": agora, "dados": resultado}
+    return resultado
+
+
+@router.get("/facet")
+def facet_analytics():
+    """`$facet` — múltiplas agregações em paralelo; $match inicial usa índice em_estoque_1."""
+    pipeline = [
+        {"$match": {"em_estoque": True}},
+        {"$facet": {
+            "por_categoria": [
+                {"$group": {"_id": "$categoria", "count": {"$sum": 1}, "avg_preco": {"$avg": "$preco"}}},
+                {"$sort": {"count": -1}}, {"$limit": 6},
+            ],
+            "por_faixa_preco": [
+                {"$bucket": {
+                    "groupBy":    "$preco",
+                    "boundaries": [0, 100, 500, 1000, 5000, 999999],
+                    "default":    "Outro",
+                    "output":     {"count": {"$sum": 1}, "avg": {"$avg": "$preco"}},
+                }},
+            ],
+            "por_avaliacao": [
+                {"$bucket": {
+                    "groupBy":    "$avaliacao_media",
+                    "boundaries": [0, 2, 3, 4, 5],
+                    "default":    "Sem avaliação",
+                    "output":     {"count": {"$sum": 1}},
+                }},
+            ],
+            "top_marcas": [
+                {"$group": {"_id": "$marca", "count": {"$sum": 1}, "avg_preco": {"$avg": "$preco"}}},
+                {"$sort": {"count": -1}}, {"$limit": 5},
+            ],
+        }},
+    ]
+    result = list(db["produtos"].aggregate(pipeline))
+    return {"data": result[0] if result else {}, "pipeline": pipeline, "colecao": "produtos"}
+
+
+@router.get("/union-with")
+def union_with():
+    """`$unionWith` — combina reviews recentes (avaliacoes) com produtos destaque (produtos).
+    Ambos os lados usam sort + limit sobre índices, sem aggregation cara."""
+    pipeline = [
+        # Lado 1: reviews recentes com nota alta — usa recent_nota_idx
+        {"$sort":  {"data": -1}},
+        {"$match": {"nota": {"$gte": 4}}},
+        {"$limit": 8},
+        # Compatível com datasets antigos, cujas avaliações não carregavam
+        # a categoria denormalizada no seed.
+        {"$lookup": {
+            "from": "produtos",
+            "localField": "produto_id",
+            "foreignField": "produto_id",
+            "as": "produto_ref",
+            "pipeline": [{"$project": {"categoria": 1, "_id": 0}}],
+        }},
+        {"$project": {
+            "_id":        0,
+            "source":     {"$literal": "avaliacoes"},
+            "tipo":       {"$literal": "Review recente"},
+            "referencia": "$produto_id",
+            "descricao":  "$titulo",
+            "valor":      "$nota",
+            "usuario":    "$usuario",
+            "categoria":  {"$ifNull": ["$categoria", {"$arrayElemAt": ["$produto_ref.categoria", 0]}]},
+        }},
+        # Lado 2: produtos em destaque — usa destaque_idx
+        {"$unionWith": {
+            "coll": "produtos",
+            "pipeline": [
+                {"$match": {"avaliacao_media": {"$gte": 4.5}, "em_estoque": True}},
+                {"$sort":  {"total_avaliacoes": -1}},
+                {"$limit": 8},
+                {"$project": {
+                    "_id":       0,
+                    "source":    {"$literal": "produtos"},
+                    "tipo":      {"$literal": "Produto destaque"},
+                    "referencia":"$produto_id",
+                    "descricao": "$nome",
+                    "valor":     "$avaliacao_media",
+                    "usuario":   {"$literal": "—"},
+                    "categoria": "$categoria",
+                }},
+            ],
+        }},
+        {"$sort": {"source": 1, "valor": -1}},
+    ]
+    return {"results": list(db["avaliacoes"].aggregate(pipeline)), "pipeline": pipeline, "colecao": "avaliacoes"}
+
+
+@router.get("/group-advanced")
+def group_advanced():
+    """`$group` + `$addFields` — métricas por categoria; $match inicial usa em_estoque_1."""
+    pipeline = [
+        {"$match": {"em_estoque": True}},
+        {"$group": {
+            "_id":           "$categoria",
+            "total_produtos":{"$sum": 1},
+            "preco_medio":   {"$avg": "$preco"},
+            "preco_max":     {"$max": "$preco"},
+            "preco_min":     {"$min": "$preco"},
+            "avaliacao_media":{"$avg": "$avaliacao_media"},
+        }},
+        # Campo derivado calculado no banco — chega pronto para a aplicação
+        {"$addFields": {
+            "amplitude_preco": {"$subtract": ["$preco_max", "$preco_min"]}
+        }},
+        {"$sort": {"total_produtos": -1}},
+        {"$limit": 8},
+    ]
+    result = list(db["produtos"].aggregate(pipeline))
+    for r in result:
+        r["preco_medio"]     = round(r.get("preco_medio") or 0, 2)
+        r["avaliacao_media"] = round(r.get("avaliacao_media") or 0, 2)
+        r["amplitude_preco"] = round(r.get("amplitude_preco") or 0, 2)
+    return {"results": result, "pipeline": pipeline, "colecao": "produtos"}
+
+
+@router.get("/window-functions")
+def window_functions():
+    """`$setWindowFields` — rank, acumulado e média móvel.
+    Working set reduzido: match + sort + limit ANTES das janelas."""
+    pipeline = [
+        # Limita o working set a 100 docs via índice cat_total_av_idx
+        # (categoria: 1, total_avaliacoes: -1) — atende o match E o sort.
+        {"$match": {"categoria": "Eletrônicos", "em_estoque": True}},
+        {"$sort":  {"total_avaliacoes": -1}},
+        {"$limit": 100},
+        # Janelas sobre o conjunto pequeno — particionado por marca
+        {"$setWindowFields": {
+            "partitionBy": "$marca",
+            "sortBy":      {"total_avaliacoes": -1},
+            "output": {
+                "rank_marca": {"$rank": {}},
+                "acumulado_avaliacoes": {
+                    "$sum": "$total_avaliacoes",
+                    "window": {"documents": ["unbounded", "current"]},
+                },
+                "media_movel_preco": {
+                    "$avg": "$preco",
+                    "window": {"documents": [-2, 2]},
+                },
+            },
+        }},
+        {"$sort": {"marca": 1, "rank_marca": 1}},
+        {"$limit": 20},
+        {"$project": {
+            "_id": 0, "nome": 1, "marca": 1, "categoria": 1,
+            "preco": 1, "avaliacao_media": 1, "total_avaliacoes": 1,
+            "rank_marca": 1,
+            "acumulado_avaliacoes": 1,
+            "media_movel_preco": {"$round": ["$media_movel_preco", 2]},
+        }},
+    ]
+    result = list(db["produtos"].aggregate(pipeline, allowDiskUse=True))
+    for r in result:
+        r["preco"]             = round(r.get("preco") or 0, 2)
+        r["media_movel_preco"] = round(r.get("media_movel_preco") or 0, 2)
+        r["avaliacao_media"]   = round(r.get("avaliacao_media") or 0, 2)
+    return {"results": result, "pipeline": pipeline, "colecao": "produtos"}
+
+
+@router.get("/bucket-auto")
+def bucket_auto():
+    """`$bucketAuto` — faixas automáticas; $match inicial usa em_estoque_1."""
+    pipeline = [
+        {"$match": {"em_estoque": True}},
+        {"$bucketAuto": {
+            "groupBy": "$preco",
+            "buckets": 6,
+            "output": {
+                "count":         {"$sum": 1},
+                "avg_preco":     {"$avg": "$preco"},
+                "avg_avaliacao": {"$avg": "$avaliacao_media"},
+            },
+        }},
+    ]
+    result = list(db["produtos"].aggregate(pipeline))
+    for r in result:
+        r["avg_preco"]     = round(r.get("avg_preco") or 0, 2)
+        r["avg_avaliacao"] = round(r.get("avg_avaliacao") or 0, 2)
+        if "_id" in r:
+            lo = r["_id"].get("min", 0)
+            hi = r["_id"].get("max", 0)
+            r["faixa"] = f"R$ {lo:.0f} – R$ {hi:.0f}"
+    return {"results": result, "pipeline": pipeline, "colecao": "produtos"}
