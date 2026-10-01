@@ -27,7 +27,7 @@ Navegação por hash, lida no boot e reagindo a `hashchange` — suficiente para
 
 `src/pov-signature.css` é uma cópia sincronizada entre os frontends de todo o portfólio de PoVs do autor, importada **depois** do stylesheet local. O contêiner raiz carrega `data-pov-shell`, existe `.pov-skip-link` para `#conteudo-principal`, e `index.html` declara pt-BR, dark color scheme, theme color e favicon comuns. Mudanças na assinatura precisam ser replicadas nas outras cópias do portfólio e validadas em 1440/768/360px.
 
-Tokens em `src/index.css`: `--bg-primary: #001E2B`, `--accent: #00ED64`, tipografia Outfit (títulos) + JetBrains Mono (código/dados).
+Tokens em `src/index.css`: `--bg-primary: #061621`, `--accent: #00ED64`, tipografia Special Gothic (texto) + Special Gothic Condensed One (títulos) + Source Code Pro (código/dados).
 
 ## Duas regras que valem para todos os módulos
 

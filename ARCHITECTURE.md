@@ -219,9 +219,8 @@ do mesmo jeito que Kafka e ASP.
 O mapa é renderizado como SVG inline, com uma projeção linear escrita à mão sobre o
 bounding box brasileiro — sem Leaflet, sem Mapbox, sem tiles, sem nova dependência
 de frontend. Com a rede externa bloqueada o módulo ainda renderiza e todo
-número ainda vem do cluster; a única requisição externa da aplicação é o
-link do Google Fonts em `frontend/index.html`, que vale para o app inteiro e é pré-existente,
-e a tipografia cai para fontes do sistema quando ele falha.
+número ainda vem do cluster; nenhuma requisição externa de fonte: Special Gothic, Special Gothic Condensed One e
+Source Code Pro são servidas localmente (`src/fonts/`, layout v4).
 
 ### Convenções de SSE
 
