@@ -47,7 +47,7 @@ const INVALID_SCENARIOS = [
 
 const STEP_STATUS = {
   idle:      { color: 'var(--text-secondary)', bg: 'var(--bg-subtle)' },
-  active:    { color: '#06b6d4',           bg: 'rgba(6,182,212,.08)' },
+  active:    { color: '#00c2eb',           bg: 'rgba(6,182,212,.08)' },
   done:      { color: 'var(--accent)', bg: 'rgba(0,237,100,.08)' },
 }
 
@@ -185,7 +185,7 @@ export default function SchemaValidation() {
           const stepStatus = step >= s.n ? 'done' : step === s.n - 1 ? 'active' : 'idle'
           const res = stepResults[s.n]
           return (
-            <div key={s.n} className="card" style={{ borderColor: stepStatus === 'done' ? 'rgba(0,237,100,.3)' : stepStatus === 'active' ? '#06b6d4' : 'var(--border-subtle)' }}>
+            <div key={s.n} className="card" style={{ borderColor: stepStatus === 'done' ? 'rgba(0,237,100,.3)' : stepStatus === 'active' ? '#00c2eb' : 'var(--border-subtle)' }}>
               <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
                 <StepBadge n={s.n} status={stepStatus} />
                 <div style={{ flex: 1 }}>
@@ -217,7 +217,7 @@ export default function SchemaValidation() {
 
       {/* Step 4 — só aparece após step 3 */}
       {step >= 3 && (
-        <div className="card" style={{ borderColor: '#06b6d4', borderWidth: 2 }}>
+        <div className="card" style={{ borderColor: '#00c2eb', borderWidth: 2 }}>
           <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
             <StepBadge n={4} status={step >= 4 ? 'done' : 'active'} />
             <div style={{ flex: 1 }}>

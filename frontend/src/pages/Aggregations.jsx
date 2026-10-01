@@ -9,11 +9,11 @@ SyntaxHighlighter.registerLanguage('javascript', js)
 
 const TABS = [
   { key: 'lookup', icon: '🔗', label: 'Produtos + avaliações', operator: '$lookup',          source: 'avaliações', output: 'top produtos enriquecidos', color: '#00ED64' },
-  { key: 'facet',  icon: '📊', label: 'Dashboard em uma query', operator: '$facet',           source: 'produtos em estoque', output: '3 recortes simultâneos', color: '#06b6d4' },
-  { key: 'union',  icon: '🔀', label: 'Feed combinado',         operator: '$unionWith',       source: 'reviews + produtos', output: 'feed unificado', color: '#a855f7' },
-  { key: 'group',  icon: '📐', label: 'Métricas por categoria', operator: '$group',           source: 'produtos em estoque', output: 'KPIs por categoria', color: '#f97316' },
+  { key: 'facet',  icon: '📊', label: 'Dashboard em uma query', operator: '$facet',           source: 'produtos em estoque', output: '3 recortes simultâneos', color: '#00c2eb' },
+  { key: 'union',  icon: '🔀', label: 'Feed combinado',         operator: '$unionWith',       source: 'reviews + produtos', output: 'feed unificado', color: '#765cf8' },
+  { key: 'group',  icon: '📐', label: 'Métricas por categoria', operator: '$group',           source: 'produtos em estoque', output: 'KPIs por categoria', color: '#ff4f00' },
   { key: 'window', icon: '📈', label: 'Ranking e média móvel',  operator: '$setWindowFields', source: 'top eletrônicos', output: 'ranking por marca', color: '#00ED64' },
-  { key: 'bucket', icon: '🪣', label: 'Faixas de preço',        operator: '$bucketAuto',      source: 'produtos em estoque', output: 'distribuição automática', color: '#f97316' },
+  { key: 'bucket', icon: '🪣', label: 'Faixas de preço',        operator: '$bucketAuto',      source: 'produtos em estoque', output: 'distribuição automática', color: '#ff4f00' },
 ]
 
 const CODE = {
@@ -256,7 +256,7 @@ function UnionResults({ data }) {
   const produtos   = rows.filter(r => r.source === 'produtos')
   return (
     <div className="grid-2">
-      {[{ label: '📝 Reviews recentes', rows: avaliacoes, color: '#a855f7' },
+      {[{ label: '📝 Reviews recentes', rows: avaliacoes, color: '#765cf8' },
         { label: '⭐ Produtos destaque', rows: produtos,   color: '#00ED64' }].map(({ label, rows: side, color }) => (
         <div key={label} className="card" style={{ padding: '14px 16px' }}>
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 10, color }}>{label}</div>

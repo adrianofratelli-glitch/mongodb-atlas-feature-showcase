@@ -1,28 +1,28 @@
 /* ── MongoDB Pitch Design System (dark-native) ──────────────────────────── */
 :root {
   /* Palette */
-  --bg-primary:   #001E2B;
-  --bg-secondary: #002838;
-  --bg-card-base: #003345;
-  --bg-card-hover:#004058;
+  --bg-primary:   #061621;
+  --bg-secondary: #001e2b;
+  --bg-card-base: #0a2633;
+  --bg-card-hover:#10303f;
   --border-subtle:rgba(255,255,255,0.06);
   --border-accent:rgba(0,237,100,0.25);
   --accent:       #00ED64;
   --accent-glow:  rgba(0,237,100,0.15);
-  --orange:#f97316; --purple:#a855f7; --cyan:#06b6d4; --teal:#14b8a6; --yellow:#eab308; --red:#ff6960;
+  --orange:#ff4f00; --purple:#765cf8; --cyan:#00c2eb; --teal:#14b8a6; --yellow:#ffad00; --red:#ff6960;
 
   /* Semantic tokens (kept from previous theme so pages keep working) */
   --bg-page:        var(--bg-primary);
   --bg-card:        var(--bg-card-base);
   --bg-subtle:      rgba(255,255,255,0.04);
   --border-color:   var(--border-subtle);
-  --text-primary:   #fafafa;
-  --text-secondary: #7fa8bc;
-  --text-disabled:  #4a6878;
+  --text-primary:   #fdfff5;
+  --text-secondary: #b5bfb9;
+  --text-disabled:  #667579;
 
   /* Font */
-  --font: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font: 'Special Gothic', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Source Code Pro', 'Source Code Pro', monospace;
 
   /* Radius */
   --radius-sm: 6px;
@@ -118,7 +118,7 @@ body::after {
 }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-primary {
-  background: var(--accent); color: #001E2B; border-color: var(--accent);
+  background: var(--accent); color: #061621; border-color: var(--accent);
 }
 .btn-primary:not(:disabled):hover {
   background: #33f283; border-color: #33f283;
@@ -183,7 +183,10 @@ table.lg-table tr:hover td { background: rgba(255,255,255,.03); }
   display: flex; align-items: center; gap: 12px; padding: 9px 12px;
   background: rgba(255,255,255,.03); border-radius: var(--radius-md);
   border: 1px solid var(--border-subtle);
+  flex-wrap: wrap; min-width: 0;
 }
+.result-row > * { min-width: 0; overflow-wrap: anywhere; }
+.result-row > div { flex-wrap: wrap; }
 
 /* ── Code ────────────────────────────────────────────────────────────────── */
 .code-toggle-btn {
@@ -308,7 +311,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .speed-ctl button { background: transparent; border: none; color: var(--text-secondary); font-size: 11px; font-weight: 600;
   padding: 5px 11px; border-radius: 6px; cursor: pointer; font-family: var(--font); transition: all .15s; }
 .speed-ctl button:disabled { cursor: not-allowed; opacity: .5; }
-.speed-ctl button.on { background: var(--accent); color: #001E2B; }
+.speed-ctl button.on { background: var(--accent); color: #061621; }
 
 /* ── Módulo Streaming (Change Streams × Kafka Connector × ASP) ───────────── */
 .str-gen-row { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
@@ -335,8 +338,8 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-col-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
   padding: 11px 14px; font-weight: 700; font-size: 13px; border-bottom: 1px solid var(--border-subtle); }
 .str-col-cs    .str-col-head { background: rgba(0,237,100,.06);  color: #00ED64; }
-.str-col-kafka .str-col-head { background: rgba(6,182,212,.06);  color: #06b6d4; }
-.str-col-asp   .str-col-head { background: rgba(168,85,247,.06); color: #a855f7; }
+.str-col-kafka .str-col-head { background: rgba(6,182,212,.06);  color: #00c2eb; }
+.str-col-asp   .str-col-head { background: rgba(168,85,247,.06); color: #a898ff; }
 .str-col-body { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
 
 .str-token { display: flex; align-items: center; gap: 8px; font-size: 11px; overflow: hidden; }
@@ -368,7 +371,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
   padding: 8px 10px; margin-bottom: 12px; border-radius: 8px;
   border: 1px dashed rgba(249,115,22,.35); background: rgba(249,115,22,.04); }
 .str-falhas-rotulo { font-family: var(--font-mono); font-size: 9px; font-weight: 700;
-  letter-spacing: .1em; text-transform: uppercase; color: #f97316; }
+  letter-spacing: .1em; text-transform: uppercase; color: #ff4f00; }
 .str-falhas-msg { font-size: 11px; color: var(--text-secondary); }
 .str-garantia { display: flex; gap: 10px; align-items: flex-start; margin-top: 14px;
   padding: 10px 12px; border-radius: 8px; background: rgba(0,237,100,.05);
@@ -411,7 +414,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .geo-ancora-nota { margin-top: 6px; font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
 /* O mesmo terminal aparece na vizinhança: marcá-lo evita confundi-lo com um
    estabelecimento vizinho. */
-.result-row.geo-e-ancora { border-left: 2px solid #a855f7; padding-left: 8px; }
+.result-row.geo-e-ancora { border-left: 2px solid #765cf8; padding-left: 8px; }
 
 /* Texto secundário atrás de um clique: mantém a evidência no alto da tela.
    O <details> dentro do card não repete a borda — quem desenha é o .str-note. */
@@ -427,7 +430,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 
 .str-offline { padding: 12px 13px; border-radius: 9px;
   border: 1px dashed rgba(249,115,22,.5); background: rgba(249,115,22,.05); }
-.str-offline-t { font-weight: 700; font-size: 12.5px; color: #f97316; margin-bottom: 5px; }
+.str-offline-t { font-weight: 700; font-size: 12.5px; color: #ff4f00; margin-bottom: 5px; }
 .str-offline-d { font-size: 11.5px; color: var(--text-secondary); line-height: 1.5; }
 .str-offline-steps { margin: 9px 0 0 16px; padding: 0; font-size: 11.5px; line-height: 1.7; color: var(--text-primary); }
 .str-offline-steps code { font-size: 10.5px; }
@@ -457,7 +460,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-pct-v { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; }
 .str-teto { padding: 12px 14px; border-radius: 9px; background: rgba(168,85,247,.05);
   border: 1px solid rgba(168,85,247,.25); }
-.str-teto-t { font-weight: 700; font-size: 12.5px; color: #a855f7; margin-bottom: 8px; }
+.str-teto-t { font-weight: 700; font-size: 12.5px; color: #a898ff; margin-bottom: 8px; }
 .str-teto-g { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; }
 .str-teto-k { font-family: var(--font-mono); font-size: 9.5px; text-transform: uppercase;
   letter-spacing: .07em; color: var(--text-secondary); display: block; }
@@ -570,8 +573,8 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-latency-context span { font-size: 10.5px; font-weight: 700; color: var(--text-primary); }
 .str-latency-context small { margin-top: 2px; color: var(--text-secondary); font-size: 9.5px; line-height: 1.4; }
 .str-latency-cs { border-left-color: #00ED64; }
-.str-latency-kafka { border-left-color: #06b6d4; }
-.str-latency-asp { border-left-color: #a855f7; }
+.str-latency-kafka { border-left-color: #00c2eb; }
+.str-latency-asp { border-left-color: #a898ff; }
 .str-tech-details > summary, .schema-code-details > summary { cursor: pointer; font-weight: 700; font-size: 14px; list-style-position: inside; }
 .str-tech-details > summary span, .schema-code-details > summary span { margin-left: 8px; color: var(--text-secondary); font-size: 11px; font-weight: 400; }
 .str-tech-details[open] > summary, .schema-code-details[open] > summary { margin-bottom: 12px; }
@@ -588,7 +591,7 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .agg-step { grid-row: 1 / span 2; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: rgba(168,85,247,.14); color: #c084fc; font-family: var(--font-mono); font-size: 10px; font-weight: 800; }
 .agg-arrow { align-self: center; color: var(--text-secondary); }
 .agg-empty-state { display: flex; align-items: center; justify-content: center; gap: 11px; min-height: 92px; border: 1px dashed var(--border-subtle); border-radius: 10px; color: var(--text-secondary); }
-.agg-empty-state > span { font-size: 24px; color: #a855f7; }
+.agg-empty-state > span { font-size: 24px; color: #a898ff; }
 .agg-empty-state strong, .agg-empty-state small { display: block; }
 .agg-empty-state strong { color: var(--text-primary); font-size: 13px; margin-bottom: 3px; }
 
@@ -703,10 +706,10 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .str-selo-linha { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin: -8px 0 -4px; font-size: 12px; color: var(--text-secondary); }
 .str-selo-tag { flex-shrink: 0; padding: 2px 8px; border-radius: 4px;
-  border: 1px solid #f59e0b; color: #f59e0b; font-family: 'JetBrains Mono', monospace;
+  border: 1px solid #f59e0b; color: #f59e0b; font-family: 'Source Code Pro', monospace;
   font-size: 11px; letter-spacing: .02em; text-transform: uppercase; }
 .str-selo-tag-alerta { border-color: #ef4444; color: #ef4444; }
-.str-selo-txt { font-family: 'JetBrains Mono', monospace; font-size: 11px; opacity: .75; }
+.str-selo-txt { font-family: 'Source Code Pro', monospace; font-size: 11px; opacity: .75; }
 
 /* Nota discreta sob o bloco de query/pipeline exibido (usada em Aggregations). */
 .query-map-note { font-size: 11px; color: var(--text-secondary); margin: 9px 0; }

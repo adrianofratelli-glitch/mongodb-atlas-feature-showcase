@@ -101,7 +101,7 @@ export default function HotCold() {
             </div>
             <div className="stat-block col" style={{ borderColor: '#06b6d440' }}>
               <div className="stat-label">❄️ Cold — {simulation.cold.tier}</div>
-              <div className="stat-value" style={{ color: '#06b6d4' }}>{simulation.cold.pct}%</div>
+              <div className="stat-value" style={{ color: '#00c2eb' }}>{simulation.cold.pct}%</div>
               <div className="stat-sub">≈ {simulation.cold.count.toLocaleString()} docs ± {Math.round(simulation.cold.margem_erro_estimada || 0).toLocaleString()} (1σ) · {simulation.cold.latency}</div>
             </div>
           </div>
@@ -173,7 +173,7 @@ export default function HotCold() {
             <div style={{ display: 'flex', gap: 8 }}>
               {[180, 365, 730].map(d => (
                 <button key={d} className={`tag ${days === d ? 'active' : ''}`} onClick={() => setDays(d)}
-                  style={days === d ? { borderColor: '#06b6d4', color: '#06b6d4', background: 'rgba(6,182,212,.08)' } : {}}>
+                  style={days === d ? { borderColor: '#00c2eb', color: '#00c2eb', background: 'rgba(6,182,212,.08)' } : {}}>
                   {d === 180 ? '6 meses' : d === 365 ? '1 ano' : '2 anos'}
                 </button>
               ))}

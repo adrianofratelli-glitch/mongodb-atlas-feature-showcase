@@ -4,7 +4,7 @@ import Limites from '../components/Limites'
 
 const OP_STYLE = {
   insert: { bg: 'rgba(0,237,100,.08)', border: 'rgba(0,237,100,.3)', text: '#00ED64', label: 'NOVA TRANSAÇÃO' },
-  update: { bg: 'rgba(6,182,212,.08)', border: 'rgba(6,182,212,.3)', text: '#06b6d4', label: 'ATUALIZAÇÃO'    },
+  update: { bg: 'rgba(6,182,212,.08)', border: 'rgba(6,182,212,.3)', text: '#00c2eb', label: 'ATUALIZAÇÃO'    },
   delete: { bg: 'rgba(255,105,96,.08)', border: 'rgba(255,105,96,.35)', text: '#ff6960', label: 'REMOVIDA'       },
   ERROR:  { bg: 'rgba(255,105,96,.08)', border: 'rgba(255,105,96,.35)', text: '#ff6960', label: 'ERRO'           },
 }
@@ -149,8 +149,8 @@ export default function ChangeStreams() {
             <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
               {[
                 { label: 'Novas transações', value: insertCount, color: '#00ED64', bg: 'rgba(0,237,100,.08)', border: 'rgba(0,237,100,.3)' },
-                { label: 'Atualizações',     value: updateCount, color: '#06b6d4', bg: 'rgba(6,182,212,.08)', border: 'rgba(6,182,212,.3)' },
-                { label: '⚠️ Suspeitas',      value: alertCount,  color: '#f97316', bg: 'rgba(249,115,22,.08)', border: 'rgba(249,115,22,.4)' },
+                { label: 'Atualizações',     value: updateCount, color: '#00c2eb', bg: 'rgba(6,182,212,.08)', border: 'rgba(6,182,212,.3)' },
+                { label: '⚠️ Suspeitas',      value: alertCount,  color: '#ff4f00', bg: 'rgba(249,115,22,.08)', border: 'rgba(249,115,22,.4)' },
                 { label: 'Total capturado',  value: events.length, color: 'var(--text-primary)', bg: 'var(--bg-subtle)', border: 'var(--border-color)' },
               ].map(c => (
                 <div key={c.label} style={{ padding: '8px 14px', borderRadius: 6, background: c.bg, border: `1px solid ${c.border}`, textAlign: 'center' }}>
@@ -183,7 +183,7 @@ export default function ChangeStreams() {
                     <span style={{
                       padding: '2px 7px', borderRadius: 3, fontSize: 10, fontWeight: 800,
                       letterSpacing: '.05em', flexShrink: 0,
-                      color: ev.alerta ? '#f97316' : s.text,
+                      color: ev.alerta ? '#ff4f00' : s.text,
                       background: ev.alerta ? 'rgba(249,115,22,.4)' : s.border,
                     }}>
                       {ev.alerta ? '⚠️ SUSPEITA' : s.label}

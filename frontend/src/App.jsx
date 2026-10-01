@@ -16,11 +16,11 @@ const MODULES = [
   // entrar pela feature 01 faz a demo ser lida como catálogo.
   { key: 'tese',    num: '00', title: 'A tese',               subtitle: 'o que esta demo prova, e o que ela não prova',   color: '#00ED64', component: Tese },
   { key: 'reindex', num: '01', title: 'Reindexação Online',   subtitle: 'Hybrid build sem bloqueio prolongado',            color: '#00ED64', component: Reindexacao },
-  { key: 'hotcold', num: '02', title: 'Hot / Cold Tiering',   subtitle: 'Online Archive — dados históricos automáticos',  color: '#06b6d4', component: HotCold },
-  { key: 'agg',     num: '03', title: 'Aggregation Pipeline', subtitle: '$lookup, $facet, $setWindowFields e mais',       color: '#a855f7', component: Aggregations },
-  { key: 'schema',  num: '04', title: 'Schema Validation',    subtitle: 'JSON Schema enforcement no banco',               color: '#f97316', component: SchemaValidation },
+  { key: 'hotcold', num: '02', title: 'Hot / Cold Tiering',   subtitle: 'Online Archive — dados históricos automáticos',  color: '#00c2eb', component: HotCold },
+  { key: 'agg',     num: '03', title: 'Aggregation Pipeline', subtitle: '$lookup, $facet, $setWindowFields e mais',       color: '#765cf8', component: Aggregations },
+  { key: 'schema',  num: '04', title: 'Schema Validation',    subtitle: 'JSON Schema enforcement no banco',               color: '#ff4f00', component: SchemaValidation },
   { key: 'streams', num: '05', title: 'Change Streams',       subtitle: 'Eventos em tempo real — insert, update, delete', color: '#14b8a6', component: ChangeStreams },
-  { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#eab308', component: Transactions },
+  { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#ffad00', component: Transactions },
   { key: 'streaming', num: '07', title: 'Streaming',            subtitle: 'Change Streams × Kafka Connector × Atlas Stream Processing', color: '#e11d48', component: Streaming },
 ]
 
@@ -159,7 +159,7 @@ export default function App() {
         <div className="app-header-brand" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <MongoDBLogo size={26} />
           <div style={{ borderLeft: '1px solid rgba(255,255,255,.12)', paddingLeft: 12 }}>
-            <div style={{ color: '#fafafa', fontWeight: 700, fontSize: 14.5, lineHeight: 1.15, letterSpacing: '-.01em' }}>MongoDB Atlas</div>
+            <div style={{ color: '#fdfff5', fontWeight: 700, fontSize: 14.5, lineHeight: 1.15, letterSpacing: '-.01em' }}>MongoDB Atlas</div>
             <div style={{
               color: 'var(--accent)', fontSize: 10, marginTop: 1,
               fontFamily: 'var(--font-mono)', fontWeight: 600,

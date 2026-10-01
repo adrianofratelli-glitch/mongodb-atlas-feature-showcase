@@ -139,7 +139,7 @@ function Sparkline({ values }) {
   const points = values.map((v, i) => `${(i * step).toFixed(2)},${(28 - (v / max) * 26).toFixed(2)}`).join(' ')
   return (
     <svg className="str-spark" viewBox="0 0 100 28" preserveAspectRatio="none" aria-label="Quantidade por janela">
-      <polyline points={points} fill="none" stroke="#a855f7" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
+      <polyline points={points} fill="none" stroke="#765cf8" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
     </svg>
   )
 }
@@ -627,7 +627,7 @@ function SessaoStreaming({ modo, setModo }) {
             </div>
             <div className="str-failover-nums">
               <div>
-                <span style={{ color: gen.failover.escritas_rejeitadas ? '#f97316' : '#00ED64' }}>
+                <span style={{ color: gen.failover.escritas_rejeitadas ? '#ff4f00' : '#00ED64' }}>
                   {num(gen.failover.escritas_rejeitadas)}
                 </span>
                 <small>escritas rejeitadas · o driver reabsorve com <code>retryWrites</code></small>
@@ -768,11 +768,11 @@ function SessaoStreaming({ modo, setModo }) {
             <p>O evento nasce do dado já confirmado. A aplicação não precisa gravar MongoDB e publicar outro sistema na mesma requisição.</p>
           </article>
           <article className="str-capability str-capability-kafka">
-            <div className="str-capability-title"><span style={{ color: '#06b6d4' }}>Integração</span><strong>Fan-out sem acoplamento</strong></div>
+            <div className="str-capability-title"><span style={{ color: '#00c2eb' }}>Integração</span><strong>Fan-out sem acoplamento</strong></div>
             <p>Kafka continua disponível para o ecossistema; o connector remove código de CDC da aplicação e preserva offsets e replay.</p>
           </article>
           <article className="str-capability str-capability-asp">
-            <div className="str-capability-title"><span style={{ color: '#a855f7' }}>Operação</span><strong>Streaming em MQL gerenciado</strong></div>
+            <div className="str-capability-title"><span style={{ color: '#765cf8' }}>Operação</span><strong>Streaming em MQL gerenciado</strong></div>
             <p>Janela, estado, checkpoint, materialização e DLQ ficam no Atlas, reduzindo um plano de processamento separado para estes casos.</p>
           </article>
         </div>
@@ -797,7 +797,7 @@ function SessaoStreaming({ modo, setModo }) {
             <div className="str-stats">
               <Stat label="Eventos" value={num(csState.eventos)} color="#00ED64" />
               <Stat label="Recuperados" value={num(csState.recuperados)} color={csState.recuperados ? '#00ED64' : undefined} sub="via resume token" />
-              <Stat label="Pendentes" value={num(csPendentes ?? 0)} color={csPendentes ? '#f97316' : undefined} sub="backlog pós-commit" />
+              <Stat label="Pendentes" value={num(csPendentes ?? 0)} color={csPendentes ? '#ff4f00' : undefined} sub="backlog pós-commit" />
             </div>
             <LatencyContext tone="cs" title="Propagação pós-commit"
               detail="timestamp persistido → worker da aplicação; não é tempo de liquidação" />
@@ -900,13 +900,13 @@ function SessaoStreaming({ modo, setModo }) {
             ) : (
               <>
                 <div className="str-stats">
-                  <Stat label="Mensagens" value={num(kafkaMetrics?.mensagens ?? kafkaStatus?.consumidor?.mensagens ?? 0)} color="#06b6d4" />
+                  <Stat label="Mensagens" value={num(kafkaMetrics?.mensagens ?? kafkaStatus?.consumidor?.mensagens ?? 0)} color="#00c2eb" />
                   <Stat label="Offset atual" value={num(kafkaMetrics?.offset_atual ?? kafkaStatus?.consumidor?.offset_atual)} sub="partição consumida" />
-                  <Stat label="Pendentes" value={num(kafkaPendentes ?? 0)} color={kafkaPendentes ? '#f97316' : undefined} sub="backlog pós-commit" />
+                  <Stat label="Pendentes" value={num(kafkaPendentes ?? 0)} color={kafkaPendentes ? '#ff4f00' : undefined} sub="backlog pós-commit" />
                 </div>
                 <LatencyContext tone="kafka" title="Propagação pelo barramento"
                   detail="timestamp persistido → connector → Kafka → observador local" />
-                <Percentis m={kafkaMetrics} color="#06b6d4" />
+                <Percentis m={kafkaMetrics} color="#00c2eb" />
                 <div className="str-token">
                   <span className="str-token-l">tópico</span>
                   <code>{kafkaStatus?.topico}</code>
@@ -975,11 +975,11 @@ function SessaoStreaming({ modo, setModo }) {
             ) : (
               <>
                 <div className="str-stats">
-                  <Stat label="Agregadas" value={fmtEscala(aspStatus?.transacoes_agregadas)} color="#a855f7"
+                  <Stat label="Agregadas" value={fmtEscala(aspStatus?.transacoes_agregadas)} color="#765cf8"
                     sub={`${num(aspStatus?.janelas)} janelas de ${janelaSegundos} s`} />
                   <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
-                  <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#f97316' : undefined} sub="rejeitados" />
-                  <Stat label="Pendentes" value={num(aspPendentes ?? 0)} color={aspPendentes ? '#f97316' : undefined} sub="janela ou backlog" />
+                  <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#ff4f00' : undefined} sub="rejeitados" />
+                  <Stat label="Pendentes" value={num(aspPendentes ?? 0)} color={aspPendentes ? '#ff4f00' : undefined} sub="janela ou backlog" />
                 </div>
                 {aspStatus?.runtime?.disponivel && (
                   <div className="str-token">
@@ -1000,7 +1000,7 @@ function SessaoStreaming({ modo, setModo }) {
                   <>
                     <LatencyContext tone="asp" title="Latência da materialização"
                       detail={`fim da janela → $merge → tela; a janela de ${janelaSegundos}s é intencional`} />
-                    <Percentis m={aspMetrics} color="#a855f7" />
+                    <Percentis m={aspMetrics} color="#765cf8" />
                   </>
                 )}
                 <Sparkline values={janelas.slice(0, 24).map(j => j.qtd || 0).reverse()} />
@@ -1040,7 +1040,7 @@ function SessaoStreaming({ modo, setModo }) {
                           <td>{j.uf}</td><td>{num(j.qtd)}</td>
                           {/* forma compacta: a coluna é estreita e o valor cheio era cortado */}
                           <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.volume)}</td>
-                          <td style={{ color: j.alertas_valor_alto ? '#f97316' : undefined }}>{num(j.alertas_valor_alto ?? 0)}</td>
+                          <td style={{ color: j.alertas_valor_alto ? '#ff4f00' : undefined }}>{num(j.alertas_valor_alto ?? 0)}</td>
                           <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.maior_valor)}</td>
                         </tr>
                       ))}
@@ -1222,7 +1222,7 @@ function SessaoStreaming({ modo, setModo }) {
             ))}
             <div className="str-neg-c">
               <div className="str-neg-k">Sinais de valor alto</div>
-              <div className="str-neg-v" style={reconciliacao.asp.alertas_valor_alto ? { color: '#f97316' } : undefined}>
+              <div className="str-neg-v" style={reconciliacao.asp.alertas_valor_alto ? { color: '#ff4f00' } : undefined}>
                 {num(reconciliacao.asp.alertas_valor_alto)}
               </div>
               <div className="str-neg-s">produzidos pelo ASP nas janelas</div>
@@ -1357,7 +1357,7 @@ function SessaoStreaming({ modo, setModo }) {
                 <td>Resume token persistido pela aplicação</td>
               </tr>
               <tr>
-                <td><strong style={{ color: '#06b6d4' }}>Kafka Connector</strong></td>
+                <td><strong style={{ color: '#00c2eb' }}>Kafka Connector</strong></td>
                 <td>Como levar o evento ao barramento?</td>
                 <td>Kafka Connect</td>
                 <td>Config de connector</td>
@@ -1365,7 +1365,7 @@ function SessaoStreaming({ modo, setModo }) {
                 <td>Offsets do Connect + consumer group</td>
               </tr>
               <tr>
-                <td><strong style={{ color: '#a855f7' }}>Atlas Stream Processing</strong></td>
+                <td><strong style={{ color: '#765cf8' }}>Atlas Stream Processing</strong></td>
                 <td>Como processar o fluxo com janela e estado?</td>
                 <td>Serviço gerenciado no Atlas</td>
                 <td>Aggregation pipeline</td>

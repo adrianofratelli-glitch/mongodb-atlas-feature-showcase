@@ -92,11 +92,11 @@ function IDCard({ label, id, collection }) {
         {label}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <code style={{ fontSize: 12.5, background: 'rgba(0,104,74,.08)', border: '1px solid rgba(0,237,100,.3)', color: '#fafafa', flex: 1, padding: '5px 10px', borderRadius: 4, wordBreak: 'break-all' }}>
+        <code style={{ fontSize: 12.5, background: 'rgba(0,104,74,.08)', border: '1px solid rgba(0,237,100,.3)', color: '#fdfff5', flex: 1, padding: '5px 10px', borderRadius: 4, wordBreak: 'break-all' }}>
           {id}
         </code>
         <button onClick={copy} className="btn btn-sm" style={{
-          background: copied ? '#00ED64' : 'transparent', color: copied ? '#001E2B' : '#00ED64',
+          background: copied ? '#00ED64' : 'transparent', color: copied ? '#061621' : '#00ED64',
           border: '1px solid rgba(0,237,100,.3)', flexShrink: 0, transition: 'all .15s',
         }}>
           {copied ? '✓' : 'Copiar'}
