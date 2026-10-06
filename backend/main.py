@@ -19,6 +19,7 @@ from routers import (
     replay,
     schema_validation,
     streaming,
+    tese,
     transactions,
 )
 from security import ApiHardeningMiddleware, MutationGuardMiddleware
@@ -88,6 +89,7 @@ app.include_router(change_streams.router)
 app.include_router(transactions.router)
 app.include_router(streaming.router)
 app.include_router(replay.router)
+app.include_router(tese.router)
 
 
 @app.get("/")
