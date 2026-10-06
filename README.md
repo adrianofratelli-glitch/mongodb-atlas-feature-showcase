@@ -113,7 +113,7 @@ Python 3.11+ · FastAPI · PyMongo · React 19 · Vite · MongoDB Atlas. Module 
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 224 unit + adversarial tests, stubbed Mongo, no cluster needed
+pytest             # 230 unit + adversarial tests, stubbed Mongo, no cluster needed
 ruff check backend
 ```
 
