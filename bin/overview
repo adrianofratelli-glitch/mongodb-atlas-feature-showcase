@@ -123,7 +123,7 @@ subir() {
   if [[ "$AO_VIVO" == "1" ]]; then
     azul "▶ 1/3 Preflight + stream processor + Kafka (cluster não gerenciado)"
   else
-    azul "▶ 1/3 Preflight Geo/Search (cluster não gerenciado)"
+    azul "▶ 1/3 Preflight dos dados da demo (cluster não gerenciado)"
   fi
   if ! STREAMING_AO_VIVO="$AO_VIVO" "$BASE/scripts/ambiente.sh" up; then
     ruim "   ambiente não ficou consistente; a PoV não será aberta"
