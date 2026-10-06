@@ -6,16 +6,40 @@ Voltar para o [README](../README.md).
 
 ## Dataset
 
-As demos rodam contra duas coleções, ambas geradas pelo `backend/seed_data.py`:
+As demos rodam contra duas coleções, ambas garantidas pelo `scripts/reset_demo.py`
+(que chama o `backend/seed_data.py`):
 
 | Coleção | Documentos (completo) | Descrição |
 |---|---|---|
 | `produtos` | ~5.000.000 | Produtos de e-commerce: preço, categoria, estoque, avaliações |
 | `avaliacoes` | ~1.000.000 | Avaliações de produtos ligadas por `produto_id` |
 
-O script de seed também cria os índices de que as demos dependem. A execução padrão
-(100 mil/20 mil) leva alguns minutos e é suficiente para exercitar todos os módulos.
+O seed é idempotente: cada documento tem chave natural determinística (`produto_id`
+via uuid5; `_id = "seed-av-<n>"` nas avaliações) e é gravado por upsert, então
+reexecutar não duplica nada. Ele também garante os índices de que as demos dependem.
+A execução padrão (100 mil/20 mil) é suficiente para exercitar todos os módulos.
 Use `--full` para reproduzir o dataset em larga escala.
+
+`produtos`/`avaliacoes` podem ser compartilhadas com outra PoV no mesmo banco (no
+cluster de demo, o marketplace de busca usa `POC.produtos` com índice Atlas Search
+próprio). Por isso nem o seed nem o reset dropam essas coleções, e o módulo 01 só
+remove índices que ele mesmo criou (prefixo `demo01_`).
+
+### Reset
+
+```bash
+# banco de teste (recomendado para ensaio e testes que escrevem)
+MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test backend/venv/bin/python scripts/reset_demo.py
+# banco da demo: exige consentimento explícito e nunca durante uma apresentação
+ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py
+# só verifica (usado pelo overview)
+backend/venv/bin/python scripts/reset_demo.py --check
+```
+
+O reset dropa as coleções que só os módulos criam (`schema_demo`, `transacoes_cs_demo`,
+`*_demo` das transações, `bench_*`, `tese_probe*`, `_monitor_heartbeat`), remove os
+índices `demo01_*`, garante dados e índices B-tree e limpa a rodada de streaming
+(`cleanup-streaming-data.py`). Não mexe em Online Archive, tier nem stream processors.
 
 ## Estrutura do projeto
 
@@ -27,15 +51,15 @@ responsabilidades por arquivo. A versão curta:
 ├── bin/overview                 # Um comando: ambiente cloud + backend + frontend
 ├── scripts/
 │   ├── ambiente.sh              # preflight + ASP/Kafka; cluster intocado
-│   ├── prepare-demo.sh          # materializa Geo/índices antes da demo
+│   ├── prepare-demo.sh          # roda reset_demo.py + --check antes da demo
+│   ├── reset_demo.py            # reset único e idempotente (guarda ALLOW_DEMO_DB_WRITE)
 │   ├── cleanup-streaming-data.py # Remoção com escopo das coleções geradas pelo PIX
 │   ├── kafka-local.sh           # Kafka nativo (KRaft) + Connect + plugin do Mongo
 │   ├── setup-kafka-connector.sh # Registra o source connector
 │   ├── setup-asp.js             # Cria o stream processor de janelas (mongosh)
 │   ├── setup-asp-geo.js         # Cria o stream processor de risco geográfico (mongosh)
-│   ├── lib/expand_srv.py        # Reescreve a URI SRV para o connector pular o DNS
-│   ├── seed_geo.py              # Dataset Geo: 150 mil transações georreferenciadas
-│   └── create_search_index_geo.sh # Índice do Atlas Search para o módulo Geo
+│   ├── capture_replay.py        # grava o fallback de replay do módulo 07
+│   └── lib/expand_srv.py        # Reescreve a URI SRV para o connector pular o DNS
 ├── docs/
 ├── backend/
 │   ├── main.py                  # App FastAPI, CORS, health, /preflight, /stats
@@ -52,15 +76,16 @@ responsabilidades por arquivo. A versão curta:
 │   │   ├── change_streams.py    # Observador de change stream
 │   │   ├── transactions.py      # Transações ACID multi-documento
 │   │   ├── streaming.py         # Gerador + Change Streams / Kafka / ASP (SSE)
-│   │   └── geo.py               # viagem impossível, os 5 operadores geo, explain, geo + $search
-│   ├── data/                    # dados do módulo independentes de UF (fraud_seeds.json)
+│   │   ├── replay.py            # fallback gravado do módulo 07
+│   │   └── tese.py              # /tese/medir: uma operação medida por capacidade
+│   ├── data/                    # municipios.json (canal cartão) e replay_streaming.json
 │   └── tests/                   # pytest; não exige cluster ao vivo
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx              # Casca, seletor compacto, roteamento por hash
 │   │   ├── index.css            # Tokens de design e estilos base
 │   │   ├── hooks/useApi.js      # Wrapper de fetch
-│   │   ├── components/          # DemoFlow, QueryBlock
+│   │   ├── components/          # QueryBlock, Limites
 │   │   └── pages/               # Um componente por módulo
 │   └── vite.config.js           # Faz proxy de /api para :8002
 ├── live_monitor.py              # Monitor de latência no terminal
@@ -88,71 +113,26 @@ python live_monitor.py
 - Vários endpoints são deliberadamente destrutivos. Aponte isto apenas para um cluster
   de demonstração descartável.
 - O `backend/.env` está no gitignore. Nunca commite credenciais reais.
-- Testes: `pip install -r backend/requirements-dev.txt && pytest` (127 testes, todos
-  unitários — o Mongo é stubado, então não é preciso cluster). Lint com `ruff check backend`.
+- Testes: `pip install -r backend/requirements-dev.txt && pytest` (unitários e
+  adversariais, com Mongo stubado — não é preciso cluster). Lint com `ruff check backend`.
 - O GitHub Actions compila as duas aplicações, roda testes/lint e audita as dependências.
 
 
 ## Revisão de apresentação — setembro de 2026
 
-A tela prioriza operação, consulta e resultado. A aba Geo agora se chama
-**Consultas geoespaciais** e mantém a investigação retrospectiva como exemplo.
-Os cinco operadores são selecionados individualmente após executar: query aberta,
-contorno ilustrativo e amostra real. Inclusão/interseção usam polígono;
-proximidade usa distância radial. O dataset continua composto de pontos.
-O `$geoNear` mostra uma transação por terminal entre os terminais mais próximos,
-mas seu total continua contando transações. A coleção de apoio aparece no resultado.
+A tela prioriza operação, consulta e resultado. Hot/Cold distingue estimativas por
+amostragem, prévia por data no cluster e configuração real de Online Archive. A prévia
+não acessa o endpoint federado. As abas de índices, agregação, schema, eventos,
+transações e streaming mantêm suas operações, com afirmações limitadas à evidência:
+leituras amostradas não comprovam ausência de bloqueios; digest XOR admite colisões;
+o custo de uma transação inclui rede e servidor. A tese continua sendo convergência
+funcional.
 
-Na investigação, “não sinalizada” substitui “aprovada”. A amostra não sinalizada
-não é uma contagem total. Taxa e alertas/dia contam todos os sinais antes do limite
-da tabela; períodos não positivos não entram no cálculo de velocidade da amostra.
-O contador do cabeçalho identifica o tamanho estimado da coleção, não documentos
-examinados pelo plano de um recorte.
-
-Hot/Cold distingue estimativas por amostragem, prévia por data no cluster e
-configuração real de Online Archive. A prévia não acessa o endpoint federado.
-As abas de índices, agregação, schema, eventos, transações e streaming mantêm
-suas operações, com afirmações limitadas à evidência: leituras amostradas não
-comprovam ausência de bloqueios; digest XOR admite colisões; o custo de uma
-transação inclui rede e servidor. A tese continua sendo convergência funcional.
+O módulo de consultas geoespaciais (antigo 08) saiu em 2026-09-11 para o repositório
+[`mongodb-atlas-geo-showcase`](https://github.com/adrianofratelli-glitch/mongodb-atlas-geo-showcase),
+com o mapa, os cinco operadores e o dataset.
 
 Referências usadas para revisar os limites:
-- [Geospatial queries](https://www.mongodb.com/docs/manual/geospatial-queries/)
 - [Aggregation pipeline limits](https://www.mongodb.com/docs/manual/core/aggregation-pipeline-limits/)
 - [Validation level](https://www.mongodb.com/docs/manual/core/schema-validation/specify-validation-level/)
 - [Change streams](https://www.mongodb.com/docs/manual/changeStreams/)
-
-
-### Mapa detalhado dos operadores Geo
-
-O painel 02 usa mapa próprio com zoom para os resultados ou a área completa,
-marcadores numerados, agrupamento de coordenadas coincidentes e escala métrica.
-O painel 02 usa apenas a camada de ruas online. O painel 01 mantém seu mapa anterior.
-
-A camada **Ruas · online** carrega automaticamente somente os tiles visíveis do OpenStreetMap,
-com atribuição e cache normal do navegador. Não há download ou prefetch offline.
-Se um tile falhar, aparece um aviso com opção de tentar novamente. O serviço é externo;
-esta camada requer internet. `VITE_MAP_TILES_URL` permite substituir o provedor
-com URL no formato `{z}/{x}/{y}` (a atribuição deve ser adaptada ao provedor).
-Consulte a [política de tiles do OSM](https://operations.osmfoundation.org/policies/tiles/).
-
-### Inclusão × interseção de rotas
-
-Nos cartões `$geoWithin` e `$geoIntersects`, o exemplo padrão é **Rotas · LineString**;
-**Terminais · Point** mantém a consulta do dataset original. Centro e raio atualizam automaticamente as consultas de terminais e rotas.
-Os percursos sintéticos são deslocados para a cidade selecionada e mantêm distâncias
-fixas ao centro: mudar o raio altera a área consultada, não os percursos.
-
-`GET /geo/rotas-comparar` envia três geometrias sintéticas via `$documents` e executa
-os dois predicados no Atlas, em um `$facet`, sem persistência e sem índice. Com raio de 50 km, A fica dentro do polígono, B cruza a área com os extremos
-fora e C permanece fora. Com 10 km, A também cruza; com 200 km, as três ficam
-contidas. Esses resultados foram conferidos no Atlas em São Paulo, Fortaleza,
-Manaus e Porto Alegre. A UI usa os
-IDs retornados pelo banco para preencher a tabela e destacar as linhas; não decide
-inclusão ou interseção no navegador. O filtro fica aberto e o pipeline com a entrada
-completa fica disponível para inspeção. Este exemplo prova semântica, não desempenho.
-
-Com GeoJSON e índice `2dsphere`, `$near` e `$nearSphere` mantêm a equivalência esperada.
-`$geoNear` demonstra a distância como campo e composição com agregações (neste exemplo,
-contagem de transações e amostra por terminal). Não se força diferença de resultados
-entre operações equivalentes.

@@ -6,9 +6,9 @@
 
 ## Estrutura geral
 
-Não há sidebar. Um **seletor compacto** no topo troca entre os módulos e preserva os hashes de deep-link. A abertura da aplicação é a página `Tese.jsx` (`/#tese`), não o módulo 01 — entrar direto pela feature 01 fazia a demo ser lida como catálogo item a item, e um time de dados compara com o que já opera e conclui "já temos isso". A tese declara convergência (não capacidade) e os não-objetivos explícitos, em ~70 palavras. Sem número de economia estimado — é a primeira coisa desmontada numa sala técnica.
+Não há sidebar. Um **seletor compacto** no topo troca entre os módulos e preserva os hashes de deep-link. A abertura da aplicação é a página `Tese.jsx` (`/#tese`), não o módulo 01 — entrar direto pela feature 01 fazia a demo ser lida como catálogo item a item, e um time de dados compara com o que já opera e conclui "já temos isso". A tese declara convergência (não capacidade) e os não-objetivos explícitos. Sem número de economia estimado — é a primeira coisa desmontada numa sala técnica. O botão **Medir agora** chama `POST /tese/medir` e mostra uma tabela p50/máx por capacidade (ping, consulta indexada, agregação, rejeição de schema, entrega de change stream, transação), com a evidência de cada linha; antes do clique a tela diz que não há medição, e falha vira banner com a ação a tomar. Um `<details>` fechado traz a comparação de componentes (rotulada como desenho de arquitetura, não medição).
 
-### Os 8 módulos (`frontend/src/App.jsx`, array `MODULES`)
+### As 8 entradas (`frontend/src/App.jsx`, array `MODULES`: a tese + 7 módulos)
 
 | Hash | Nº | Título | Componente | O que prova |
 |---|---|---|---|---|

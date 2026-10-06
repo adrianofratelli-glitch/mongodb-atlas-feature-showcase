@@ -6,7 +6,7 @@
 
 ## Índices
 
-### `POC.produtos` — criados em `backend/seed_data.py:112-122`
+### `POC.produtos` — garantidos por `ensure_indexes()` em `backend/seed_data.py`
 
 | Nome | Campos | Tipo | Por que existe |
 |---|---|---|---|
@@ -17,12 +17,14 @@
 | `produto_id_1` (unique) | `produto_id: 1` | único | Chave de negócio — usada pelo `$lookup` de `/aggregations/lookup` |
 | `destaque_idx` | `em_estoque: 1, total_avaliacoes: -1, avaliacao_media: -1` | composto | Atende o `$match` + `$sort` do lado "produtos" de `/aggregations/union-with` |
 
-### `POC.avaliacoes` — criados em `backend/seed_data.py:123-124`
+### `POC.avaliacoes` — garantidos por `ensure_indexes()` em `backend/seed_data.py`
 
 | Nome | Campos | Tipo | Por que existe |
 |---|---|---|---|
 | `produto_id_1` (auto) | `produto_id: 1` | simples | Suporta o `$lookup` de `/aggregations/lookup` do lado `avaliacoes → produtos` |
 | `recent_nota_idx` | `data: -1, nota: -1` | composto | Suporta o `$sort(data desc)` + `$match(nota >= 4)` do lado "avaliacoes" de `/aggregations/union-with` |
+
+**Seed idempotente:** `seed()` grava por `ReplaceOne(..., upsert=True)` com chave natural determinística (`produto_id` = uuid5 do índice; `_id = "seed-av-<n>"` nas avaliações), via `bulk_write(ordered=False)` em lotes de 10 mil. O índice único `produto_id_1` é criado **antes** dos upserts. `produtos`/`avaliacoes` podem ser compartilhadas com outra PoV no mesmo banco (no cluster de demo, o marketplace de busca tem `marca_1`, `subcategoria_1` e o índice Atlas Search `produtos_search` em `POC.produtos`); nem o seed nem o `scripts/reset_demo.py` dropam essas coleções.
 
 **Nota importante:** o `$group` inicial de `/aggregations/lookup` **não tem índice cobrindo** a chave de agrupamento (`produto_id`) sobre a coleção inteira — em `--full` (1M avaliações) isso é um COLLSCAN completo. Por isso o endpoint cacheia o resultado por `limit` durante 45s (`LOOKUP_CACHE_TTL_S` em `backend/routers/aggregations.py:17`), para refresh de tela na demo não repetir o scan.
 
@@ -40,7 +42,7 @@ A limpeza (`/streaming/reset`) precisa recriar os três índices sempre que drop
 
 ## Módulo Reindexação — `backend/routers/reindexacao.py`
 
-Índices criados/removidos **dinamicamente pela própria demo** (não fixos), sobre `POC.produtos`, restritos a `ALLOWED_INDEX_FIELDS` (whitelist: `categoria`, `preco`, `em_estoque`, `total_avaliacoes`, `avaliacao_media`, `marca`, `created_at`, `produto_id`).
+Índices criados/removidos **dinamicamente pela própria demo** (não fixos), sobre `POC.produtos`, sempre com o prefixo `demo01_` (`DEMO_INDEX_PREFIX`; ex.: `demo01_categoria_1_preco_-1`). `DELETE /reindexacao/drop/{index_name}` recusa com 403 qualquer nome sem esse prefixo, e `GET /indexes` devolve `removivel` por índice. Campos restritos a `ALLOWED_INDEX_FIELDS` (whitelist: `categoria`, `preco`, `em_estoque`, `total_avaliacoes`, `avaliacao_media`, `marca`, `created_at`, `produto_id`).
 
 ```python
 db["produtos"].create_index(key, name=name, sparse=sparse, partialFilterExpression=partial_filter)
@@ -334,6 +336,25 @@ Onde: linha 1495-1497, exposto em `GET /streaming/oplog`. O que faz: mede a jane
 - `pix.consumer_checkpoints` — resume tokens dos cursores de Change Streams (coluna 1 do Streaming), um por partição de demonstração.
 
 ---
+
+## Tese — `backend/routers/tese.py`
+
+`POST /tese/medir` (lock: uma medição por vez, 409 na segunda) roda 5 repetições de cada operação pelo `client`/`db` de `database.py` e devolve p50/máx:
+
+```python
+client.admin.command("ping")
+db["produtos"].find({"categoria": "Eletrônicos"}, {"_id": 0, "nome": 1}).sort("total_avaliacoes", -1).limit(10)  # + explain() → indexName
+db["produtos"].aggregate([{"$match": {"categoria": "Eletrônicos"}},
+                          {"$group": {"_id": "$marca", "produtos": {"$sum": 1}, "preco_medio": {"$avg": "$preco"}}},
+                          {"$sort": {"produtos": -1}}, {"$limit": 5}])
+db.create_collection("tese_probe_validado", validator={"$jsonSchema": {"bsonType": "object", "required": ["valor"],
+                     "properties": {"valor": {"bsonType": "number", "minimum": 0}}}}, validationAction="error")
+db["tese_probe_validado"].insert_one({"valor": -1})          # espera WriteError code 121
+db["tese_probe"].watch(full_document="updateLookup")          # insert → evento no cursor
+session.with_transaction(lambda s: (db["tese_probe"].insert_one(..., session=s), db["tese_probe_b"].insert_one(..., session=s)))
+```
+
+As coleções `tese_probe*` são dropadas ao fim da medição e pelo `reset_demo.py`.
 
 ## O que NÃO foi encontrado / está fora deste repositório
 

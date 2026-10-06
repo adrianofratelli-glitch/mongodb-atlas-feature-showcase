@@ -45,8 +45,9 @@ O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removen
 | `backend/settings.py` | Dataclass congelada que lê env vars uma vez; `settings.atlas_configured` habilita o módulo de Online Archive sem estourar quando a credencial falta |
 | `backend/database.py` | Um único `MongoClient` (`connect=False`, `appname`, timeouts explícitos) + `readiness()`. Cai para URI de localhost no import — falta de `MONGO_URI` aparece em `/health/ready`, não derruba o processo |
 | `backend/security.py` | `MutationGuardMiddleware` + `ApiHardeningMiddleware` (ver seção de segurança) |
-| `backend/routers/*.py` | Um módulo por demo — reindexacao, hot_cold, aggregations, schema_validation, change_streams, transactions, streaming, replay |
-| `backend/seed_data.py` | Gera `produtos`/`avaliacoes` sintéticos + cria os índices que as demos assumem |
+| `backend/routers/*.py` | Um módulo por demo — reindexacao, hot_cold, aggregations, schema_validation, change_streams, transactions, streaming, replay, tese (`POST /tese/medir`) |
+| `backend/seed_data.py` | Upsert determinístico (idempotente) de `produtos`/`avaliacoes` + `ensure_indexes()`; recusa banco sem `_test` sem `ALLOW_DEMO_DB_WRITE=1` |
+| `scripts/reset_demo.py` | Reset único: dropa só coleções dos módulos, remove índices `demo01_*`, garante dados/índices e limpa o streaming; `--check` só verifica |
 
 **Por que um router por demo:** permite mexer no Streaming sem risco de quebrar outro módulo minutos antes de uma reunião com cliente.
 
@@ -105,7 +106,7 @@ O guard **ignora métodos seguros** (GET), e é por isso que **todo endpoint SSE
 
 ## Testes
 
-Todos unitários, Mongo stubado/monkeypatchado — **nenhum teste exige cluster ao vivo** (CI não tem credencial).
+Todos unitários, Mongo stubado/monkeypatchado — **nenhum teste exige cluster ao vivo** (CI não tem credencial). `backend/tests/test_endpoints_adversarial.py` cobre entradas hostis (operadores Mongo em query/body, nomes de índice alheios, JSON malformado, corpo de 1 MB, paginação fora do contrato), concorrência (409 em benchmark e medição simultâneos) e degradação sem Mongo.
 
 ```bash
 pytest                                  # testpaths = backend/tests
