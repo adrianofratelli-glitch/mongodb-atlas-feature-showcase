@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from statistics import median
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pymongo import WriteConcern
 from pymongo.errors import PyMongoError
 from database import db, client
 from datetime import datetime, timezone
+import threading
 import time
 import uuid
 import logging
@@ -257,11 +258,25 @@ def _transacao_multi(session, run_id: str, i: int) -> None:
         {"pedido_id": pedido_id, "run_id": run_id, "valor": 100 + i, "ts": agora}, session=session)
 
 
+# Duas medições simultâneas disputariam as mesmas chaves e o mesmo enlace: os
+# percentis de uma contaminariam os da outra (duplo clique, duas abas).
+_benchmark_lock = threading.Lock()
+
+
 @router.post("/benchmark")
 def benchmark(
     amostras: int = Query(default=60, ge=MIN_AMOSTRA, le=500),
     concorrencia: int = Query(default=8, ge=2, le=16),
 ):
+    if not _benchmark_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Já há uma medição em andamento. Aguarde o resultado dela.")
+    try:
+        return _benchmark(amostras, concorrencia)
+    finally:
+        _benchmark_lock.release()
+
+
+def _benchmark(amostras: int, concorrencia: int):
     """
     Mede o custo real da transação multi-documento contra o cluster ligado.
 

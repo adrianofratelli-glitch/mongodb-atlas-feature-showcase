@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from bson import Decimal128
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from pymongo import AsyncMongoClient
@@ -4043,7 +4043,9 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
 
 
 @router.get("/reconciliacao")
-async def reconciliacao(run_id: str | None = None):
+async def reconciliacao(
+    run_id: str | None = Query(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$"),
+):
     alvo = run_id or generator.run_id
     if not alvo:
         ultimo = await asyncio.to_thread(
