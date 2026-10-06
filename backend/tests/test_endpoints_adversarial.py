@@ -286,3 +286,33 @@ def test_preflight_sem_mongo_diz_o_que_falta(monkeypatch):
 def test_nenhum_regex_em_query_de_app():
     for arquivo in (BACKEND / "routers").glob("*.py"):
         assert "$regex" not in arquivo.read_text(encoding="utf-8"), arquivo.name
+
+
+# ── P1: Online Archive é do cluster; "Remover" alcançava regra de outra PoV ─
+@pytest.mark.parametrize("arquivo,permitido", [
+    ({"dbName": "POC", "collName": "produtos"}, True),
+    ({"dbName": "POC", "collName": "deleted-produtos-af19425d"}, True),
+    ({"dbName": "outra_pov", "collName": "produtos"}, False),
+    ({"dbName": "POC", "collName": "chamados"}, False),
+    ({}, False),
+])
+def test_delete_online_archive_so_no_escopo_da_demo(monkeypatch, arquivo, permitido):
+    from routers import hot_cold
+
+    anterior = hot_cold.settings.mongo_db
+    object.__setattr__(hot_cold.settings, "mongo_db", "POC")
+    chamadas = []
+
+    def fake(method, url, **_k):
+        chamadas.append(method)
+        return arquivo if method == "GET" else {}
+
+    monkeypatch.setattr(hot_cold, "_atlas_request", fake)
+    try:
+        r = client.delete("/hot-cold/online-archive/6a34397bf9ef804688cae306")
+    finally:
+        object.__setattr__(hot_cold.settings, "mongo_db", anterior)
+    if permitido:
+        assert r.status_code == 200 and chamadas == ["GET", "DELETE"]
+    else:
+        assert r.status_code == 403 and chamadas == ["GET"]
