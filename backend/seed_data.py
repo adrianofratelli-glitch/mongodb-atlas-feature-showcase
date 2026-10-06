@@ -30,6 +30,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from pymongo import MongoClient, ReplaceOne
+from pymongo.errors import OperationFailure
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
@@ -113,9 +114,30 @@ def gerar_avaliacao(produtos_ref, rng: random.Random | None = None, indice: int 
     return doc
 
 
+# IndexOptionsConflict / IndexKeySpecsConflict: já existe índice com o mesmo
+# nome ou a mesma chave, com outras opções.
+_CONFLITO_DE_INDICE = {85, 86}
+
+
+def _ensure(col, keys, **kwargs) -> None:
+    """create_index tolerante a um índice equivalente que já existe.
+
+    Numa coleção compartilhada (o marketplace de busca também usa
+    `POC.produtos`) a outra PoV pode ter criado `produto_id_1` sem `unique`.
+    Recriar o índice dela não é papel deste seed: o upsert por `produto_id`
+    continua idempotente sem o unique, que só protege execuções paralelas.
+    """
+    try:
+        col.create_index(keys, **kwargs)
+    except OperationFailure as exc:
+        if exc.code not in _CONFLITO_DE_INDICE:
+            raise
+        print(f"⚠  {col.name}: índice equivalente a {keys} já existe com outras opções; mantido.")
+
+
 def ensure_indexes(db) -> None:
     """Índices usados pelas demos. create_index é idempotente."""
-    db["produtos"].create_index("produto_id", unique=True)
+    _ensure(db["produtos"], "produto_id", unique=True)
     db["produtos"].create_index("em_estoque")
     db["produtos"].create_index("categoria")
     db["produtos"].create_index([("total_avaliacoes", -1)], name="total_av_idx")
@@ -160,7 +182,7 @@ def seed(n_produtos, n_avaliacoes, *, db=None, verbose=True):
     try:
         # O índice unique precisa existir antes: é ele que torna o upsert por
         # produto_id barato e impede duplicata mesmo com execuções paralelas.
-        db["produtos"].create_index("produto_id", unique=True)
+        _ensure(db["produtos"], "produto_id", unique=True)
 
         log(f"Gravando {n_produtos:,} produtos (upsert)…")
         rng = random.Random(SEED)
