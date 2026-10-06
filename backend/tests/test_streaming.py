@@ -481,7 +481,7 @@ def test_presets_do_cenario_respeitam_o_teto():
     cenario = asyncio.run(streaming.cenario())
     assert all(1 <= preset["tps"] <= streaming.TPS_MAX for preset in cenario["presets"])
     assert cenario["default_duration_s"] == 30
-    # O default segue o modo de escrita: no individual o alvo é o marco Inter,
+    # O default segue o modo de escrita: no individual o alvo é o marco de referência,
     # porque 1 insert = 1 PIX satura o cliente perto de 1.000 TPS com os três
     # consumidores ativos. Prometer 8.000 ali mostraria "medido 1.000" na tela.
     if cenario["modo_escrita"] == "individual":
