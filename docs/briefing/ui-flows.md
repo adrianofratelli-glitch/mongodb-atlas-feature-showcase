@@ -55,7 +55,6 @@ Baseline medida: **48 requisições/20s → 1 quando parado, 0 com a aba escondi
 
 ## Componentes compartilhados (`src/components/`)
 
-- **`DemoFlow`** — passo a passo de cada módulo, direto na tela (roteiro do apresentador embutido).
 - **`QueryBlock`** — mostra o pipeline/comando executado, sempre visível no módulo de Aggregations (não escondido atrás de "Ver código" — mostrar quão pouco se escreve é o argumento).
 - **`Limites`** — bloco de limite declarado, em `<details>` fechado, usado pelos módulos; cada item precisa ser verificável na documentação do produto ou medido na própria PoV.
 

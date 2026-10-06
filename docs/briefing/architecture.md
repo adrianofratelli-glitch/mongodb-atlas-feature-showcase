@@ -54,7 +54,7 @@ O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removen
 
 - `src/App.jsx` — casca, seletor compacto de módulo, roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`). Rota padrão é `/#tese`.
 - `src/pages/` — um componente por módulo, mais `Tese.jsx` (a abertura: tese de convergência + não-objetivos, ~70 palavras).
-- `src/components/` — `DemoFlow` (roteiro passo a passo na própria tela), `QueryBlock` (mostra o pipeline/query executado), `Limites` (bloco de limite declarado, `<details>` fechado, usado por todo módulo).
+- `src/components/` — `QueryBlock` (mostra o pipeline/query executado), `Limites` (bloco de limite declarado, `<details>` fechado, usado por todo módulo).
 - `src/hooks/useApi.js` — wrapper de fetch com `X-Demo-Token`, timeout de 30s (configurável até 300s), erro traduzido para linguagem de operador, contador de pendentes em vez de booleano de loading.
 - `src/hooks/usePolling.js` — `useVisivel()` / `useIntervaloVisivel(fn, ms, ativo)`: nenhum timer roda com a aba oculta; guarda a função numa `ref` para não recriar o timer a cada render.
 - `src/index.css` — tokens dark do MongoDB (`--bg-primary #061621`, `--accent #00ED64`, Special Gothic + Source Code Pro).
