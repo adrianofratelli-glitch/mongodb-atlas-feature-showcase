@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Path, Query
 from database import db
 from pymongo import ASCENDING, DESCENDING
 import threading
@@ -15,6 +15,12 @@ EXPLAIN_SCENARIOS = {
 router = APIRouter(prefix="/reindexacao", tags=["Reindexação"])
 
 COLLECTION = "produtos"
+# `produtos` pode ser compartilhada com outra PoV no mesmo banco (no cluster de
+# demo, o marketplace de busca usa `POC.produtos` e tem índices próprios, como
+# `marca_1`). Só índices criados POR ESTE MÓDULO carregam o prefixo e só eles
+# podem ser removidos pela API. Sem isso, "Remover" apagava o índice de outra
+# demo ou um índice do seed de que os módulos 02/03 dependem.
+DEMO_INDEX_PREFIX = "demo01_"
 
 # Estado dos builds em andamento (em memória). name -> {...}
 _builds: dict[str, dict] = {}
@@ -34,7 +40,11 @@ def _index_name(fields: list[str], *, sparse: bool = False, partial: bool = Fals
         direction = -1 if f.startswith("-") else 1
         parts.append(f"{name}_{direction}")
     suffix = "_partial" if partial else "_sparse" if sparse else ""
-    return "_".join(parts) + suffix
+    return DEMO_INDEX_PREFIX + "_".join(parts) + suffix
+
+
+def is_demo_index(name: str) -> bool:
+    return name.startswith(DEMO_INDEX_PREFIX)
 
 
 def _existing_index_names() -> set[str]:
@@ -63,6 +73,7 @@ def list_indexes():
             "key": dict(i["key"]),
             "sparse": bool(i.get("sparse", False)),
             "partial_filter": i.get("partialFilterExpression"),
+            "removivel": is_demo_index(i["name"]),
         } for i in indexes]
     }
 
@@ -163,9 +174,17 @@ def build_status(
 
 
 @router.delete("/drop/{index_name}")
-def drop_index(index_name: str):
+def drop_index(index_name: str = Path(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")):
     if index_name == "_id_":
         raise HTTPException(status_code=403, detail="Não é possível remover o índice _id.")
+    if not is_demo_index(index_name):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Índice protegido: só índices criados por este módulo (prefixo {DEMO_INDEX_PREFIX}) "
+                "podem ser removidos. Os demais pertencem ao seed ou a outra demo no mesmo banco."
+            ),
+        )
     with _builds_lock:
         if _builds.get(index_name, {}).get("status") == "building":
             raise HTTPException(status_code=409, detail="Aguarde o término do build antes de remover o índice.")
