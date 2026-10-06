@@ -130,7 +130,7 @@ async def preflight():
         for collection in ("produtos", "avaliacoes"):
             checks[f"collection_{collection}"] = {
                 "ok": collection in names,
-                "message": "disponível" if collection in names else "execute seed_data.py",
+                "message": "disponível" if collection in names else "ausente — rode scripts/reset_demo.py",
             }
         checks.update(await streaming.preflight_checks())
 

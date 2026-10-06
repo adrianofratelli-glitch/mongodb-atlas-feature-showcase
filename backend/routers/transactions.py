@@ -21,6 +21,10 @@ class SimulatedPaymentError(RuntimeError):
     """Falha deliberada do passo de pagamento, distinta de erros reais."""
 
 
+class SemProdutoError(RuntimeError):
+    """Banco sem produto elegível: estado de dados, não falha de transação."""
+
+
 @router.get("/status")
 def status():
     """Retorna quantos documentos existem nas coleções de demo."""
@@ -62,7 +66,10 @@ def executar_transacao(simular_falha: bool = False):
             session=session,
         )
         if not produto:
-            raise Exception("Nenhum produto em estoque encontrado.")
+            raise SemProdutoError(
+                f"Nenhum produto de Eletrônicos em estoque em {db.name}.produtos. "
+                "Rode scripts/reset_demo.py para recriar os dados da demo."
+            )
 
         steps.append({
             "step": 1, "ok": True,
@@ -132,6 +139,7 @@ def executar_transacao(simular_falha: bool = False):
             })
             return {
                 "success":      True,
+                "banco":        db.name,
                 "pedido_id":    pedido_id,
                 "pagamento_id": resultado["pagamento_id"],
                 "produto":      resultado["produto"],
@@ -139,6 +147,12 @@ def executar_transacao(simular_falha: bool = False):
                 "steps":        steps,
             }
 
+        except SemProdutoError as e:
+            # Nada foi escrito: o passo 1 é leitura. Dizer "rollback" aqui
+            # atribuiria à transação um problema que é de dados ausentes.
+            return {"success": False, "error": str(e), "sem_dados": True, "steps": [{
+                "step": 1, "ok": False, "descricao": "Produto não encontrado", "detalhe": str(e),
+            }]}
         except Exception as e:
             # with_transaction já abortou a transação antes de propagar
             expected_failure = isinstance(e, SimulatedPaymentError)

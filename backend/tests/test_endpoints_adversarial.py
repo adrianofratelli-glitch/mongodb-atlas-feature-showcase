@@ -316,3 +316,34 @@ def test_delete_online_archive_so_no_escopo_da_demo(monkeypatch, arquivo, permit
         assert r.status_code == 200 and chamadas == ["GET", "DELETE"]
     else:
         assert r.status_code == 403 and chamadas == ["GET"]
+
+
+# ── P2: banco vazio aparecia como "ROLLBACK ... consulte o log" ─────────────
+def test_transacao_sem_produto_diz_que_faltam_dados(monkeypatch):
+    class Produtos:
+        def find_one(self, *_a, **_k):
+            return None
+
+    class Db(dict):
+        name = "vazio_test"
+
+    class Sessao:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def with_transaction(self, fn):
+            return fn(self)
+
+    class Cliente:
+        def start_session(self):
+            return Sessao()
+
+    monkeypatch.setattr(transactions, "db", Db(produtos=Produtos()))
+    monkeypatch.setattr(transactions, "client", Cliente())
+    body = client.post("/transactions/executar").json()
+    assert body["success"] is False and body["sem_dados"] is True
+    assert "reset_demo.py" in body["error"]
+    assert not any(s["step"] == "ROLLBACK" for s in body["steps"])
