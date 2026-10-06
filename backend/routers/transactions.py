@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor
 from statistics import median
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from pymongo import WriteConcern
 from pymongo.errors import PyMongoError
 from database import db, client
 from datetime import datetime, timezone
+import threading
 import time
 import uuid
 import logging
@@ -18,6 +19,10 @@ DEMO_COLLECTIONS = ["pedidos_demo", "pagamentos_demo", "estoque_demo"]
 
 class SimulatedPaymentError(RuntimeError):
     """Falha deliberada do passo de pagamento, distinta de erros reais."""
+
+
+class SemProdutoError(RuntimeError):
+    """Banco sem produto elegível: estado de dados, não falha de transação."""
 
 
 @router.get("/status")
@@ -61,7 +66,10 @@ def executar_transacao(simular_falha: bool = False):
             session=session,
         )
         if not produto:
-            raise Exception("Nenhum produto em estoque encontrado.")
+            raise SemProdutoError(
+                f"Nenhum produto de Eletrônicos em estoque em {db.name}.produtos. "
+                "Rode scripts/reset_demo.py para recriar os dados da demo."
+            )
 
         steps.append({
             "step": 1, "ok": True,
@@ -131,6 +139,7 @@ def executar_transacao(simular_falha: bool = False):
             })
             return {
                 "success":      True,
+                "banco":        db.name,
                 "pedido_id":    pedido_id,
                 "pagamento_id": resultado["pagamento_id"],
                 "produto":      resultado["produto"],
@@ -138,6 +147,12 @@ def executar_transacao(simular_falha: bool = False):
                 "steps":        steps,
             }
 
+        except SemProdutoError as e:
+            # Nada foi escrito: o passo 1 é leitura. Dizer "rollback" aqui
+            # atribuiria à transação um problema que é de dados ausentes.
+            return {"success": False, "error": str(e), "sem_dados": True, "steps": [{
+                "step": 1, "ok": False, "descricao": "Produto não encontrado", "detalhe": str(e),
+            }]}
         except Exception as e:
             # with_transaction já abortou a transação antes de propagar
             expected_failure = isinstance(e, SimulatedPaymentError)
@@ -257,11 +272,25 @@ def _transacao_multi(session, run_id: str, i: int) -> None:
         {"pedido_id": pedido_id, "run_id": run_id, "valor": 100 + i, "ts": agora}, session=session)
 
 
+# Duas medições simultâneas disputariam as mesmas chaves e o mesmo enlace: os
+# percentis de uma contaminariam os da outra (duplo clique, duas abas).
+_benchmark_lock = threading.Lock()
+
+
 @router.post("/benchmark")
 def benchmark(
     amostras: int = Query(default=60, ge=MIN_AMOSTRA, le=500),
     concorrencia: int = Query(default=8, ge=2, le=16),
 ):
+    if not _benchmark_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Já há uma medição em andamento. Aguarde o resultado dela.")
+    try:
+        return _benchmark(amostras, concorrencia)
+    finally:
+        _benchmark_lock.release()
+
+
+def _benchmark(amostras: int, concorrencia: int):
     """
     Mede o custo real da transação multi-documento contra o cluster ligado.
 

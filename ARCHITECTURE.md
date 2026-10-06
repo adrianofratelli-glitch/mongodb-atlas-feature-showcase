@@ -1,13 +1,13 @@
 # Arquitetura
 
 ```
-React 18 + Vite (frontend/, :5174)
+React 19 + Vite (frontend/, :5174)
    │  fetch /api/*        (JSON)
    │  EventSource /api/streaming/*        (SSE — sessão ao vivo, modo principal)
    │  EventSource /api/replay/streaming/* (SSE — fallback gravado)
    ▼
 FastAPI (backend/main.py, :8002)
-   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.* e geo.*)
+   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.*; geo.sinais_ao_vivo só como sink do ASP)
    ├─ requests ────────────► Atlas Admin API v2      (só Online Archive)
    ├─ requests ────────────► Kafka Connect REST      (:8083, modo ao vivo)
    ├─ aiokafka (opcional) ─► broker Kafka (:9092, KRaft via Homebrew, modo ao vivo)
@@ -48,7 +48,7 @@ são alcançáveis pelo `EventSource`, que não consegue enviar o cabeçalho `X-
 | `/change-streams` | `POST /start`, `POST /trigger`, `GET /feed` (SSE), `GET /events`, `GET /collection`, `POST /stop`, `DELETE /clear` |
 | `/transactions` | `GET /status`, `POST /executar`, `POST /benchmark`, `POST /reset` |
 | `/streaming` | veja abaixo |
-| `/geo` | `GET /status`, `GET /municipios`, `GET /sinais-ao-vivo`, `POST /explain-compare`, `GET /impossible-travel`, `POST /operadores`, `POST /search` |
+| `/tese` | `POST /medir` (mede agora, no mesmo cluster e pelo mesmo `MongoClient`, uma operação de cada capacidade; p50/máx), `GET /componentes` |
 
 ### `/streaming` (módulo 07)
 
@@ -60,10 +60,10 @@ Um gerador de escrita alimenta quatro consumidores da mesma mudança. Os dados v
 **Dois canais em um fluxo.** `canal: "PIX"` não carrega coordenada — uma transferência
 PIX realmente não tem uma. `canal: "CARTAO_PRESENCIAL"`
 (`STREAMING_CARTAO_PCT`, 18% por padrão) carrega `local` como o ponto cadastrado do
-terminal do adquirente, a mesma modelagem do dataset do módulo 08, vinda do
-mesmo `backend/data/municipios.json`. É isso que permite ao `geoSinais30s`
-calcular risco geográfico em tempo de evento, em vez de o módulo 08 varrer o histórico
-sob demanda.
+terminal do adquirente, vinda de `backend/data/municipios.json`. É isso que permite ao
+`geoSinais30s` calcular risco geográfico em tempo de evento. O antigo módulo 08, que lia
+esse sinal, saiu para `mongodb-atlas-geo-showcase`: nenhum frontend deste repo lê
+`geo.sinais_ao_vivo` hoje.
 
 O canal de cartão tem dois instantes distintos, e confundi-los é um bug real:
 `ts` é a chegada ao fluxo e o campo do TTL; `compradaEm` é a compra
@@ -181,45 +181,15 @@ este modo não pode fazer.
 | `GET` | `/replay/streaming/{generator/status,kafka/status,asp/status,oplog,leitura,asp/dlq/resumo,reconciliacao}` | O snapshot gravado cujo timestamp é o último igual ou anterior à posição atual de playback. |
 | `GET` | `/replay/streaming/{changestream,kafka,asp}` | **SSE.** Reemite os eventos gravados conforme o relógio avança, mais um `reset` quando a gravação dá a volta. Envia `: keepalive` a cada 10 s — sem isso um fluxo ocioso é derrubado pelo navegador e pelo proxy do Vite, o cliente reconecta, e o gerador do lado do servidor nunca descobre que o cliente sumiu (um gerador que nunca escreve nunca vê a desconexão). Esses fluxos vazados esgotam o orçamento de ~6 conexões por host do navegador, e fetches comuns começam a estourar 30 s de timeout enquanto o backend responde em milissegundos. |
 
-### `/geo` (módulo 08)
+### Módulo 08 (Geo) — extraído
 
-Tem banco próprio (`geo`, sobrescreva com `GEO_DB`). Três coleções:
-`geo.transacoes`, o dataset versionado semeado por `scripts/seed_geo.py`;
-`geo.transacoes_geonear`, cópia via `$out` da mesma coleção mantida com um único
-índice `2dsphere` — `$geoNear` recusa rodar (mesmo com hint, em qualquer forma)
-quando o campo tem mais de um índice 2dsphere, e `transacoes` tem dois de
-propósito (o puro e o composto da Demo A); e `geo.sinais_ao_vivo`, que é dado de
-execução escrito pelo processor de ASP e limpo por `/streaming/reset` e
-`cleanup-streaming-data.py`. As duas coleções de dataset (`transacoes` e
-`transacoes_geonear`) nunca são tocadas por nenhum dos dois caminhos de limpeza.
+O módulo de risco geográfico saiu em 2026-09-11 para o repositório standalone
+`mongodb-atlas-geo-showcase`, com o dataset (`seed_geo.py`) e o índice Atlas Search.
+Aqui restam só o canal `CARTAO_PRESENCIAL` do módulo 07 e o processor `geoSinais30s`,
+cujo sink `geo.sinais_ao_vivo` é limpo por `/streaming/reset`,
+`cleanup-streaming-data.py` e `reset_demo.py`.
 
-| Método | Caminho | Descrição |
-|---|---|---|
-| `GET` | `/geo/sinais-ao-vivo` | Lê `geo.sinais_ao_vivo`, materializada pelo stream processor `geoSinais30s` enquanto o módulo 07 roda. Nada é calculado aqui — a janela já fez isso. Retorna os pares recentes mais contagens separadas de `plantados` e `emergentes`, porque juntá-las transformaria o sinal garantido da demo em evidência. |
-| `GET` | `/geo/status` | Contagem de documentos, a lista de índices lida da coleção e se o índice do Atlas Search existe. Nada é fixado no código da UI. |
-| `GET` | `/geo/municipios` | Municípios presentes no dataset com um ponto representativo, para que a UI possa centralizar uma consulta sem enviar uma tabela de coordenadas ao navegador. Cacheado em memória; a lista só muda quando o seed roda de novo. |
-| `POST` | `/geo/explain-compare` | A mesma consulta `$geoWithin` (`$centerSphere`) explicada duas vezes: com hint em `cliente_status_local_idx` (campos de igualdade primeiro, geo por último) e em `local_2dsphere_idx`. Retorna estágio vencedor, índice usado, `totalKeysExamined`, `totalDocsExamined`, `nReturned` e `executionTimeMillis` para cada um. Endpoint mantido, mas fora da UI redesenhada (ver abaixo). |
-| `GET` | `/geo/impossible-travel` | Sinal de risco retrospectivo: `$setWindowFields` particionado por `clienteId`, ordenado por `ts`, `$shift` puxando o timestamp anterior, coordenadas, dispositivo e procedência da localização, e então haversine em MQL puro. Ele retorna explicitamente `decisao_fraude: false`; nenhum documento sai do cluster para o cálculo. Um `$facet` com dois ramos roda sobre o mesmo `$setWindowFields` (a parte cara, uma vez só): `sinais` (acima do limite) e `aprovados` (`$sample` dentro do limite, a outra face da mesma decisão). Cada resultado carrega `classificacao: sinalizada|aprovada`; a lista final intercala as duas classes (não ordena só por `ts`) porque a amostra aprovada tende a concentrar datas recentes e empurrava as sinalizadas para o fim da tabela. Aceita `clienteId` para estreitar a varredura. |
-| `POST` | `/geo/operadores` | Os cinco operadores/estágios de consulta geoespacial do MongoDB lado a lado, sobre a mesma geometria (um centro + raio geram um polígono quadrado aproximado, com clamp de coordenadas perto do polo/antimeridiano): `$geoWithin`, `$geoIntersects` (ambos com `$geometry`), `$near`, `$nearSphere` (operadores de `find()`, sem `count_documents` — não funcionam dentro de `$match` de agregação, restrição do MongoDB) e `$geoNear` (estágio de agregação, roda em `geo.transacoes_geonear`, devolve contagem real via `$facet` e distância calculada por documento — a troca é ter que ser o primeiro estágio do pipeline). |
-| `GET` | `/geo/rotas-comparar` | Compara `$geoWithin` e `$geoIntersects` sobre três LineStrings sintéticas e um polígono definido por `lng`, `lat` e `raioKm`. Usa `$documents` + `$facet` no Atlas, sem persistir dados. Retorna entrada, filtros, IDs encontrados e pipeline completo. |
-| `POST` | `/geo/search` | A vizinhança de uma **compra contestada**: passe `endToEndId` e o centro vira a coordenada cadastrada daquele terminal, com a âncora retornada junto dos resultados. Um `$search` com `geoWithin`, filtro opcional de categoria e facetas de `$searchMeta`; o `termo` é opcional e adiciona casamento fuzzy de nome para o caso de estabelecimento clonado. Sem termo, a cláusula de scoring é `exists` (um compound só de `filter` retorna tudo com score zero) e os resultados são ordenados por distância, com o desempate aplicado antes da deduplicação por terminal. Sem o índice, o endpoint retorna `estado: "nao_configurado"` em vez de resultados vazios. Endpoint mantido, mas fora da UI redesenhada (ver abaixo). |
-
-A UI (`frontend/src/pages/Geo.jsx`) foi redesenhada para dois painéis simples:
-**01 · Investigação retrospectiva** (`/impossible-travel`, tabela sinalizada/aprovada
-intercalada) e **02 · Operadores de consulta geoespacial** (`/operadores`, os cinco
-lado a lado). As seções de impacto para o banco, contestação (`/search`) e comparação
-de planos (`/explain-compare`) saíram da tela — os endpoints continuam ativos e
-testados, só não estão mais no fluxo visível. Texto de posicionamento longo
-("isto não é um motor antifraude...") foi removido de propósito: a tela mostra
-query/comando/resultado, o apresentador narra o resto.
-
-As checagens de geo entram no `/preflight`, mas nunca o reprovam: o módulo é opcional,
-do mesmo jeito que Kafka e ASP.
-
-O mapa é renderizado como SVG inline, com uma projeção linear escrita à mão sobre o
-bounding box brasileiro — sem Leaflet, sem Mapbox, sem tiles, sem nova dependência
-de frontend. Com a rede externa bloqueada o módulo ainda renderiza e todo
-número ainda vem do cluster; nenhuma requisição externa de fonte: Special Gothic, Special Gothic Condensed One e
+Nenhuma requisição externa de fonte: Special Gothic, Special Gothic Condensed One e
 Source Code Pro são servidas localmente (`src/fonts/`, layout v4).
 
 ### Convenções de SSE
@@ -254,11 +224,8 @@ workspace é convenção, não garantia.
   A rota padrão é `/#tese`.
 - `src/pages/` — um componente por módulo, mais `Tese.jsx` (abertura: a tese e os
   não-objetivos, ~70 palavras).
-- `src/components/` — `DemoFlow`, `QueryBlock`, `Limites` (bloco de limite declarado, em
-  `<details>` fechado, usado pelos oito módulos) e `MapaBrasil` (mapa SVG do módulo 08:
-  malha estadual do IBGE em `src/data/brasil-uf.js`, projeção equiretangular corrigida por
-  `cos(-15°)`, zoom automático com o raio do `$geoWithin` desenhado como elipse, e um
-  alternador opcional para o Google Maps sob `VITE_GOOGLE_MAPS_KEY`).
+- `src/components/` — `QueryBlock` (drawer "Ver query / chamada executada") e `Limites`
+  (bloco de limite declarado, em `<details>` fechado, usado pelos sete módulos).
 - `src/hooks/useApi.js` — wrapper de fetch que adiciona `X-Demo-Token`. Aborts esperados
   causados pelo unmount de um módulo são silenciosos; timeouts e falhas reais ainda disparam
   um erro global. O `App.jsx` deduplica toasts de erro idênticos por oito

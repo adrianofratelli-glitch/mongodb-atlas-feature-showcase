@@ -45,8 +45,9 @@ O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removen
 | `backend/settings.py` | Dataclass congelada que lê env vars uma vez; `settings.atlas_configured` habilita o módulo de Online Archive sem estourar quando a credencial falta |
 | `backend/database.py` | Um único `MongoClient` (`connect=False`, `appname`, timeouts explícitos) + `readiness()`. Cai para URI de localhost no import — falta de `MONGO_URI` aparece em `/health/ready`, não derruba o processo |
 | `backend/security.py` | `MutationGuardMiddleware` + `ApiHardeningMiddleware` (ver seção de segurança) |
-| `backend/routers/*.py` | Um módulo por demo — reindexacao, hot_cold, aggregations, schema_validation, change_streams, transactions, streaming, replay |
-| `backend/seed_data.py` | Gera `produtos`/`avaliacoes` sintéticos + cria os índices que as demos assumem |
+| `backend/routers/*.py` | Um módulo por demo — reindexacao, hot_cold, aggregations, schema_validation, change_streams, transactions, streaming, replay, tese (`POST /tese/medir`) |
+| `backend/seed_data.py` | Upsert determinístico (idempotente) de `produtos`/`avaliacoes` + `ensure_indexes()`; recusa banco sem `_test` sem `ALLOW_DEMO_DB_WRITE=1` |
+| `scripts/reset_demo.py` | Reset único: dropa só coleções dos módulos, remove índices `demo01_*`, garante dados/índices e limpa o streaming; `--check` só verifica |
 
 **Por que um router por demo:** permite mexer no Streaming sem risco de quebrar outro módulo minutos antes de uma reunião com cliente.
 
@@ -54,7 +55,7 @@ O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removen
 
 - `src/App.jsx` — casca, seletor compacto de módulo, roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`). Rota padrão é `/#tese`.
 - `src/pages/` — um componente por módulo, mais `Tese.jsx` (a abertura: tese de convergência + não-objetivos, ~70 palavras).
-- `src/components/` — `DemoFlow` (roteiro passo a passo na própria tela), `QueryBlock` (mostra o pipeline/query executado), `Limites` (bloco de limite declarado, `<details>` fechado, usado por todo módulo).
+- `src/components/` — `QueryBlock` (mostra o pipeline/query executado), `Limites` (bloco de limite declarado, `<details>` fechado, usado por todo módulo).
 - `src/hooks/useApi.js` — wrapper de fetch com `X-Demo-Token`, timeout de 30s (configurável até 300s), erro traduzido para linguagem de operador, contador de pendentes em vez de booleano de loading.
 - `src/hooks/usePolling.js` — `useVisivel()` / `useIntervaloVisivel(fn, ms, ativo)`: nenhum timer roda com a aba oculta; guarda a função numa `ref` para não recriar o timer a cada render.
 - `src/index.css` — tokens dark do MongoDB (`--bg-primary #061621`, `--accent #00ED64`, Special Gothic + Source Code Pro).
@@ -105,7 +106,7 @@ O guard **ignora métodos seguros** (GET), e é por isso que **todo endpoint SSE
 
 ## Testes
 
-Todos unitários, Mongo stubado/monkeypatchado — **nenhum teste exige cluster ao vivo** (CI não tem credencial).
+Todos unitários, Mongo stubado/monkeypatchado — **nenhum teste exige cluster ao vivo** (CI não tem credencial). `backend/tests/test_endpoints_adversarial.py` cobre entradas hostis (operadores Mongo em query/body, nomes de índice alheios, JSON malformado, corpo de 1 MB, paginação fora do contrato), concorrência (409 em benchmark e medição simultâneos) e degradação sem Mongo.
 
 ```bash
 pytest                                  # testpaths = backend/tests

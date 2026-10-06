@@ -200,6 +200,27 @@ export default function App() {
               </select>
               <span>{stats ? `${fmtCount(stats.produtos + stats.avaliacoes)} produtos + avaliações` : 'Atlas ao vivo'}</span>
             </div>
+            {preflight && !preflight.checks && (
+              <div className="banner banner-error" role="alert" style={{ marginBottom: 16 }}>
+                <span aria-hidden="true">⚠</span>
+                <div><strong>API indisponível.</strong> O backend não respondeu ao pré-voo. Suba-o com <code>./start.sh</code> (porta 8002) e recarregue a página.</div>
+              </div>
+            )}
+            {preflight?.checks && (preflight.checks.collection_produtos?.ok === false || preflight.checks.collection_avaliacoes?.ok === false) && (
+              <div className="banner banner-warning" role="alert" style={{ marginBottom: 16 }}>
+                <span aria-hidden="true">⚠</span>
+                <div>
+                  <strong>Banco {stats?.db ? <code>{stats.db}</code> : ''} sem os dados da demo.</strong> Os módulos 01–04 e 06 dependem de{' '}
+                  <code>produtos</code> e <code>avaliacoes</code>. Rode <code>scripts/reset_demo.py</code> (veja o README) e recarregue.
+                </div>
+              </div>
+            )}
+            {preflight?.checks?.mongodb?.ok === false && (
+              <div className="banner banner-error" role="alert" style={{ marginBottom: 16 }}>
+                <span aria-hidden="true">⚠</span>
+                <div><strong>Cluster inalcançável.</strong> {preflight.checks.mongodb.message}. Confira <code>MONGO_URI</code> e o Network Access do Atlas.</div>
+              </div>
+            )}
             {/* Page header */}
             <div style={{ marginBottom: 20 }}>
               <h1 style={{

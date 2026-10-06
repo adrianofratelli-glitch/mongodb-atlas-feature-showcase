@@ -231,8 +231,8 @@ export default function Transactions() {
           <div className="card" style={{ padding: '18px 20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
               <strong style={{ fontSize: 15 }}>Execução</strong>
-              <span className={`badge ${result.success ? 'badge-green' : 'badge-red'}`}>
-                {result.success ? '✅ COMMIT' : '🔴 ROLLBACK'}
+              <span className={`badge ${result.success ? 'badge-green' : result.sem_dados ? 'badge-yellow' : 'badge-red'}`}>
+                {result.success ? '✅ COMMIT' : result.sem_dados ? '⚠ SEM DADOS' : '🔴 ROLLBACK'}
               </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -251,18 +251,25 @@ export default function Transactions() {
               <IDCard
                 label={`pedidos_demo — ${result.produto} — R$ ${result.valor?.toFixed(2)}`}
                 id={result.pedido_id}
-                collection="POC › pedidos_demo"
+                collection={`${result.banco || 'POC'} › pedidos_demo`}
               />
               <IDCard
                 label="pagamentos_demo — PIX aprovado"
                 id={result.pagamento_id}
-                collection="POC › pagamentos_demo"
+                collection={`${result.banco || 'POC'} › pagamentos_demo`}
               />
             </div>
           )}
 
+          {result.sem_dados && (
+            <div className="banner banner-warning" role="alert">
+              <span aria-hidden="true">⚠</span>
+              <div>Nenhuma transação foi aberta: falta dado de demonstração. {result.error}</div>
+            </div>
+          )}
+
           {/* Rollback explainer */}
-          {!result.success && (
+          {!result.success && !result.sem_dados && (
             <div className="banner banner-warning">
               <span>💡</span>
               <div>

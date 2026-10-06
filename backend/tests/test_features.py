@@ -86,9 +86,9 @@ def test_simulacao_online_archive_usa_corte_movel_de_365_dias(monkeypatch):
 
 
 def test_nome_de_indice_diferencia_opcoes():
-    assert reindexacao._index_name(["preco"]) == "preco_1"
-    assert reindexacao._index_name(["preco"], partial=True) == "preco_1_partial"
-    assert reindexacao._index_name(["preco"], sparse=True) == "preco_1_sparse"
+    assert reindexacao._index_name(["preco"]) == "demo01_preco_1"
+    assert reindexacao._index_name(["preco"], partial=True) == "demo01_preco_1_partial"
+    assert reindexacao._index_name(["preco"], sparse=True) == "demo01_preco_1_sparse"
 
 
 def test_indice_equivalente_compara_key_e_opcoes(monkeypatch):

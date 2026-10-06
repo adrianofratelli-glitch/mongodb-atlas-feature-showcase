@@ -19,6 +19,7 @@ from routers import (
     replay,
     schema_validation,
     streaming,
+    tese,
     transactions,
 )
 from security import ApiHardeningMiddleware, MutationGuardMiddleware
@@ -88,6 +89,7 @@ app.include_router(change_streams.router)
 app.include_router(transactions.router)
 app.include_router(streaming.router)
 app.include_router(replay.router)
+app.include_router(tese.router)
 
 
 @app.get("/")
@@ -128,7 +130,7 @@ async def preflight():
         for collection in ("produtos", "avaliacoes"):
             checks[f"collection_{collection}"] = {
                 "ok": collection in names,
-                "message": "disponível" if collection in names else "execute seed_data.py",
+                "message": "disponível" if collection in names else "ausente — rode scripts/reset_demo.py",
             }
         checks.update(await streaming.preflight_checks())
 

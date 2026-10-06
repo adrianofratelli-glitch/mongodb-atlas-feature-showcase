@@ -286,20 +286,23 @@ export default function Reindexacao() {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(showAllIndexes ? indexes : indexes.filter(idx =>
-            idx.name === '_id_' || ['categoria_1', 'categoria_1_preco_-1', 'preco_1_partial'].includes(idx.name)
+            idx.name === '_id_' || idx.name === 'categoria_1' || idx.removivel
           )).map(idx => (
             <div key={idx.name} className="result-row" style={{ justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span className={`badge ${idx.name === '_id_' ? 'badge-blue' : 'badge-green'}`}>
-                  {idx.name === '_id_' ? 'Sistema' : 'Custom'}
+                <span className={`badge ${idx.name === '_id_' ? 'badge-blue' : idx.removivel ? 'badge-green' : 'badge-gray'}`}>
+                  {idx.name === '_id_' ? 'Sistema' : idx.removivel ? 'Criado na demo' : 'Pré-existente'}
                 </span>
                 <code style={{ fontSize: 12 }}>{idx.name}</code>
                 <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>→ {JSON.stringify(idx.key)}</span>
                 {idx.sparse && <span className="badge badge-blue">sparse</span>}
                 {idx.partial_filter && <span className="badge badge-blue">partial</span>}
               </div>
-              {idx.name !== '_id_' && (
-                <button className="btn btn-xs btn-danger" onClick={() => handleDrop(idx.name)}>Remover</button>
+              {idx.removivel ? (
+                <button className="btn btn-xs btn-danger" onClick={() => handleDrop(idx.name)}
+                  aria-label={`Remover o índice ${idx.name}`}>Remover</button>
+              ) : (
+                <span className="badge badge-gray" title="Criado pelo seed ou por outra demo no mesmo banco; a API recusa a remoção.">protegido</span>
               )}
             </div>
           ))}

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, HTTPException, Path, Query
 from database import db
 from datetime import datetime, timedelta, timezone
 import json
@@ -234,6 +234,19 @@ def query_transparent(categoria: str = Query("Eletrônicos", min_length=2, max_l
     }
 
 
+def _archive_da_demo(archive: dict) -> bool:
+    """Regras de Online Archive são do cluster inteiro, não do banco da PoV.
+
+    Só a regra sobre `<MONGO_DB>.produtos` (ou a órfã que o Atlas renomeia para
+    `deleted-produtos-<uuid>` quando a coleção é dropada) pode ser removida por
+    aqui; as de outra PoV no mesmo cluster ficam fora do alcance do botão.
+    """
+    coll = archive.get("collName") or ""
+    return archive.get("dbName") == settings.mongo_db and (
+        coll == COLLECTION or coll.startswith(f"deleted-{COLLECTION}-")
+    )
+
+
 @router.get("/online-archive/list")
 def list_online_archives():
     """Lista as regras de Online Archive configuradas no cluster via Atlas API."""
@@ -252,6 +265,8 @@ def list_online_archives():
                 "collection": a.get("collName"),
                 "date_field": a.get("criteria", {}).get("dateField"),
                 "expire_after_days": a.get("criteria", {}).get("expireAfterDays"),
+                "db": a.get("dbName"),
+                "removivel": _archive_da_demo(a),
             }
             for a in archives
         ]
@@ -305,6 +320,15 @@ def delete_online_archive(
     archive_id: str = Path(..., min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 ):
     url = f"{ATLAS_BASE}/groups/{ATLAS_PROJECT_ID}/clusters/{ATLAS_CLUSTER}/onlineArchives/{archive_id}"
+    try:
+        alvo = _atlas_request("GET", url)
+    except AtlasUnavailable as e:
+        return {"atlas_error": str(e)}
+    if not _archive_da_demo(alvo):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Regra fora do escopo da demo: só regras sobre {settings.mongo_db}.{COLLECTION} podem ser removidas aqui.",
+        )
     try:
         _atlas_request("DELETE", url)
     except AtlasUnavailable as e:

@@ -4,11 +4,13 @@ Seven Atlas capabilities, one page each, running against a real cluster. Build a
 
 Nothing is mocked. If a piece is not configured, the UI says so instead of inventing a number.
 
-FastAPI + React 18. The UI is in Brazilian Portuguese. No LLM.
+FastAPI + React 19. The UI is in Brazilian Portuguese. No LLM.
 
 ## The modules
 
 The app opens on a **thesis** page, not on module 01: none of the capabilities is exclusive to MongoDB, and the argument is not any single capability. It is the convergence of all of them over the same data, in the same cluster, in the same language. The page also states what the demo does *not* prove (it is not a competitive benchmark, does not estimate savings, and does not replace the warehouse).
+
+**Measure it now.** The thesis page has a *Medir agora* button (`POST /tese/medir`): through the app's single `MongoClient`, against the same cluster, it runs one real operation per capability (ping, indexed find, aggregation, a schema rejection, a change-stream delivery, a two-collection transaction) five times and shows p50/max with the evidence for each (index used, `code 121` rejections, events delivered, commits). Nothing on that table is stored in the code. A collapsed panel lists what each capability needs outside Atlas in a stack assembled from separate services; it is labelled as an architecture comparison, not a measurement.
 
 | Module | What Atlas does |
 |---|---|
@@ -36,9 +38,13 @@ Every module has a deep link: `/#tese`, `/#agg`, `/#streams`, `/#tx`, …
 cd backend && python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # MONGO_URI, optionally the Atlas API keys
-python seed_data.py           # 100k products + 20k reviews
-cd .. && ./start.sh            # API :8002 + UI :5174
+cd ../frontend && npm ci && cd ..
+# idempotent reset: data + B-tree indexes + streaming leftovers (safe to rerun)
+MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test backend/venv/bin/python scripts/reset_demo.py
+MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test ./start.sh   # API :8002 + UI :5174
 ```
+
+`scripts/reset_demo.py` is the single reset. It refuses any database that does not end in `_test` unless `ALLOW_DEMO_DB_WRITE=1` is set (`ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py` for the demo database, never during a live demo). It drops only collections the modules create, removes only indexes created by module 01 (`demo01_` prefix), upserts `produtos`/`avaliacoes` deterministically (a rerun never duplicates) and cleans the streaming run. It never drops `produtos`/`avaliacoes`, because in a shared demo database they may belong to another PoV as well. `--check` only verifies. The first run on an empty database writes 120k documents (164.6 s measured over the network to an M20); a rerun on populated data took 5.5 s.
 
 The launcher uses a no-reload backend and an optimized frontend build by default. For reload/HMR development run `POV_DEV=1 ./start.sh`; the build is only redone when sources, lockfile, or configuration change.
 
@@ -47,7 +53,7 @@ Run `curl http://localhost:8002/preflight` before presenting. It checks the URI,
 Once configured, `bin/overview` replaces all of that:
 
 ```bash
-./scripts/prepare-demo.sh   # ahead of time (review it: it may reference the already-extracted Geo dataset)
+./scripts/prepare-demo.sh   # ahead of time: reset_demo.py + --check (needs ALLOW_DEMO_DB_WRITE=1 for the demo db)
 ./bin/overview              # preflight, backend, frontend, Kafka, ASP
 ./bin/overview --replay     # recorded fallback, nothing written to the cluster
 ./bin/overview down         # stops everything; the cluster is left untouched
@@ -59,19 +65,19 @@ Details: [Streaming setup](docs/setup-streaming.md) · [reference](docs/referenc
 
 ## Module 07: three consumers, one write
 
-Change Streams in the application, the Kafka Connector publishing to a real broker, and Atlas Stream Processing aggregating 5s windows, all over the same writes. The flow has two channels: `PIX` (no coordinate, because a PIX transfer has none) and `CARTAO_PRESENCIAL` (card-present, with the acquirer terminal's coordinate, which is what makes the geospatial module defensible).
+Change Streams in the application, the Kafka Connector publishing to a real broker, and Atlas Stream Processing aggregating 5s windows, all over the same writes. The flow has two channels: `PIX` (no coordinate, because a PIX transfer has none) and `CARTAO_PRESENCIAL` (card-present, with the acquirer terminal's coordinate, consumed by the `geoSinais30s` processor; the geospatial module that displayed it now lives in its own repository).
 
 ![Streaming module: three consumers counting the same run live](docs/screenshots/07-streaming.png)
 
 **Break it on purpose.** Four buttons sit next to the generator: *kill the connector* (stops mid-flow and resumes from the stored offset), *inject an invalid event* (a string `valor`, diverted to the DLQ by the processor's `$validate`), *publish an incompatible schema version* (the required field `valor` renamed to `amount`, the change a Schema Registry would refuse), and *force a primary failover* (Atlas's test failover, on the cluster, under load).
 
-Then watch the reconciliation close anyway, and it checks three things, not one: **count** (nothing missing), **value** summed in integer cents (nothing transformed along the way), and an XOR **digest** of the set of `endToEndId` (the paths became the same documents, not merely the same quantity). Measured through a real election: 332,568 documents, R$ 104,486,759.65 identical across the three paths, 0 writes rejected after driver retry, 0 duplicates.
+Then watch the reconciliation close anyway, and it checks three things, not one: **count** (nothing missing), **value** summed in integer cents (nothing transformed along the way), and an XOR **digest** of the set of `endToEndId` (the paths became the same documents, not merely the same quantity). Recorded in an earlier live run through a real election (not re-measured in the October 2026 review): 332,568 documents, R$ 104,486,759.65 identical across the three paths, 0 writes rejected after driver retry, 0 duplicates.
 
 ![Reconciliation closing after a connector drop and a poisoned event](docs/screenshots/07e-reconciliacao.png)
 
 Delivery is at-least-once, stated above the numbers and not in a footnote: after a resume the same event may arrive twice, and the unique index on `endToEndId` is what makes that safe. Ordering holds within a partition, not across partitions.
 
-**What did it cost?** A throughput number alone invites the wrong reading (*so that is all Atlas does?*) because it never says whose ceiling was reached. The page reads the primary's CPU through the Atlas Admin API, clipped to the run's own window, and places it next to the TPS that produced it: **~1,600 TPS sustained for two minutes on an M20, with 29–53% primary CPU across runs** (the panel always shows the run in front of it, never a stored number). Two traps live here, and both were found by measuring, not assuming. Atlas publishes process metrics with a one-to-two-minute delay, so a panel queried right after a 30s run describes the cluster *before* the load; it now says `metricas_pendentes` instead of concluding. And a run shorter than the one-minute publication interval is averaged with the rest of that idle minute: the same load read 43% when it fell inside one bucket and 15% when it straddled two, so short runs are labelled as a floor.
+**What did it cost?** A throughput number alone invites the wrong reading (*so that is all Atlas does?*) because it never says whose ceiling was reached. The page reads the primary's CPU through the Atlas Admin API, clipped to the run's own window, and places it next to the TPS that produced it: in earlier recorded runs, **~1,600 TPS sustained for two minutes on an M20, with 29–53% primary CPU** (the panel always shows the run in front of it, never a stored number). Two traps live here, and both were found by measuring, not assuming. Atlas publishes process metrics with a one-to-two-minute delay, so a panel queried right after a 30s run describes the cluster *before* the load; it now says `metricas_pendentes` instead of concluding. And a run shorter than the one-minute publication interval is averaged with the rest of that idle minute: the same load read 43% when it fell inside one bucket and 15% when it straddled two, so short runs are labelled as a floor.
 
 The last panel answers the question that comes after *does it work?*: **what drops out of the design**. It compares the components each path requires, without inventing savings. The Kafka row stays correct whenever the event must reach systems outside Atlas, which is why it is in the demo, working.
 
@@ -103,11 +109,11 @@ On a shared network, set a long, random `DEMO_ADMIN_TOKEN` in `backend/.env` and
 
 ## Stack
 
-Python 3.11 · FastAPI · PyMongo · React 18 · Vite · MongoDB Atlas. Module 07 optionally needs a local Kafka broker and an ASP instance.
+Python 3.11+ · FastAPI · PyMongo · React 19 · Vite · MongoDB Atlas. Module 07 optionally needs a local Kafka broker and an ASP instance.
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 165 unit tests, stubbed Mongo, no cluster needed
+pytest             # 230 unit + adversarial tests, stubbed Mongo, no cluster needed
 ruff check backend
 ```
 

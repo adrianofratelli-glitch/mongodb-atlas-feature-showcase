@@ -18,6 +18,10 @@ export default function HotCold() {
     if (d) {
       setArchives(d.archives || [])
       setArchiveError(d.atlas_error || null)
+    } else {
+      // Sem isto a lista ficava em "Carregando..." para sempre quando a API falhava.
+      setArchives([])
+      setArchiveError('Não foi possível listar as regras de Online Archive. Confira o pré-voo (backend e Atlas Admin API) e recarregue o módulo.')
     }
   }
 
@@ -215,10 +219,13 @@ export default function HotCold() {
                   <div key={a.id} className="result-row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
                     <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                       <span className={`badge ${a.status === 'ACTIVE' || a.status === 'IDLE' ? 'badge-green' : 'badge-yellow'}`}>{a.status}</span>
-                      <code style={{ fontSize: 12 }}>{a.collection}</code>
+                      <code style={{ fontSize: 12 }}>{a.db ? `${a.db}.` : ''}{a.collection}</code>
                       <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{a.date_field} &gt; {a.expire_after_days} dias</span>
                     </div>
-                    <button className="btn btn-xs btn-danger" onClick={() => deleteArchive(a.id)}>Remover</button>
+                    {a.removivel
+                      ? <button className="btn btn-xs btn-danger" onClick={() => deleteArchive(a.id)}
+                          aria-label={`Remover a regra de Online Archive de ${a.collection}`}>Remover</button>
+                      : <span className="badge badge-gray" title="Regra de outro banco do mesmo cluster; a API recusa a remoção.">fora da demo</span>}
                   </div>
                 ))
           }

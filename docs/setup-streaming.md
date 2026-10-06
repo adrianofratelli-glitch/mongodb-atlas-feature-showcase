@@ -229,7 +229,7 @@ Variáveis de ambiente relevantes: `STREAMING_DB`, `KAFKA_BROKERS`, `CONNECT_URL
 `ASP_CONNECTION_NAME`, `ASP_PROCESSOR_NAME`, `ASP_GEO_PROCESSOR_NAME`
 (`geoSinais30s`), `ASP_TIER` (padrão de palco `SP10`),
 `STREAMING_CARTAO_PCT` (18 — fatia do fluxo no canal de cartão; em 0 o
-fluxo é só PIX e o painel de tempo de evento do módulo 08 fica vazio),
+fluxo é só PIX e o processor `geoSinais30s` não recebe evento com coordenada),
 `STREAMING_SINAL_KMH` (900), `STREAMING_SINAL_MIN_KM` (200),
 `STREAMING_SINAL_MIN_MIN` (1),
 `STREAMING_MODO_ESCRITA` (`individual`), `STREAMING_DEMO_TPS_INDIVIDUAL`
@@ -268,7 +268,7 @@ lacuna: as janelas do período parado não são reprocessadas, o gerador precisa
 de novo pra repovoar o painel.
 
 Isso **não** vale pro `ordersToIceberg` da PoV `iceberg-mongodb-lakehouse`, que
-divide o mesmo workspace `spi-inter-pix`: lá o sink não é idempotente e subir sem
+divide o mesmo workspace de ASP: lá o sink não é idempotente e subir sem
 checkpoint duplica a tabela. Ver o `docs/TROUBLESHOOTING.md` daquele repo.
 
 Ocorrido em 2026-09-01, com checkpoints de 2026-08-27, nos três processors ao mesmo

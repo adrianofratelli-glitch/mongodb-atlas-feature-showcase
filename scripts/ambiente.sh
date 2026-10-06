@@ -101,7 +101,7 @@ limpa_dados_pix() {
 
 verifica_demo() {
   echo "▶ Verificando artefatos pré-materializados da demo..."
-  "$BASE/backend/venv/bin/python" "$BASE/scripts/seed_geo.py" --check
+  "$BASE/backend/venv/bin/python" "$BASE/scripts/reset_demo.py" --check
 }
 
 recria_processor() {
