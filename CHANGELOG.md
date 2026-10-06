@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1 (2026-10-06)
+
+- `reset_demo.py`/`seed_data.py` no longer abort when a shared collection already has `produto_id_1` without `unique` (created by another PoV); found on the first reset of the real demo database.
+
 ## 1.1.0 (2026-10-06)
 
 - Thesis page measures one real operation per capability through the same client (`POST /tese/medir`, p50/max with evidence) and no longer claims eight modules.

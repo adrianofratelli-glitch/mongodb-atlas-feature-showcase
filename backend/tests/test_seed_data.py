@@ -86,3 +86,32 @@ def test_guarda_aceita_demo_com_consentimento(monkeypatch):
     seed_data.assert_writable_db("POC")
     with pytest.raises(SystemExit):
         seed_data.assert_writable_db("POC_test_test")
+
+
+def test_indice_produto_id_nao_unico_de_outra_pov_nao_derruba_o_reset():
+    """Achado no reset real do banco da demo: produto_id_1 existia sem unique."""
+    from pymongo.errors import OperationFailure
+
+    class Compartilhada(FakeCol):
+        name = "produtos"
+
+        def create_index(self, keys, **kwargs):
+            if kwargs.get("unique"):
+                raise OperationFailure("An existing index has the same name", code=86)
+            super().create_index(keys, **kwargs)
+
+    db = FakeDb()
+    db["produtos"] = Compartilhada()
+    seed_data.ensure_indexes(db)
+    assert "cat_total_av_idx" in db["produtos"].indexes
+
+    class Outro(FakeCol):
+        name = "produtos"
+
+        def create_index(self, keys, **kwargs):
+            raise OperationFailure("not authorized", code=13)
+
+    db2 = FakeDb()
+    db2["produtos"] = Outro()
+    with pytest.raises(OperationFailure):
+        seed_data.ensure_indexes(db2)
