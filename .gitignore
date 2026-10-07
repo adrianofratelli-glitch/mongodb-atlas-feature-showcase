@@ -23,3 +23,4 @@ Thumbs.db
 backend/.env.bak-*
 tmp/
 output/
+docs/roteiro-apresentacao-streaming.pdf
