@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 (2026-10-09)
+
+- Streaming reconciliation now compares a **per-document content digest** (SHA-256 of a canonical form of every field, aggregated in `endToEndId` order) between the source, Change Streams, and Kafka. The previous checks (count, cents sum, XOR of ids) accepted compensating mutations such as [10, 20] → [11, 19]. The Change Streams cursor now carries the full document. README and UI state exactly what is verified and what is not.
+- `scripts/kafka-local.sh` no longer calls `brew services`: broker and Connect run as processes of the PoV (`KAFKA_RUN_DIR`, KRaft controller on 19093) and `down` stops only what the script started.
+- `bin/overview` (live mode) checks the external prerequisites first and stops with an actionable message pointing to `--replay` / `./start.sh`.
+- Module 07 no longer scrolls horizontally at 360 px.
+- `AGENTS.md`/`CLAUDE.md` aligned with the seven modules and the standalone geo repository; no reference to a missing `docs/SESSION_HANDOFF.md`.
+
 ## 1.1.1 (2026-10-06)
 
 - `reset_demo.py`/`seed_data.py` no longer abort when a shared collection already has `produto_id_1` without `unique` (created by another PoV); found on the first reset of the real demo database.

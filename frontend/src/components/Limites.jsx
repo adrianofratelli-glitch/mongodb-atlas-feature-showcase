@@ -1,7 +1,7 @@
 import React from 'react'
 
-// Limite declarado, no padrão que o módulo 08 já usava e que agora vale para os
-// oito. Existe por um motivo comercial, não estético: um time de dados que ouve
+// Limite declarado, no padrão que o antigo módulo 08 (Geo, hoje em repositório
+// próprio) já usava e que agora vale para os sete módulos. Existe por um motivo comercial, não estético: um time de dados que ouve
 // a limitação antes de perguntar por ela acredita no resto da demo. Demo que só
 // mostra o que funciona convida à resposta "já temos isso" — e, pior, deixa a
 // objeção para a reunião seguinte, onde ninguém do nosso lado está presente.

@@ -124,7 +124,7 @@ A tela prioriza operação, consulta e resultado. Hot/Cold distingue estimativas
 amostragem, prévia por data no cluster e configuração real de Online Archive. A prévia
 não acessa o endpoint federado. As abas de índices, agregação, schema, eventos,
 transações e streaming mantêm suas operações, com afirmações limitadas à evidência:
-leituras amostradas não comprovam ausência de bloqueios; digest XOR admite colisões;
+leituras amostradas não comprovam ausência de bloqueios; a soma em centavos não detecta mutações que se compensam, por isso o digest compara o conteúdo canônico de cada documento (valor, não tipo BSON);
 o custo de uma transação inclui rede e servidor. A tese continua sendo convergência
 funcional.
 
