@@ -23,6 +23,15 @@ O plugin `mongodb-kafka-connect` é baixado só na primeira execução e fica
 cacheado localmente, então execuções seguintes funcionam offline. O broker escuta em
 `localhost:9092`, que é para onde o `KAFKA_BROKERS` do `backend/.env` precisa apontar.
 
+O script usa só os **binários** do Homebrew: não chama `brew services` e não registra
+serviço do launchd. O broker é um processo da PoV, com configuração, dados KRaft e log em
+`KAFKA_RUN_DIR` (padrão `~/.local/share/mdb-showcase-kafka/run`), formatado na primeira
+execução. O controller KRaft usa `KAFKA_CONTROLLER_PORT` (padrão **19093**, não a 9093 do
+Homebrew, que costuma estar ocupada por túnel SSH ou outro broker); se a porta estiver
+ocupada, o script para com mensagem dizendo isso. Se já houver um broker escutando em
+9092, ele é usado como está e o `down` não o encerra; o `down` mata só os PIDs que o
+próprio script iniciou (conferidos pela linha de comando).
+
 Existe deliberadamente **uma** forma de rodar o broker. Havia um caminho por Docker e ele
 foi removido: duas formas de subir a mesma dependência dobravam a superfície de setup sem
 valor nenhum para a demo, e um container publicando a `9093` no host roubava em silêncio a

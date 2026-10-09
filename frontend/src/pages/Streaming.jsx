@@ -643,7 +643,7 @@ function SessaoStreaming({ modo, setModo }) {
             </div>
             <div className="str-note" style={{ marginTop: 8 }}>
               {gen.failover.detalhe} O que fecha o argumento não é o cluster voltar: é a
-              reconciliação abaixo fechar em <strong>contagem, valor e conjunto</strong> depois disto.
+              reconciliação abaixo fechar em <strong>contagem, valor e conteúdo de cada documento</strong> depois disto.
             </div>
           </div>
         )}
@@ -1142,7 +1142,7 @@ function SessaoStreaming({ modo, setModo }) {
               <small>
                 valor conferido ao centavo
                 {reconciliacao.conferencia?.digest_calculado
-                  ? <> · mesmo conjunto (<code>{reconciliacao.conferencia.digest_fonte}</code>)</>
+                  ? <> · mesmo conteúdo por documento (<code>{String(reconciliacao.conferencia.digest_fonte).slice(0, 16)}</code>)</>
                   : null}
               </small>
             </div>
@@ -1198,7 +1198,7 @@ function SessaoStreaming({ modo, setModo }) {
                 <div className="str-neg-v" style={ok ? { color: '#00ED64' } : undefined}>{num(value)}</div>
                 <div className="str-neg-s">{status || (ok ? 'contagem fechada' : `${num(pending)} ainda pendente(s)`)}</div>
                 {/* Contagem sozinha não prova integridade: um documento trocado
-                    por outro mantém o total. Valor e digest ficam ao lado do
+                    por outro mantém o total. Valor e digest de conteúdo ficam ao lado do
                     número, não num rodapé — é o que um time de pagamentos
                     confere antes de acreditar no volume. */}
                 {canal?.valor != null && (
@@ -1207,8 +1207,8 @@ function SessaoStreaming({ modo, setModo }) {
                       R$ {fmtBRL(canal.valor)}
                     </span>
                     {canal.digest_confere != null && (
-                      <span className={canal.digest_confere ? 'ok' : 'pend'} title="XOR dos endToEndId: só bate quando o conjunto é o mesmo">
-                        {canal.digest_confere ? '✓ conjunto' : '○ conjunto'}
+                      <span className={canal.digest_confere ? 'ok' : 'pend'} title="SHA-256 do conteúdo de cada documento, agregado em ordem de endToEndId: só bate quando todos os campos de todos os documentos são iguais aos da fonte">
+                        {canal.digest_confere ? '✓ conteúdo' : '○ conteúdo'}
                       </span>
                     )}
                     {label === 'ASP + DLQ' && canal.tolerancia_valor != null && (
@@ -1246,13 +1246,18 @@ function SessaoStreaming({ modo, setModo }) {
         <div className="str-garantia">
           <span className="str-garantia-tag">o que é conferido</span>
           <span>
-            <strong>Contagem</strong> de documentos, <strong>soma</strong> dos valores e <strong>digest XOR</strong> dos identificadores.
-            São verificações complementares: a soma não compara cada campo, e o digest pode ter colisões
-            {reconciliacao?.conferencia?.digest_calculado === false
-              ? <> (não calculado acima de {num(reconciliacao.conferencia.limite_digest)} documentos)</>
-              : null}.
-            O ASP entrega agregado por janela: confere por valor, dentro do arredondamento
-            declarado de cada janela, e não tem conjunto de identificadores para comparar.
+            <strong>Contagem</strong> de documentos, <strong>soma</strong> dos valores em centavos e
+            {' '}<strong>digest de conteúdo</strong>: SHA-256 da forma canônica de cada documento (todos os campos),
+            agregado em ordem de <code>endToEndId</code> e comparado com a fonte. A soma sozinha não prova que nada
+            mudou (valores que se compensam mantêm o total); é o digest que compara documento a documento. A forma
+            canônica compara o valor, não o tipo BSON
+            {reconciliacao?.conferencia?.digest_estado === 'acima_do_limite'
+              ? <> · não calculado acima de {num(reconciliacao.conferencia.limite_digest)} documentos</>
+              : reconciliacao?.conferencia?.digest_estado === 'aguardando_fim_da_execucao'
+                ? <> · calculado quando o gerador parar</>
+                : null}.
+            O ASP entrega agregado por janela: confere por contagem e valor, dentro do arredondamento
+            declarado de cada janela, e não tem documento para comparar.
           </span>
         </div>
 

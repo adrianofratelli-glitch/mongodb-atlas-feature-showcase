@@ -639,3 +639,11 @@ button:focus-visible, a:focus-visible, input:focus-visible {
 .tese-tabela td code { white-space: nowrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
   clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* Viewport estreito (360 px): nome de coleção, run_id e digest são tokens
+   longos sem espaço e empurravam o documento para 378 px de largura. Quebrar
+   dentro do <code> mantém o texto inteiro legível sem rolagem horizontal; os
+   filhos de grid/flex precisam de min-width: 0 para poder encolher. */
+.app-main code { overflow-wrap: anywhere; }
+.app-main .str-grid > *, .app-main .str-col, .app-main .str-col-body,
+.app-main .str-generator > div > div { min-width: 0; }

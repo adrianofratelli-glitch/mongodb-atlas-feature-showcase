@@ -300,7 +300,7 @@ Exposto em `GET /streaming/asp/dlq/resumo`. Agrupa mensagens rejeitadas pelo `$v
     }},
 ]
 ```
-Onde: `GET /streaming/reconciliacao`. O que faz: um único `$group` conta e soma em centavos inteiros (nunca ponto flutuante — três somas independentes de `double` deixam resíduo indistinguível de divergência real). `$isNumber` isola o evento inválido injetado de propósito (`valor` como string) para não contaminar a soma. Complementado por um **digest XOR** do conjunto de `endToEndId` (loop separado, linha 3901-3907, pulado acima de `MAX_DOCS_DIGEST = 200.000`), que só bate quando os caminhos são o mesmo *conjunto*, não apenas a mesma quantidade.
+Onde: `GET /streaming/reconciliacao`. O que faz: um único `$group` conta e soma em centavos inteiros (nunca ponto flutuante — três somas independentes de `double` deixam resíduo indistinguível de divergência real). `$isNumber` isola o evento inválido injetado de propósito (`valor` como string) para não contaminar a soma. Complementado por um **digest de conteúdo** (`_digest_da_fonte`: `find({"run_id": run_id})` sem projeção, SHA-256 da forma canônica de cada documento, agregado em ordem de `endToEndId`), calculado só depois que o gerador para e pulado acima de `MAX_DOCS_DIGEST = 200.000`. Change Streams e Kafka calculam o mesmo hash sobre o documento que recebem; só bate quando todos os campos de todos os documentos são iguais aos da fonte. A soma sozinha não detecta mutações que se compensam.
 
 ### `_reconcile_run()` — soma das janelas do ASP para o mesmo run (linha 3920-3928)
 

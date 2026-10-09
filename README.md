@@ -50,6 +50,16 @@ The launcher uses a no-reload backend and an optimized frontend build by default
 
 Run `curl http://localhost:8002/preflight` before presenting. It checks the URI, cluster, collections, Atlas keys, and the mutation guard.
 
+### What each mode needs
+
+| Mode | Command | Needs |
+|---|---|---|
+| Web demo (modules 00–07; without Kafka/ASP module 07 says "not configured") | `./start.sh` | `backend/.env` with `MONGO_URI`, the venv, `frontend/node_modules`, data from `reset_demo.py` |
+| Module 07 fallback | `./bin/overview --replay` | the same, plus the recorded run in `backend/data/replay_streaming.json` |
+| Full live demo | `./bin/overview` | the same, plus an Atlas Stream Processing workspace (`ASP_CONNECTION_STRING`, a connection named `ASP_CONNECTION_NAME` pointing at the cluster), `mongosh`, and `brew install kafka` (binaries only) |
+
+The full live mode depends on infrastructure outside this repository. `bin/overview` checks it first and, if the ASP connection string or `mongosh` is missing, stops with a message naming what is missing and pointing to `--replay` / `./start.sh`; missing Kafka is a warning (column 2 shows "not configured"). `scripts/kafka-local.sh` runs the broker and Kafka Connect as processes of this PoV (data and logs in `KAFKA_RUN_DIR`, KRaft controller on port 19093): it never calls `brew services`, and `down` stops only what it started. Setup of each piece: [docs/setup-streaming.md](docs/setup-streaming.md).
+
 Once configured, `bin/overview` replaces all of that:
 
 ```bash
@@ -71,7 +81,7 @@ Change Streams in the application, the Kafka Connector publishing to a real brok
 
 **Break it on purpose.** Four buttons sit next to the generator: *kill the connector* (stops mid-flow and resumes from the stored offset), *inject an invalid event* (a string `valor`, diverted to the DLQ by the processor's `$validate`), *publish an incompatible schema version* (the required field `valor` renamed to `amount`, the change a Schema Registry would refuse), and *force a primary failover* (Atlas's test failover, on the cluster, under load).
 
-Then watch the reconciliation close anyway, and it checks three things, not one: **count** (nothing missing), **value** summed in integer cents (nothing transformed along the way), and an XOR **digest** of the set of `endToEndId` (the paths became the same documents, not merely the same quantity). Recorded in an earlier live run through a real election (not re-measured in the October 2026 review): 332,568 documents, R$ 104,486,759.65 identical across the three paths, 0 writes rejected after driver retry, 0 duplicates.
+Then watch the reconciliation close anyway, and it checks three things, not one: **count** (nothing missing), **value** summed in integer cents (a volume check; on its own it does *not* prove nothing changed, because mutations that cancel out, such as 10 and 20 becoming 11 and 19, keep the same total), and a **content digest**: for every document, each path computes a SHA-256 of a canonical form of *all* its fields (BSON from the source and Change Streams and extended JSON from Kafka normalized to the same values: numbers as normalized decimals, dates as UTC milliseconds, ObjectIds as hex, sorted keys), aggregated in `endToEndId` order and compared against the same digest computed from the source. It only matches when every document carries the same content as the source. Declared limits: the canonical form compares numeric value, not BSON type (int `5` vs double `5.0` is not flagged); the source digest is computed once the generator stops and skipped above 200,000 documents per run (the page says so); ASP delivers per-window aggregates, so it reconciles by count and value within a declared rounding tolerance, with no per-document digest. Measured on 2026-10-09 against `_test` databases with real Kafka, Connector, and ASP: 2,230 documents, identical content digest across source, Change Streams, and Kafka, 0 duplicates. Recorded in an earlier live run through a real election (set digest at the time, not re-measured): 332,568 documents, R$ 104,486,759.65 identical across the three paths, 0 writes rejected after driver retry, 0 duplicates.
 
 ![Reconciliation closing after a connector drop and a poisoned event](docs/screenshots/07e-reconciliacao.png)
 
@@ -113,7 +123,7 @@ Python 3.11+ · FastAPI · PyMongo · React 19 · Vite · MongoDB Atlas. Module 
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 230 unit + adversarial tests, stubbed Mongo, no cluster needed
+pytest             # 242 unit + adversarial tests, stubbed Mongo, no cluster needed
 ruff check backend
 ```
 

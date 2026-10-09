@@ -63,7 +63,7 @@ Baseline medida: **48 requisições/20s → 1 quando parado, 0 com a aba escondi
 Três colunas comparáveis lado a lado: latência, throughput e custo. Mais:
 
 - Botões de injeção de falha (parar connector, evento inválido, schema incompatível, failover).
-- Painel de reconciliação com as três checagens (contagem, valor, digest).
+- Painel de reconciliação com as três checagens (contagem, valor em centavos, digest de conteúdo por documento).
 - `/streaming/folga` mostrando o custo em CPU do primário.
 
 As colunas 2 (Kafka Connector) e 3 (Atlas Stream Processing) aparecem como **"não configurado"** quando faltam variáveis de ambiente — nunca como coluna quebrada. Em modo replay, a página carrega um badge permanente de origem e desabilita botões que agem no ambiente. Abre em modo ao vivo por padrão.

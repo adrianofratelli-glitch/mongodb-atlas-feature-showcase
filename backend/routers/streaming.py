@@ -589,8 +589,110 @@ def _valor_json(valor: Any) -> Any:
 
 
 def _digest_de(end_to_end_id: str) -> int:
-    """8 bytes de blake2b do identificador, para XOR acumulado."""
+    """8 bytes de blake2b do identificador (legado: digest XOR do conjunto)."""
     return int.from_bytes(hashlib.blake2b(end_to_end_id.encode(), digest_size=8).digest(), "big")
+
+
+# ---------------------------------------------------------------------------
+# Digest de conteúdo por documento
+# ---------------------------------------------------------------------------
+# A soma em centavos não prova que nenhum valor foi transformado: [10, 20] e
+# [11, 19] somam o mesmo, e um XOR dos identificadores não olha valor nenhum.
+# O que prova é comparar cada documento inteiro. Cada caminho calcula, por
+# documento, um SHA-256 da forma canônica do conteúdo; o digest da execução é
+# um SHA-256 sobre os pares (endToEndId, hash) ordenados por endToEndId. Ele só
+# bate quando os dois lados viram os mesmos documentos com o mesmo conteúdo.
+#
+# Forma canônica: o mesmo documento chega como BSON (fonte, Change Streams) e
+# como JSON estendido (Kafka Connector, `output.format.value=json`). A
+# canonicalização compara o VALOR, não a codificação: número vira decimal
+# normalizado (Decimal128 "12.30", double 12.3 e {"$numberDecimal": "12.30"} são
+# o mesmo valor), data vira milissegundos UTC, ObjectId vira hex, chaves ficam
+# ordenadas. Consequência declarada: uma troca de tipo numérico que preserva o
+# valor (int 5 → double 5.0) não é acusada; qualquer mudança de valor, campo
+# acrescentado, removido ou renomeado é.
+_EXT_NUM = ("$numberDecimal", "$numberDouble", "$numberLong", "$numberInt")
+
+
+def _num_canonico(valor: Any) -> str:
+    try:
+        d = Decimal(str(valor))
+    except (InvalidOperation, ValueError):
+        return f"n:{valor}"
+    if not d.is_finite():
+        return f"n:{d}"
+    d = d.normalize()
+    return "n:" + (format(d, "f") if d != 0 else "0")
+
+
+def _ms_de_data(valor: Any) -> int | None:
+    if isinstance(valor, datetime):
+        v = valor if valor.tzinfo else valor.replace(tzinfo=timezone.utc)
+        return int(round(v.timestamp() * 1000))
+    if isinstance(valor, bool):
+        return None
+    if isinstance(valor, (int, float)):
+        return int(valor)
+    if isinstance(valor, dict) and "$numberLong" in valor:
+        try:
+            return int(valor["$numberLong"])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(valor, str):
+        try:
+            return _ms_de_data(datetime.fromisoformat(valor.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _canonico(valor: Any) -> Any:
+    """Valor em forma canônica, idêntica para BSON e para JSON estendido."""
+    if isinstance(valor, Decimal128):
+        return _num_canonico(valor.to_decimal())
+    if isinstance(valor, bool) or valor is None:
+        return valor
+    if isinstance(valor, (int, float, Decimal)):
+        return _num_canonico(valor)
+    if isinstance(valor, datetime):
+        return f"d:{_ms_de_data(valor)}"
+    if isinstance(valor, str):
+        return valor
+    if isinstance(valor, dict):
+        if len(valor) == 1:
+            (chave, interno), = valor.items()
+            if chave in _EXT_NUM:
+                return _num_canonico(interno)
+            if chave == "$date":
+                ms = _ms_de_data(interno)
+                if ms is not None:
+                    return f"d:{ms}"
+            if chave == "$oid":
+                return f"o:{str(interno).lower()}"
+        return {str(k): _canonico(v) for k, v in valor.items()}
+    if isinstance(valor, (list, tuple)):
+        return [_canonico(v) for v in valor]
+    # ObjectId e afins: a representação textual é a forma estável.
+    nome = type(valor).__name__
+    if nome == "ObjectId":
+        return f"o:{str(valor).lower()}"
+    return f"{nome}:{valor}"
+
+
+def digest_documento(doc: dict[str, Any]) -> bytes:
+    """SHA-256 (16 bytes) da forma canônica de TODOS os campos do documento."""
+    canon = json.dumps(_canonico(doc), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).digest()[:16]
+
+
+def digest_agregado(por_id: dict[str, bytes]) -> str:
+    """SHA-256 sobre (endToEndId, hash do documento) em ordem de endToEndId."""
+    h = hashlib.sha256()
+    for e2e in sorted(por_id):
+        h.update(e2e.encode("utf-8"))
+        h.update(b"\x00")
+        h.update(por_id[e2e])
+    return h.hexdigest()[:32]
 
 
 class RunTracker:
@@ -598,24 +700,27 @@ class RunTracker:
 
     Além da contagem, acumula duas evidências que contagem sozinha não dá:
 
-    * soma em centavos — contagem igual com valor diferente é transformação
-      errada no caminho, não perda; um banco confere o valor antes do volume.
-    * digest XOR dos identificadores — é comutativo e associativo, então
-      independe da ordem de chegada, e só bate quando os dois caminhos viram
-      exatamente o mesmo *conjunto*. Contagem igual com um documento trocado por
-      outro passa despercebida; o digest não.
+    * soma em centavos — leitura rápida de volume; sozinha NÃO prova que nada
+      foi transformado (mutações compensatórias mantêm a soma).
+    * digest de conteúdo — por documento, SHA-256 da forma canônica de todos os
+      campos recebidos; agregado em ordem de `endToEndId`. Só bate quando os
+      dois caminhos viram os mesmos documentos com o mesmo conteúdo, campo a
+      campo. É este, e não a soma, que acusa um valor alterado no caminho.
+
+    Quem chama sem o documento (`doc=None`) registra só `endToEndId` e `valor`;
+    o hash cobre então apenas esses dois campos.
     """
 
     MAX_IDS_PER_CHANNEL = 500_000
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._ids: dict[str, dict[str, set[str]]] = {}
+        self._ids: dict[str, dict[str, dict[str, bytes]]] = {}
         self._duplicates: dict[str, dict[str, int]] = {}
         self._truncated: set[tuple[str, str]] = set()
         self._cents: dict[str, dict[str, int]] = {}
         self._nao_numericos: dict[str, dict[str, int]] = {}
-        self._digests: dict[str, dict[str, int]] = {}
+        self._digest_cache: dict[tuple[str, str], tuple[int, str]] = {}
 
     def record(
         self,
@@ -623,12 +728,14 @@ class RunTracker:
         run_id: str | None,
         end_to_end_id: str | None,
         valor: Any = None,
+        doc: dict[str, Any] | None = None,
     ) -> None:
         if not run_id or not end_to_end_id:
             return
+        conteudo = doc if doc is not None else {"endToEndId": end_to_end_id, "valor": valor}
         with self._lock:
             by_channel = self._ids.setdefault(run_id, {})
-            ids = by_channel.setdefault(channel, set())
+            ids = by_channel.setdefault(channel, {})
             duplicates = self._duplicates.setdefault(run_id, {})
             if end_to_end_id in ids:
                 duplicates[channel] = duplicates.get(channel, 0) + 1
@@ -636,7 +743,7 @@ class RunTracker:
             if len(ids) >= self.MAX_IDS_PER_CHANNEL:
                 self._truncated.add((run_id, channel))
                 return
-            ids.add(end_to_end_id)
+            ids[end_to_end_id] = digest_documento(conteudo)
             cents = centavos_de(valor)
             if cents is None:
                 nao_num = self._nao_numericos.setdefault(run_id, {})
@@ -644,8 +751,17 @@ class RunTracker:
             else:
                 soma = self._cents.setdefault(run_id, {})
                 soma[channel] = soma.get(channel, 0) + cents
-            digests = self._digests.setdefault(run_id, {})
-            digests[channel] = digests.get(channel, 0) ^ _digest_de(end_to_end_id)
+
+    def _digest(self, run_id: str, channel: str, ids: dict[str, bytes]) -> str:
+        # Cache por tamanho: o mapa só cresce (duplicata não entra), então o
+        # mesmo tamanho é o mesmo conteúdo, e a tela consulta a cada 3 s.
+        chave = (run_id, channel)
+        em_cache = self._digest_cache.get(chave)
+        if em_cache and em_cache[0] == len(ids):
+            return em_cache[1]
+        valor = digest_agregado(ids)
+        self._digest_cache[chave] = (len(ids), valor)
+        return valor
 
     def snapshot(self, run_id: str) -> dict[str, Any]:
         with self._lock:
@@ -653,7 +769,6 @@ class RunTracker:
             duplicates = self._duplicates.get(run_id, {})
             cents = self._cents.get(run_id, {})
             nao_num = self._nao_numericos.get(run_id, {})
-            digests = self._digests.get(run_id, {})
             return {
                 channel: {
                     "unicos": len(ids),
@@ -661,7 +776,7 @@ class RunTracker:
                     "completo_em_memoria": (run_id, channel) not in self._truncated,
                     "centavos": cents.get(channel, 0),
                     "nao_numericos": nao_num.get(channel, 0),
-                    "digest": digests.get(channel, 0),
+                    "digest": self._digest(run_id, channel, ids),
                 }
                 for channel, ids in channels.items()
             }
@@ -673,7 +788,7 @@ class RunTracker:
             self._truncated.clear()
             self._cents.clear()
             self._nao_numericos.clear()
-            self._digests.clear()
+            self._digest_cache.clear()
 
 
 run_tracker = RunTracker()
@@ -2279,20 +2394,15 @@ class ChangeStreamWorker:
     anterior à reabertura entram marcados como recuperados.
     """
 
-    # $project no próprio cursor: o custo por evento é dominado pela decodificação
-    # do BSON, então o servidor manda só o que a tela e as métricas usam. O _id do
-    # evento (resume token) precisa continuar vindo.
+    # $project no próprio cursor: descarta os metadados do evento (ns,
+    # documentKey, clusterTime) e mantém o _id do evento (resume token) e o
+    # documento completo, que a reconciliação de conteúdo precisa.
     PIPELINE = [
         {"$match": {"operationType": "insert"}},
-        {"$project": {
-            "_id": 1,
-            "fullDocument.endToEndId": 1,
-            "fullDocument.run_id": 1,
-            "fullDocument.uf": 1,
-            "fullDocument.tipo": 1,
-            "fullDocument.valor": 1,
-            "fullDocument.ts": 1,
-        }},
+        # O documento inteiro, não um recorte: a reconciliação confere um hash
+        # do conteúdo de cada documento contra a fonte, e um recorte de campos
+        # faria a conferência cobrir só o recorte.
+        {"$project": {"_id": 1, "fullDocument": 1}},
     ]
 
     def __init__(self, particao: int = 0, particoes: int = 1) -> None:
@@ -2481,7 +2591,7 @@ class ChangeStreamWorker:
             self.recovered += 1
 
         e2e = doc.get("endToEndId")
-        run_tracker.record("change_streams", doc.get("run_id"), e2e, doc.get("valor"))
+        run_tracker.record("change_streams", doc.get("run_id"), e2e, doc.get("valor"), doc=doc)
         if e2e:
             if e2e in self._vistos_set:
                 self.duplicados += 1
@@ -2720,6 +2830,7 @@ class KafkaConsumer:
                 # `{"$numberDecimal": "..."}`, dependendo do modo de saída.
                 run_tracker.record(
                     "kafka", doc.get("run_id"), doc.get("endToEndId"), _valor_json(doc.get("valor")),
+                    doc=doc,
                 )
                 meter_kafka.record(latency_ms)      # percentis sobre 100% das mensagens
 
@@ -3864,18 +3975,33 @@ async def asp_janelas(limit: int = 30):
     }
 
 
-# Acima disto o digest do conjunto deixa de ser calculado: ele exige projetar
-# um identificador por documento da execução, e a varredura passaria a competir
-# com a própria demonstração. Contagem e valor continuam valendo em qualquer
-# volume — é o digest que é opcional, e a tela diz quando ele não foi calculado.
+# Acima disto o digest de conteúdo deixa de ser calculado: ele exige ler cada
+# documento da execução da fonte, e a varredura passaria a competir com a
+# própria demonstração. Contagem e soma continuam valendo em qualquer volume —
+# é o digest que é opcional, e a tela diz quando ele não foi calculado.
 MAX_DOCS_DIGEST = 200_000
+
+# Digest da fonte por (run_id, documentos, centavos, nao_numericos): a tela
+# consulta a reconciliação a cada 3 s e reler 60 mil documentos a cada
+# consulta não se justifica quando a fonte não mudou.
+_digest_fonte_cache: dict[str, tuple[tuple[int, int, int], str]] = {}
+
+
+def _digest_da_fonte(run_id: str) -> str:
+    por_id: dict[str, bytes] = {}
+    for doc in sdb[COL_TX].find({"run_id": run_id}):
+        e2e = doc.get("endToEndId")
+        if isinstance(e2e, str) and e2e:
+            por_id[e2e] = digest_documento(doc)
+    return digest_agregado(por_id)
 
 
 def _fonte_conferivel(run_id: str) -> dict[str, Any]:
-    """Contagem, soma em centavos e digest do conjunto, lidos da fonte no Atlas.
+    """Contagem, soma em centavos e digest de conteúdo, lidos da fonte no Atlas.
 
-    Um `$group` só: contar e somar em passadas separadas custaria duas varreduras
-    do mesmo índice de `run_id`.
+    Um `$group` só para contagem e soma. O digest exige ler cada documento e
+    só é calculado depois que o gerador da execução parou: no meio do fluxo a
+    fonte ainda está mudando e a comparação não teria significado.
     """
     linhas = list(sdb[COL_TX].aggregate([
         {"$match": {"run_id": run_id}},
@@ -3897,20 +4023,32 @@ def _fonte_conferivel(run_id: str) -> dict[str, Any]:
     documentos = int(linha.get("documentos") or 0)
     bruto = linha.get("centavos") or 0
     centavos = int(bruto.to_decimal() if isinstance(bruto, Decimal128) else bruto)
+    nao_numericos = int(linha.get("nao_numericos") or 0)
 
-    digest: int | None = None
-    if 0 < documentos <= MAX_DOCS_DIGEST:
-        digest = 0
-        for doc in sdb[COL_TX].find({"run_id": run_id}, {"_id": 0, "endToEndId": 1}):
-            e2e = doc.get("endToEndId")
-            if e2e:
-                digest ^= _digest_de(e2e)
+    digest: str | None = None
+    if documentos == 0:
+        digest_estado = "sem_documentos"
+    elif documentos > MAX_DOCS_DIGEST:
+        digest_estado = "acima_do_limite"
+    elif generator.running and generator.run_id == run_id:
+        digest_estado = "aguardando_fim_da_execucao"
+    else:
+        assinatura = (documentos, centavos, nao_numericos)
+        em_cache = _digest_fonte_cache.get(run_id)
+        if em_cache and em_cache[0] == assinatura:
+            digest = em_cache[1]
+        else:
+            digest = _digest_da_fonte(run_id)
+            _digest_fonte_cache.clear()
+            _digest_fonte_cache[run_id] = (assinatura, digest)
+        digest_estado = "calculado"
 
     return {
         "documentos": documentos,
         "centavos": centavos,
-        "nao_numericos": int(linha.get("nao_numericos") or 0),
+        "nao_numericos": nao_numericos,
         "digest": digest,
+        "digest_estado": digest_estado,
     }
 
 
@@ -3944,7 +4082,7 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
     def channel(name: str) -> dict[str, Any]:
         data = observed.get(name, {
             "unicos": 0, "duplicados": 0, "completo_em_memoria": True,
-            "centavos": 0, "nao_numericos": 0, "digest": 0,
+            "centavos": 0, "nao_numericos": 0, "digest": None,
         })
         contagem_ok = source > 0 and data["unicos"] == source
         # Valor e digest só têm significado quando a contagem já fechou: no meio
@@ -3953,12 +4091,15 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
         digest_ok = (
             contagem_ok
             and fonte["digest"] is not None
-            and data.get("digest", 0) == fonte["digest"]
+            and data.get("digest") == fonte["digest"]
         )
+        # Sem digest calculável (acima do limite), a conferência fica na
+        # contagem e na soma — e a resposta diz isso em `digest_estado`.
+        digest_dispensado = fonte["digest_estado"] == "acima_do_limite"
         return {
             **data,
             "pendentes": max(source - data["unicos"], 0),
-            "reconciliado": contagem_ok and valor_ok and (digest_ok or fonte["digest"] is None),
+            "reconciliado": contagem_ok and valor_ok and (digest_ok or digest_dispensado),
             "contagem_confere": contagem_ok,
             "valor_confere": valor_ok,
             "digest_confere": digest_ok if fonte["digest"] is not None else None,
@@ -3992,7 +4133,8 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
             "valor": round(fonte["centavos"] / 100, 2),
             "centavos": fonte["centavos"],
             "nao_numericos": fonte["nao_numericos"],
-            "digest": f"{fonte['digest']:016x}" if fonte["digest"] is not None else None,
+            "digest": fonte["digest"],
+            "digest_estado": fonte["digest_estado"],
         },
         "change_streams": channel("change_streams"),
         "kafka": channel("kafka"),
@@ -4006,7 +4148,7 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
             "reconciliado": source > 0 and asp_accounted == source and asp_valor_ok,
             "contagem_confere": source > 0 and asp_accounted == source,
             "valor_confere": asp_valor_ok,
-            "digest_confere": None,   # o ASP entrega agregado; não há conjunto de ids para comparar
+            "digest_confere": None,   # o ASP entrega agregado; não há documento para comparar
             "alertas_valor_alto": alertas,
             "valor": round((asp_centavos + dlq_centavos) / 100, 2),
             "janelas": asp_janelas,
@@ -4014,15 +4156,24 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
         },
         "conferencia": {
             "valor_fonte": round(fonte["centavos"] / 100, 2),
-            "digest_fonte": f"{fonte['digest']:016x}" if fonte["digest"] is not None else None,
+            "digest_fonte": fonte["digest"],
             "digest_calculado": fonte["digest"] is not None,
+            "digest_estado": fonte["digest_estado"],
             "limite_digest": MAX_DOCS_DIGEST,
+            "verificado": [
+                "contagem de documentos únicos por endToEndId",
+                "soma dos valores em centavos inteiros",
+                "digest de conteúdo: SHA-256 da forma canônica de cada documento (todos os campos), "
+                "agregado em ordem de endToEndId",
+            ],
             "nota": (
-                "Contagem prova que nada faltou. A soma em centavos prova que nada foi transformado "
-                "no caminho. O digest XOR dos endToEndId prova que os três caminhos viram o mesmo "
-                "conjunto, e não apenas a mesma quantidade. O ASP entrega agregado por janela: ele "
-                f"confere por valor dentro de ±R$ {tolerancia_centavos / 100:.2f} "
-                f"({asp_janelas} janela(s) arredondadas a 2 casas), sem digest."
+                "Contagem prova que nada faltou. A soma em centavos é leitura de volume e, sozinha, não "
+                "prova que nada foi transformado: mutações que se compensam mantêm a soma. O digest de "
+                "conteúdo compara cada documento campo a campo (forma canônica: valor numérico, não tipo "
+                "BSON) e só bate quando Change Streams e Kafka viram os mesmos documentos com o mesmo "
+                "conteúdo da fonte. O ASP entrega agregado por janela: ele confere por contagem e valor "
+                f"dentro de ±R$ {tolerancia_centavos / 100:.2f} ({asp_janelas} janela(s) arredondadas "
+                "a 2 casas), sem digest de documento."
             ),
         },
         "final": (
