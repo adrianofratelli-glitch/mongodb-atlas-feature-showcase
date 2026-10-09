@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# COLUNA 2 do módulo Streaming SEM Docker — Kafka nativo via Homebrew.
+# COLUNA 2 do módulo Streaming SEM Docker — Kafka nativo (binários do Homebrew).
 #
-# Alternativa ao docker-compose.streaming.yml para máquinas sem Docker (ou com
-# Wi-Fi ruim no auditório): usa o broker do Homebrew em modo KRaft e sobe um
-# Kafka Connect distribuído com o plugin mongodb-kafka-connect.
+# Sobe um broker KRaft de um nó e um Kafka Connect distribuído com o plugin
+# mongodb-kafka-connect, os dois como processos desta PoV:
 #
 #   ./scripts/kafka-local.sh up      # broker + connect + plugin
 #   ./scripts/kafka-local.sh status
-#   ./scripts/kafka-local.sh down
+#   ./scripts/kafka-local.sh down    # encerra só o que este script iniciou
 #
 # Depois: ./scripts/setup-kafka-connector.sh  (registra o source connector)
+#
+# Pré-requisito: `brew install kafka` (só os binários; Java vem junto).
+# O script NÃO usa `brew services`: registrar um serviço do launchd é efeito
+# fora da PoV que sobrevive ao `down` e reinicia o Java sozinho. O broker roda
+# com configuração, dados e log em $KAFKA_RUN_DIR, e o controller KRaft usa a
+# porta $KAFKA_CONTROLLER_PORT (19093 por padrão, não a 9093 do Homebrew, que
+# costuma estar ocupada por túnel SSH ou outro broker). Se já houver um broker
+# escutando em 9092, ele é usado como está e o `down` não o encerra.
 #
 set -euo pipefail
 
@@ -25,15 +32,74 @@ STREAMING_DB="${STREAMING_DB:-pix}"
 STREAMING_COLLECTION="${STREAMING_COLLECTION:-transacoes}"
 TOPIC="atlas.$STREAMING_DB.$STREAMING_COLLECTION"
 CONSUMER_GROUP="${KAFKA_CONSUMER_GROUP:-showcase-pix-observer}"
+KAFKA_BIN="${KAFKA_BIN:-/opt/homebrew/opt/kafka/bin}"
+CONTROLLER_PORT="${KAFKA_CONTROLLER_PORT:-19093}"
+BROKER_PORT="${BROKER##*:}"
+BROKER_CFG="$RUN_DIR/broker.properties"
+BROKER_DATA="$RUN_DIR/kraft-data"
+BROKER_LOG="$RUN_DIR/broker.log"
 
 fail() { echo "❌ $1" >&2; exit 1; }
 # Só LISTEN: sem o filtro, uma conexão ESTABLISHED para a porta faz o script
 # achar que o serviço está de pé quando não está.
 porta_ativa() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
+sobe_broker() {
+  if porta_ativa "$CONTROLLER_PORT"; then
+    fail "Porta $CONTROLLER_PORT (controller KRaft) ocupada. Defina KAFKA_CONTROLLER_PORT com uma porta livre."
+  fi
+  cat > "$BROKER_CFG" <<PROPS
+process.roles=broker,controller
+node.id=1
+controller.quorum.bootstrap.servers=localhost:$CONTROLLER_PORT
+listeners=PLAINTEXT://localhost:$BROKER_PORT,CONTROLLER://localhost:$CONTROLLER_PORT
+inter.broker.listener.name=PLAINTEXT
+advertised.listeners=PLAINTEXT://localhost:$BROKER_PORT,CONTROLLER://localhost:$CONTROLLER_PORT
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+log.dirs=$BROKER_DATA
+num.partitions=1
+offsets.topic.replication.factor=1
+share.coordinator.state.topic.replication.factor=1
+share.coordinator.state.topic.min.isr=1
+transaction.state.log.replication.factor=1
+transaction.state.log.min.isr=1
+log.retention.hours=6
+PROPS
+  if [[ ! -f "$BROKER_DATA/meta.properties" ]]; then
+    echo "▶ Formatando o armazenamento KRaft em $BROKER_DATA (só na primeira vez)..."
+    local cluster_id
+    cluster_id="$("$KAFKA_BIN/kafka-storage" random-uuid)"
+    "$KAFKA_BIN/kafka-storage" format --standalone -t "$cluster_id" -c "$BROKER_CFG" >/dev/null ||
+      fail "Falha ao formatar $BROKER_DATA."
+  fi
+  echo "▶ Subindo o broker Kafka (KRaft, :$BROKER_PORT, controller :$CONTROLLER_PORT)..."
+  LOG_DIR="$RUN_DIR/logs" nohup "$KAFKA_BIN/kafka-server-start" "$BROKER_CFG" > "$BROKER_LOG" 2>&1 &
+  echo $! > "$RUN_DIR/broker.pid"
+  for _ in $(seq 1 45); do porta_ativa "$BROKER_PORT" && break; sleep 1; done
+  porta_ativa "$BROKER_PORT" || { tail -20 "$BROKER_LOG" >&2; fail "Broker não subiu. Log em $BROKER_LOG"; }
+  echo "✅ Broker em $BROKER"
+}
+
+# Encerra um processo iniciado por este script, conferindo que o PID ainda é
+# dele (PID reaproveitado pelo sistema não pode ser morto por engano).
+encerra_pid() { # arquivo_pid padrão rótulo
+  local arquivo="$1" padrao="$2" rotulo="$3" pid
+  [[ -f "$arquivo" ]] || return 0
+  pid="$(cat "$arquivo")"
+  if ps -p "$pid" -o command= 2>/dev/null | grep -q "$padrao"; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do ps -p "$pid" >/dev/null 2>&1 || break; sleep 0.5; done
+    echo "▶ $rotulo encerrado."
+  else
+    echo "▶ PID antigo do $rotulo ignorado ($pid)."
+  fi
+  rm -f "$arquivo"
+}
+
 subir() {
-  command -v brew >/dev/null || fail "Homebrew não encontrado."
-  [[ -x /opt/homebrew/opt/kafka/bin/connect-distributed ]] || fail "Kafka ausente. Rode: brew install kafka"
+  [[ -x "$KAFKA_BIN/connect-distributed" && -x "$KAFKA_BIN/kafka-server-start" ]] ||
+    fail "Kafka ausente em $KAFKA_BIN. Instale com 'brew install kafka' (ou aponte KAFKA_BIN). Sem Kafka a demo web funciona; só a coluna 2 do módulo 07 fica 'não configurado'."
   mkdir -p "$PLUGIN_DIR" "$RUN_DIR"
 
   local jar="$PLUGIN_DIR/mongo-kafka-connect-$MONGO_CONNECTOR_VERSION-all.jar"
@@ -51,13 +117,11 @@ subir() {
     mv "$parcial" "$jar"
   fi
 
-  if ! porta_ativa 9092; then
-    echo "▶ Subindo o broker Kafka (Homebrew, KRaft)..."
-    brew services start kafka >/dev/null
-    for _ in $(seq 1 30); do porta_ativa 9092 && break; sleep 2; done
-    porta_ativa 9092 || fail "Broker não subiu. Veja: brew services info kafka"
+  if porta_ativa "$BROKER_PORT"; then
+    echo "✅ Broker já escutando em $BROKER (não iniciado por este script)"
+  else
+    sobe_broker
   fi
-  echo "✅ Broker em $BROKER"
 
   if porta_ativa "$CONNECT_PORT"; then
     echo "✅ Kafka Connect já está em :$CONNECT_PORT"
@@ -84,7 +148,7 @@ plugin.path=$PLUGIN_DIR
 PROPS
 
   echo "▶ Subindo o Kafka Connect em :$CONNECT_PORT ..."
-  nohup /opt/homebrew/opt/kafka/bin/connect-distributed \
+  nohup "$KAFKA_BIN/connect-distributed" \
     "$RUN_DIR/connect-distributed.properties" > "$CONNECT_LOG" 2>&1 &
   echo $! > "$RUN_DIR/connect.pid"
 
@@ -103,7 +167,7 @@ PROPS
 }
 
 estado() {
-  porta_ativa 9092 && echo "broker  : UP ($BROKER)" || echo "broker  : DOWN"
+  porta_ativa "$BROKER_PORT" && echo "broker  : UP ($BROKER)" || echo "broker  : DOWN"
   if porta_ativa "$CONNECT_PORT"; then
     echo "connect : UP (http://localhost:$CONNECT_PORT)"
     curl -fsS "http://localhost:$CONNECT_PORT/connectors" 2>/dev/null | sed 's/^/  connectors: /'
@@ -147,26 +211,16 @@ for name in nomes:
         curl -fsS -X DELETE "http://localhost:$CONNECT_PORT/connectors/$connector" >/dev/null 2>&1 || true
       done || true
   fi
-  if porta_ativa 9092; then
-    /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server "$BROKER" \
+  if porta_ativa "$BROKER_PORT"; then
+    "$KAFKA_BIN"/kafka-topics --bootstrap-server "$BROKER" \
       --delete --if-exists --topic "$TOPIC" >/dev/null 2>&1 || true
-    /opt/homebrew/opt/kafka/bin/kafka-topics --bootstrap-server "$BROKER" \
+    "$KAFKA_BIN"/kafka-topics --bootstrap-server "$BROKER" \
       --delete --if-exists --topic "__mongodb_heartbeats" >/dev/null 2>&1 || true
-    /opt/homebrew/opt/kafka/bin/kafka-consumer-groups --bootstrap-server "$BROKER" \
+    "$KAFKA_BIN"/kafka-consumer-groups --bootstrap-server "$BROKER" \
       --delete --group "$CONSUMER_GROUP" >/dev/null 2>&1 || true
   fi
-  if [[ -f "$RUN_DIR/connect.pid" ]]; then
-    local pid
-    pid="$(cat "$RUN_DIR/connect.pid")"
-    if ps -p "$pid" -o command= 2>/dev/null | grep -q "connect-distributed"; then
-      kill "$pid" 2>/dev/null || true
-    else
-      echo "▶ PID antigo do Connect ignorado ($pid)."
-    fi
-    rm -f "$RUN_DIR/connect.pid"
-    echo "▶ Kafka Connect encerrado."
-  fi
-  brew services stop kafka >/dev/null 2>&1 || true
+  encerra_pid "$RUN_DIR/connect.pid" "connect-distributed" "Kafka Connect"
+  encerra_pid "$RUN_DIR/broker.pid" "$BROKER_CFG" "broker Kafka"
   echo "✅ Kafka local encerrado."
 }
 

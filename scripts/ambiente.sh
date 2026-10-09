@@ -131,8 +131,40 @@ recria_processor() {
     mongosh "$ASP_URI" --quiet --file "$BASE/scripts/setup-asp-geo.js"
 }
 
+# O modo ao vivo depende de infraestrutura fora deste repositório. Conferir
+# antes de mexer em qualquer coisa dá uma mensagem acionável em vez de um
+# `set -e` no meio da criação do processor.
+prerequisitos_ao_vivo() {
+  local faltando=0
+  if [[ -z "$ASP_URI" ]]; then
+    echo "❌ ASP_CONNECTION_STRING ausente em backend/.env (workspace de Atlas Stream Processing)." >&2
+    faltando=1
+  fi
+  if ! command -v mongosh >/dev/null; then
+    echo "❌ mongosh não encontrado (cria o processor ASP: brew install mongosh)." >&2
+    faltando=1
+  fi
+  if [[ ! -x "${KAFKA_BIN:-/opt/homebrew/opt/kafka/bin}/kafka-server-start" ]]; then
+    echo "⚠️  Kafka ausente (brew install kafka): a coluna 2 do módulo 07 ficará 'não configurado'."
+  fi
+  if [[ "$faltando" == "1" ]]; then
+    cat >&2 <<'MSG'
+   O modo ao vivo do módulo 07 precisa de: workspace ASP com a conexão
+   ASP_CONNECTION_NAME apontando para o cluster, mongosh e (opcional) Kafka.
+   Sem isso, a demo web (módulos 00–07) sobe com:
+     ./bin/overview --replay      # módulo 07 reproduz a execução gravada
+     ./start.sh                   # só API + UI, sem ASP/Kafka
+   Detalhes: docs/setup-streaming.md
+MSG
+    return 1
+  fi
+}
+
 case "${1:-status}" in
   up)
+    if [[ "$AO_VIVO" == "1" ]]; then
+      prerequisitos_ao_vivo || exit 1
+    fi
     echo "▶ Preparando processos da PoV (o estado do cluster não será alterado)..."
     verifica_demo
     # Um ciclo de apresentação começa sem documentos, offsets de aplicação ou
