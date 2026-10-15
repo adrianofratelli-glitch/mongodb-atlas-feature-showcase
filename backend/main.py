@@ -39,7 +39,7 @@ async def lifespan(_app: FastAPI):
         await streaming.fechar_cliente_async()
 
 
-app = FastAPI(title="MongoDB Atlas Feature Showcase", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="MongoDB Atlas Feature Showcase", version="1.2.0", lifespan=lifespan)
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 app.add_middleware(ApiHardeningMiddleware)

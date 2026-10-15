@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Atualiza dependências compatíveis e pisos de segurança; alinha metadados de versão entre aplicação e frontend.
+
 ## 1.2.0 (2026-10-09)
 
 - Streaming reconciliation now compares a **per-document content digest** (SHA-256 of a canonical form of every field, aggregated in `endToEndId` order) between the source, Change Streams, and Kafka. The previous checks (count, cents sum, XOR of ids) accepted compensating mutations such as [10, 20] → [11, 19]. The Change Streams cursor now carries the full document. README and UI state exactly what is verified and what is not.
