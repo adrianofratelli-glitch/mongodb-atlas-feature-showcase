@@ -10,7 +10,7 @@ Um showcase interativo que exercita **capacidades centrais do Atlas contra um cl
 
 **Sem LLM nesta PoV.** Decisão deliberada — o objetivo é responder "o Atlas aguenta?" e "o Atlas faz?" com número medido, não com narrativa de IA.
 
-**Nota de escopo:** o antigo módulo 08 (risco geográfico / Geo) foi extraído em 2026-09-11 para o repositório standalone `mongodb-atlas-geo-showcase`. Não existe mais código de Geo neste repositório — o `docs/briefing/02-mongodb.md` anterior ainda descrevia esse módulo como presente; isso está desatualizado e foi corrigido aqui. O que permanece deste histórico é só o canal `CARTAO_PRESENCIAL` dentro do gerador do módulo de Streaming (ver abaixo), que é história do módulo 07, não do antigo 08.
+**Nota de escopo:** o antigo módulo 08 (risco geográfico / Geo) foi extraído em 2026-09-11 para o repositório standalone `mongodb-atlas-geo-showcase`. Não existe mais o módulo/telas de Geo neste repositório (routers, frontend), mas restam resquícios ligados ao streaming: `GEO_DB`/`GEO_DB_NOME` e a coleção `sinais_ao_vivo` em `backend/routers/streaming.py` (sink do processor ASP `geoSinais30s`, limpo no reset de streaming), `backend/data/municipios.json` e `scripts/setup-asp-geo.js`. O que permanece deste histórico é só o canal `CARTAO_PRESENCIAL` dentro do gerador do módulo de Streaming (ver abaixo), que é história do módulo 07, não do antigo 08.
 
 ## Stack
 

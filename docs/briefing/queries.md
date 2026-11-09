@@ -1,3 +1,5 @@
+> Números de linha podem ficar defasados após mudanças: a fonte atualizada é [MAPA_DO_CODIGO.md](../MAPA_DO_CODIGO.md).
+
 # Queries, pipelines e índices — referência rápida
 
 > Todo pipeline/query/índice real do projeto, extraído do código (`backend/routers/*.py`, `backend/seed_data.py`). Sem dados sensíveis reais — os exemplos usam nomes fictícios já presentes no código (dados sintéticos de demo). Se um pipeline não aparece aqui, é porque não foi encontrado no código atual.

@@ -1,3 +1,5 @@
+> Números de linha podem ficar defasados após mudanças: a fonte atualizada é [MAPA_DO_CODIGO.md](../MAPA_DO_CODIGO.md).
+
 # Interface, telas e fluxos — referência rápida
 
 > Fonte: `frontend/src/App.jsx`, `frontend/src/pages/*.jsx`, `frontend/src/components/*.jsx`, `docs/screenshots/`. Módulo de risco geográfico (antigo 08) não existe mais neste frontend — foi extraído para `mongodb-atlas-geo-showcase` em 2026-09-11.
