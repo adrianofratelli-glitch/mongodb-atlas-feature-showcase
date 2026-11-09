@@ -1,6 +1,6 @@
 # Mapa do código — mongodb-atlas-feature-showcase
 
-> Também conhecida como: **Atlas Feature Showcase (7 módulos)** (pasta antiga `mongodb-atlas-feature-showcase`). Portas: frontend **5174** / backend **8002**. Em uma frase: uma vitrine interativa que roda, contra um cluster Atlas real, sete capacidades da plataforma (reindexação online, Online Archive, aggregation, schema validation, change streams, transações e uma comparação de três formas de streaming), sempre mostrando a query que rodou e o número medido.
+> Também conhecida como: **Atlas Feature Showcase (7 módulos)** (pasta antiga `atlas-showcase-capacidades`). Portas: frontend **5174** / backend **8002**. Em uma frase: uma vitrine interativa que roda, contra um cluster Atlas real, sete capacidades da plataforma (reindexação online, Online Archive, aggregation, schema validation, change streams, transações e uma comparação de três formas de streaming), sempre mostrando a query que rodou e o número medido.
 
 Atalhos para o que já existe: [architecture](briefing/architecture.md) · [queries](briefing/queries.md) · [ui-flows](briefing/ui-flows.md). Este mapa não repete esses textos; ele aponta o arquivo e a linha.
 
