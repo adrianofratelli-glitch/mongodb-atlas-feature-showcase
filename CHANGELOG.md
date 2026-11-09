@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Reorganização: `live_monitor.py` saiu da raiz para `scripts/`.
 - Atualiza dependências compatíveis e pisos de segurança; alinha metadados de versão entre aplicação e frontend.
 
 ## 1.2.0 (2026-10-09)

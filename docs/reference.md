@@ -88,19 +88,18 @@ responsabilidades por arquivo. A versão curta:
 │   │   ├── components/          # QueryBlock, Limites
 │   │   └── pages/               # Um componente por módulo
 │   └── vite.config.js           # Faz proxy de /api para :8002
-├── live_monitor.py              # Monitor de latência no terminal
 └── docs/screenshots/
 ```
 
 ## Live Monitor (opcional)
 
-O `live_monitor.py` imprime a latência de leitura e escrita contra o cluster, ao vivo, em um
+O `scripts/live_monitor.py` imprime a latência de leitura e escrita contra o cluster, ao vivo, em um
 terminal. Rode-o em uma segunda janela enquanto o módulo de reindexação online constrói um
 índice: a linha de latência simplesmente continua, que é justamente a alegação sobre construção
 de índice em rolling, visível em vez de apenas afirmada.
 
 ```bash
-python live_monitor.py
+python scripts/live_monitor.py
 ```
 
 ## Notas

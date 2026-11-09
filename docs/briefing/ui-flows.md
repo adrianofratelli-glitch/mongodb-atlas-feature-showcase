@@ -87,7 +87,7 @@ Regra do README: qualquer screenshot usado dentro de tabela precisa ter exatamen
 
 ## O roteiro de apresentação (visão prática)
 
-1. Subir um índice com `live_monitor.py` rodando ao lado — leitura e escrita não param.
+1. Subir um índice com `scripts/live_monitor.py` rodando ao lado — leitura e escrita não param.
 2. Mostrar o banco recusando um documento fora do `$jsonSchema`.
 3. Escrever num terminal e ver o evento aparecer na tela via change stream.
 4. Commit e rollback de transação, com estado antes/depois.

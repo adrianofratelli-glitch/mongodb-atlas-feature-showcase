@@ -3,7 +3,7 @@ Live cluster monitor — roda em background durante a demo.
 Mostra que leituras e escritas continuam funcionando sem interrupção
 mesmo durante criação de índices, archiving e outras operações.
 
-Uso: python live_monitor.py
+Uso: python scripts/live_monitor.py
 Parar: Ctrl+C
 """
 
@@ -16,7 +16,7 @@ from collections import deque
 from pymongo import MongoClient
 from dotenv import load_dotenv
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "backend", ".env"))
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend", ".env"))
 
 MONGO_URI    = os.getenv("MONGO_URI")
 DB_NAME      = os.getenv("MONGO_DB", "POC")

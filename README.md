@@ -14,7 +14,7 @@ The app opens on a **thesis** page, not on module 01: none of the capabilities i
 
 | Module | What Atlas does |
 |---|---|
-| **01** Online reindexing | Rolling index build with no downtime. `live_monitor.py` prints read/write latency while it happens. |
+| **01** Online reindexing | Rolling index build with no downtime. `scripts/live_monitor.py` prints read/write latency while it happens. |
 | **02** Hot/cold tiering | Online Archive moves old documents to cheap storage, still queryable in a single namespace. |
 | **03** Aggregation Pipeline | `$lookup`, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto`. |
 | **04** Schema validation | `strict` rejects new violations; MongoDB 9.0 `constraint` checks and enforces the contract for existing data too. |
