@@ -2,6 +2,8 @@
 
 Seven Atlas capabilities, one page each, running against a real cluster. Build an index and watch reads keep flowing. Break a change stream and watch it resume from its token. Roll back a transaction and watch the documents return.
 
+Mapa do código: [docs/MAPA_DO_CODIGO.md](docs/MAPA_DO_CODIGO.md)
+
 Nothing is mocked. If a piece is not configured, the UI says so instead of inventing a number.
 
 FastAPI + React 19. The UI is in Brazilian Portuguese. No LLM.
