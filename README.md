@@ -75,6 +75,17 @@ Once configured, `bin/overview` replaces all of that:
 
 Details: [Streaming setup](docs/setup-streaming.md) · [reference](docs/reference.md) (Portuguese).
 
+### Docker
+
+One container: nginx serves the frontend build and proxies `/api` to a single uvicorn worker with the prefix removed, as the Vite proxy does; SSE feeds are unbuffered.
+
+```bash
+docker build -t atlas-showcase .
+docker run --env-file backend/.env -p 127.0.0.1:18002:8080 atlas-showcase   # http://127.0.0.1:18002
+```
+
+`docker run --env-file` does not strip quotes: a line `KEY="value"` arrives with the quotes, so write `KEY=value` in the file you pass. For UI mutations, add the page origin (e.g. `http://127.0.0.1:18002`) to `ALLOWED_ORIGINS`; keep the port bound to `127.0.0.1`, because behind nginx every request reaches the backend from loopback. Module 07 runs from the recorded replay; the live Kafka/ASP mode (`bin/overview`) stays on the host (`localhost` inside the container is not the host: use `KAFKA_BROKERS=host.docker.internal:9092` if needed). Health: `GET /api/health/live`; readiness: `/api/preflight`.
+
 ## Module 07: three consumers, one write
 
 Change Streams in the application, the Kafka Connector publishing to a real broker, and Atlas Stream Processing aggregating 5s windows, all over the same writes. The flow has two channels: `PIX` (no coordinate, because a PIX transfer has none) and `CARTAO_PRESENCIAL` (card-present, with the acquirer terminal's coordinate, consumed by the `geoSinais30s` processor; the geospatial module that displayed it now lives in its own repository).
