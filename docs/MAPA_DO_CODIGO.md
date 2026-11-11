@@ -175,7 +175,7 @@ Modo "ao vivo" usa `/streaming/*`; modo "replay" usa `/replay/*` com o mesmo con
 | Latência de leitura / oplog | `Streaming.jsx:436` | `GET /streaming/leitura`, `GET /streaming/oplog` | `streaming.py:1686`, `:1700` | `SondaLeitura` (`:1630`), `_oplog_janela` (`:1595`) | `transacoes` (`find_one`), `local.oplog.rs` |
 | Cenário/preset de TPS | `Streaming.jsx:185,687` | `GET /streaming/cenario`, `GET /streaming/rede`, `GET /streaming/contrato` | `streaming.py:2068`, `:1969`, `:3346` | `cenario`, `_medir_rtt` (`:1948`), `contrato` | `ping` (rede) |
 
-Rotas só de apoio, sem botão direto: `GET /streaming/perfil-valores` (`streaming.py:1573`), `GET /streaming/generator/status` (usada pelo polling, `Streaming.jsx:204`), `GET /streaming/asp/dlq` (`:3951`), `GET /streaming/asp/janelas` (`:3959`), `GET /streaming/changestream/status` (`:2718`), `GET /streaming/falha/failover/status` (`:3284`).
+Rotas só de apoio, sem botão direto: `GET /streaming/perfil-valores` (`streaming.py:1573`), `GET /streaming/generator/status` (usada pelo polling, `Streaming.jsx:204`), `GET /streaming/asp/dlq` (`streaming.py:3951`), `GET /streaming/asp/janelas` (`streaming.py:3959`), `GET /streaming/changestream/status` (`streaming.py:2718`), `GET /streaming/falha/failover/status` (`streaming.py:3284`).
 
 ## 3. Onde estão as queries MongoDB
 
