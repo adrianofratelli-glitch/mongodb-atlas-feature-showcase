@@ -7,6 +7,6 @@ aiokafka==0.12.0
 
 # Pisos de segurança para dependências transitivas.
 anyio>=4.14.2,<5
-pypdf>=6.19,<7
+pypdf>=7.0.0,<8
 starlette>=1.3.1,<2
 urllib3>=2.8,<3
