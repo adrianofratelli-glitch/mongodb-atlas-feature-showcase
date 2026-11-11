@@ -14,7 +14,7 @@ Um showcase interativo que exercita **capacidades centrais do Atlas contra um cl
 
 ## Stack
 
-- **Frontend**: React 18 + Vite, JSX puro, CSS escrito à mão. Única dependência de UI: `react-syntax-highlighter` (para realçar pipelines). Sem router de terceiro, sem biblioteca de estado, sem UI kit — navegação por hash lida no boot.
+- **Frontend**: React 19 + Vite, JSX puro, CSS escrito à mão. Única dependência de UI: `react-syntax-highlighter` (para realçar pipelines). Sem router de terceiro, sem biblioteca de estado, sem UI kit — navegação por hash lida no boot.
 - **Backend**: FastAPI + PyMongo.
 - **Dados**: MongoDB Atlas (M20).
 - **Streaming opcional**: Kafka (Homebrew, KRaft, local) + Atlas Stream Processing.
@@ -22,7 +22,7 @@ Um showcase interativo que exercita **capacidades centrais do Atlas contra um cl
 ## Diagrama de fluxo
 
 ```
-React 18 + Vite (frontend/, :5174)
+React 19 + Vite (frontend/, :5174)
    │  fetch /api/*                          (JSON)
    │  EventSource /api/streaming/*          (SSE — sessão ao vivo, modo principal)
    │  EventSource /api/replay/streaming/*   (SSE — fallback gravado)
@@ -35,7 +35,7 @@ FastAPI (backend/main.py, :8002)
    └─ arquivo ─────────────► backend/data/replay_streaming.json (playback do módulo Streaming)
 ```
 
-O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removendo o prefixo**. Toda chamada do browser — SSE incluído — passa por esse proxy; nenhum host externo é contatado para renderizar a página (exceto o link do Google Fonts, pré-existente, fallback silencioso para fonte de sistema).
+O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removendo o prefixo**. Toda chamada do browser — SSE incluído — passa por esse proxy; nenhum host externo é contatado para renderizar a página (fontes servidas localmente pela assinatura visual).
 
 ## Componentes do backend
 
@@ -85,12 +85,22 @@ O guard **ignora métodos seguros** (GET), e é por isso que **todo endpoint SSE
 
 **Atenção:** vários endpoints são destrutivos por natureza (derrubam índice, fazem `collMod` de schema, criam/apagam Online Archive, disparam test failover). Nunca aponte esta PoV para um cluster que não seja descartável.
 
-## Decisões de design que valem registrar
+## Decisões de desenho
 
 - **Cluster e workspace de ASP na mesma região** (`sa-east-1`). Região separada faz o módulo de Streaming medir salto transcontinental e parecer fraqueza de produto (medido: RTT caiu de 148,10 ms para 7,39 ms só com a mudança de região).
 - **Modo replay do Streaming** (`backend/routers/replay.py`, `/replay/*`) — nunca toca o MongoDB (testado), serve `backend/data/replay_streaming.json` gravado por `scripts/capture_replay.py`. Existe porque M20/M30 são *burstable* e o auto-scaling dispara por CPU **relativa** — já mediu 17,6% CPU absoluta lida como 88% relativa, escalando o cluster com o gerador parado, só pelo polling do dashboard. A página abre em modo ao vivo por padrão; replay é contingência explícita, com badge permanente de origem, e **nunca é apresentado como corrida ao vivo**.
 - **Disciplina de polling** — todo intervalo do app passa por `usePolling`; aba escondida não gera tráfego. Baseline medida: 48 requisições/20s parado → 1 quando parado, 0 com aba escondida.
 - **Toda alegação de capacidade carrega o contra-exemplo escrito junto** — nenhum número na tela sem chamada real por trás.
+- **Limites declarados, nunca inventados** — cada item de `Limites.jsx` precisa ser verificável na documentação do produto ou medido nesta PoV; limite inventado é pior que limite omitido.
+- **Tela enxuta, o apresentador narra** — fica visível o que a narração não carrega (query, comando, resultado do cluster). O módulo 03 mostra o pipeline sempre aberto, não atrás de "Ver código": mostrar quão pouco se escreve é o argumento. Limites e não-objetivos ficam colapsados.
+- **Benchmark de transações (`POST /transactions/benchmark`)** — sempre `writeConcern majority` nos três cenários (comparar contra write concern mais fraco compararia garantias diferentes). O RTT é medido antes com `ping` puro: num enlace ruim a transação mede ~1 s, e isso é afirmação sobre a rede, não sobre o produto (acima de 40 ms, veredito `limitado_pela_rede`, mesmo limiar do módulo 07). Os retries são contados pelas entradas no callback, porque `with_transaction` não os expõe. O `getParameter` de `transactionLifetimeLimitSeconds` é negado em vários tiers, então a resposta diz `indisponível` em vez de citar o padrão de memória. O número a levar é a razão (medido 4,1× a escrita única, ~4 viagens de rede), não o absoluto.
+- **Sinal geográfico do streaming exige três limiares** (`km/h`, `MIN_KM`, `MIN_MIN`) — velocidade sozinha sinalizava duas compras a 20 km capturadas com segundos de diferença, que é captura simultânea, não deslocamento. Sinais carregam `origem: plantado | emergente` e a UI os conta separadamente: o par plantado garante um sinal no palco, e somá-lo ao emergente transformaria essa garantia em evidência.
+- **Pares plantados derivam o intervalo de uma velocidade alvo** (1.100–9.000 km/h), nunca o contrário — sortear minutos diretamente dava 16.000–42.000 km/h, vinte vezes qualquer padrão real de cartão clonado.
+- **`/streaming/generator/status` atribui o teto (`entrega`)** — quando o TPS entregue cai abaixo de 70% do alvo, o limite é atribuído à rede do apresentador (ACK p50 ≥ 40 ms) ou ao processo gerador local. Sob VPN a página diria "medido 64 · alvo 2.000" e a plateia culparia o cluster, com tempo de escrita no servidor de ~3 ms.
+- **`/streaming/folga` nunca devolve o hostname do Atlas** — só o nome do cluster, que costuma identificar o cliente. A CPU é recortada à janela da execução; execuções abaixo de 120 s marcam `cpu_subestimada` (bucket de 1 min promediado com ocioso: 43% alinhada vs 15% atravessando, mesma carga), e o pico de TPS é registrado pelo gerador, não só quando alguém consulta o status.
+- **Preflight da Admin API sonda, não só confere a credencial** — antes ficava verde com toda chamada recusada, e `/streaming/cluster` caía em silêncio para o tier do `.env`. O IP de saída muda com VPN; a correção fica em Organization → Access Manager → API Keys → Access List, que é uma lista **diferente** do Network Access do projeto (este governa o driver).
+- **Failover estende a execução em 150 s** — uma eleição dura mais que a janela de 30 s, e o auto-stop fecharia a execução no meio do evento. O recurso da Admin API mudou de forma entre versões: a chamada tenta as formas conhecidas em ordem, e só 404/405 avança — erro de credencial ou de access list aparece sem máscara.
+- **Uma única forma de subir o Kafka** (binários do Homebrew, KRaft) — o caminho Docker/Redpanda foi removido porque um container publicando a `9093` no host rouba a porta do controller KRaft, e o broker falha todo registro de um jeito que parece instalação corrompida.
 
 ## Ferramental de operação
 
