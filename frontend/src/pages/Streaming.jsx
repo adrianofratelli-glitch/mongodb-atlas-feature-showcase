@@ -512,7 +512,7 @@ function SessaoStreaming({ modo, setModo }) {
           <div><span>Cluster</span><strong>{cenario?.ambiente?.cluster || '—'}</strong></div>
           <div><span>ASP</span><strong>{aspStatus?.tier || '—'}</strong></div>
           <div><span>Cursores</span><strong>{cenario?.ambiente?.particoes_consumo || '—'}</strong></div>
-          <div><span>RTT local</span><strong>{rede?.rtt_ms != null ? `${rede.rtt_ms} ms` : '—'}</strong></div>
+          <div><span>RTT local</span><strong>{fmtMs(rede?.rtt_ms)}</strong></div>
         </div>
       </div>
 
