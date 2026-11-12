@@ -3,7 +3,12 @@
 
 Também é chamado por `scripts/reset_demo.py` (função `cleanup`). Variáveis do
 ambiente têm precedência sobre `backend/.env`, o que permite apontar para um
-banco `*_test` (ex.: `STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test`).
+banco próprio de teste (ex.: `STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test`).
+
+Guarda: sem `ALLOW_DEMO_DB_WRITE=1`, os dois bancos precisam seguir o formato
+`showcase_*_test`. Um `*_test` genérico pode ser de outra PoV no mesmo cluster
+(`geo_test` é o banco live do geo-showcase), e este script dropa coleções inteiras.
+O banco da demo (`pix`/`geo` do backend/.env) só com a flag, como faz o `overview`.
 """
 
 from __future__ import annotations
@@ -25,6 +30,24 @@ COLLECTIONS = (
 # No database `geo`, e por isso fora da tupla acima.
 COLLECTION_SINAIS = "sinais_ao_vivo"
 ENV_KEYS = ("MONGO_URI", "STREAMING_DB", "GEO_DB", "STREAMING_TTL_SEGUNDOS")
+
+
+def banco_proprio(nome: str) -> bool:
+    return bool(nome) and nome.startswith("showcase_") and nome.endswith("_test")
+
+
+def assert_banco_proprio(nome: str, variavel: str) -> None:
+    """Recusa banco que não é desta PoV sem consentimento explícito (ALLOW_DEMO_DB_WRITE=1)."""
+    if banco_proprio(nome):
+        return
+    if os.getenv("ALLOW_DEMO_DB_WRITE") == "1":
+        print(f"⚠  ALLOW_DEMO_DB_WRITE=1 — limpando dados de streaming em '{nome}' ({variavel}).")
+        return
+    raise SystemExit(
+        f"❌ Recusado: {variavel}='{nome}' não é um banco próprio desta PoV (showcase_*_test). "
+        "Um *_test genérico pode ser de outra PoV. Para o banco da demo, rode com "
+        "ALLOW_DEMO_DB_WRITE=1 (nunca durante uma demo ao vivo)."
+    )
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -66,18 +89,18 @@ def cleanup(client: MongoClient, database: str, ttl_seconds: int, geo_database: 
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     env_file = root / "backend" / ".env"
-    if not env_file.exists():
-        print("❌ backend/.env não encontrado.", file=sys.stderr)
-        return 1
-
-    env = {**read_env(env_file), **{k: v for k, v in os.environ.items() if k in ENV_KEYS}}
+    # O ambiente tem precedência; sem backend/.env, basta o ambiente trazer MONGO_URI.
+    base = read_env(env_file) if env_file.exists() else {}
+    env = {**base, **{k: v for k, v in os.environ.items() if k in ENV_KEYS}}
     uri = env.get("MONGO_URI", "")
     database = env.get("STREAMING_DB", "pix") or "pix"
     geo_database = env.get("GEO_DB", "geo") or "geo"
     ttl_seconds = int(env.get("STREAMING_TTL_SEGUNDOS", "300") or "300")
     if not uri:
-        print("❌ MONGO_URI ausente em backend/.env.", file=sys.stderr)
+        print("❌ MONGO_URI ausente (ambiente e backend/.env).", file=sys.stderr)
         return 1
+    assert_banco_proprio(database, "STREAMING_DB")
+    assert_banco_proprio(geo_database, "GEO_DB")
 
     client = MongoClient(
         uri,

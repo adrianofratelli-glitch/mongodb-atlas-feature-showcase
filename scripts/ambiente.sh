@@ -96,7 +96,10 @@ PY
 }
 
 limpa_dados_pix() {
-  "$BASE/backend/venv/bin/python" "$BASE/scripts/cleanup-streaming-data.py"
+  # O overview é dono do ciclo de vida da demo: limpar os dados PIX da rodada
+  # anterior no banco configurado (o da demo) é o comportamento esperado aqui.
+  # Fora do overview, o script recusa banco que não seja showcase_*_test.
+  ALLOW_DEMO_DB_WRITE=1 "$BASE/backend/venv/bin/python" "$BASE/scripts/cleanup-streaming-data.py"
 }
 
 verifica_demo() {

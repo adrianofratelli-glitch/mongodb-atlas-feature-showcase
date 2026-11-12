@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import { useIntervaloVisivel, useVisivel } from '../hooks/usePolling'
 import QueryBlock from '../components/QueryBlock'
-import { fmtBRL, fmtDataGravacao, fmtEscala, fmtMs, num } from '../lib/formato'
+import { fmtBRL, fmtDataGravacao, fmtEscala, fmtMs, fmtReaisEscala, num } from '../lib/formato'
 
 const MAX_FEED = 40
 
@@ -954,7 +954,7 @@ function SessaoStreaming({ modo, setModo }) {
                 <div className="str-stats">
                   <Stat label="Agregadas" value={fmtEscala(aspStatus?.transacoes_agregadas)} color="#765cf8"
                     sub={`${num(aspStatus?.janelas)} janelas de ${janelaSegundos} s`} />
-                  <Stat label="Volume" value={`R$ ${fmtEscala(aspStatus?.volume_agregado)}`} sub="somado pelo processor" />
+                  <Stat label="Volume" value={fmtReaisEscala(aspStatus?.volume_agregado)} sub="somado pelo processor" />
                   <Stat label="DLQ" value={num(aspStatus?.dlq ?? 0)} color={(aspStatus?.dlq ?? 0) ? '#ff4f00' : undefined} sub="rejeitados" />
                   <Stat label="Pendentes" value={num(aspPendentes ?? 0)} color={aspPendentes ? '#ff4f00' : undefined} sub="janela ou backlog" />
                 </div>
@@ -1016,9 +1016,9 @@ function SessaoStreaming({ modo, setModo }) {
                         <tr key={i}>
                           <td>{j.uf}</td><td>{num(j.qtd)}</td>
                           {/* forma compacta: a coluna é estreita e o valor cheio era cortado */}
-                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.volume)}</td>
+                          <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtReaisEscala(j.volume)}</td>
                           <td style={{ color: j.alertas_valor_alto ? '#ff4f00' : undefined }}>{num(j.alertas_valor_alto ?? 0)}</td>
-                          <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {fmtEscala(j.maior_valor)}</td>
+                          <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtReaisEscala(j.maior_valor)}</td>
                         </tr>
                       ))}
                       {janelas.length === 0 && <tr><td colSpan={5} className="str-empty">Aguardando a primeira janela fechar ({janelaSegundos} s)…</td></tr>}

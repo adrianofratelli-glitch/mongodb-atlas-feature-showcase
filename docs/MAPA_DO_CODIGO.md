@@ -17,7 +17,7 @@ Convenção: `arquivo:linha` é a linha da definição da função (conferida no
 │   ├── reset_demo.py          RESET ÚNICO da demo (`--check` só verifica); recusa banco sem `_test`
 │   ├── live_monitor.py        Monitor de leitura/escrita para rodar ao lado enquanto um índice é criado
 │   ├── capture_replay.py      Grava uma corrida real do Streaming em backend/data/replay_streaming.json
-│   ├── cleanup-streaming-data.py  Limpeza dos dados da rodada de streaming (usado pelo reset)
+│   ├── cleanup-streaming-data.py  Limpeza dos dados da rodada de streaming (usado pelo reset; guarda showcase_*_test)
 │   ├── setup-asp.js / setup-kafka-connector.sh / kafka-local.sh   Provisionamento do processor ASP e do Kafka/connector
 │   ├── setup-asp-geo.js       Segundo processor ASP (sinais geográficos; ver nota na seção 4)
 │   ├── prepare-demo.sh, generate-streaming-guide.py, lib/expand_srv.py   Apoio de preparação/guia
@@ -220,7 +220,7 @@ Briefing com o texto completo de cada query: [queries.md](briefing/queries.md). 
 | Reconciliação | `streaming.py::_fonte_conferivel` (`:4055`), `_reconcile_run` (`:4111`), `reconciliacao` (`:4253`) | aggregate, `find`, `count_documents` | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit` |
 | Reset do streaming | `streaming.py::_drop_and_recreate` (`:2239`), `_resto_exato` (`:2256`), `_purge` (`:2271`), `reset` (`:2303`) | `drop`, `count_documents(limit=1)`, `delete_many` | coleções do streaming + `geo.sinais_ao_vivo` |
 | Controle do ASP | `streaming.py::_asp_command` (`:2188`), `_asp_stop_wait` (`:2206`), `_asp_restart_from_checkpoint` (`:3631`) | `listStreamProcessors`, `stopStreamProcessor`, `startStreamProcessor` | instância ASP (outra connection string) |
-| Reset geral | `scripts/reset_demo.py::reset` (`:89`) | drop só das coleções dos módulos + seed | vários (ver script) |
+| Reset geral | `scripts/reset_demo.py::reset` (`:92`) | drop só das coleções dos módulos + seed | vários (ver script) |
 | Monitor ao vivo | `scripts/live_monitor.py::do_read` (`:61`) / `do_write` (`:69`) | leitura e escrita em loop | coleção da demo |
 
 ## 4. Compartilhado × só desta PoV

@@ -21,7 +21,10 @@ Uso:
     ALLOW_DEMO_DB_WRITE=1 python scripts/reset_demo.py     # banco da demo (backend/.env)
     python scripts/reset_demo.py --check                    # só verifica, não escreve
 
-Guarda: recusa qualquer banco que não termine em `_test` sem ALLOW_DEMO_DB_WRITE=1.
+Guarda: sem ALLOW_DEMO_DB_WRITE=1, recusa MONGO_DB que não termine em `_test` e
+STREAMING_DB/GEO_DB fora do formato `showcase_*_test` (a limpeza do streaming dropa
+coleções inteiras, e um `*_test` genérico pode ser de outra PoV: `geo_test` é do
+geo-showcase). Com a flag, o reset do banco da demo continua possível.
 """
 
 from __future__ import annotations
@@ -143,8 +146,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"✅ {db_name}: produtos/avaliacoes e índices da demo presentes.")
             return 1 if problemas else 0
 
-        for name in (db_name, streaming_db, geo_db):
-            seed_data.assert_writable_db(name)
+        seed_data.assert_writable_db(db_name)
+        cleanup_mod = _load_cleanup()
+        cleanup_mod.assert_banco_proprio(streaming_db, "STREAMING_DB")
+        cleanup_mod.assert_banco_proprio(geo_db, "GEO_DB")
         inicio = time.perf_counter()
         rel = reset(db, streaming_db, geo_db, ttl, args.produtos, args.avaliacoes)
         dur = time.perf_counter() - inicio

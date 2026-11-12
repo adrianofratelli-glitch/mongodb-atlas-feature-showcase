@@ -29,6 +29,9 @@ export function fmtEscala(v) {
   return String(v)
 }
 
+// Volume em reais: por extenso abaixo de mil ("R$ 999,37"), resumido acima ("R$ 2,5 mi").
+export const fmtReaisEscala = (v) => (v == null ? '—' : Math.abs(v) < 1e3 ? fmtReais(v) : `R$ ${fmtEscala(v)}`)
+
 export function fmtDataGravacao(v) {
   if (!v) return 'data não informada'
   const d = new Date(v)

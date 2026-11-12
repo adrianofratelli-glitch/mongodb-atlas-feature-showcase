@@ -80,8 +80,8 @@ def test_reset_recusa_banco_da_demo_sem_consentimento(monkeypatch):
     monkeypatch.delenv("ALLOW_DEMO_DB_WRITE", raising=False)
     monkeypatch.setenv("MONGO_URI", "mongodb://" + "127.0.0.1:1")
     monkeypatch.setenv("MONGO_DB", "POC")
-    monkeypatch.setenv("STREAMING_DB", "pix_test")
-    monkeypatch.setenv("GEO_DB", "geo_test")
+    monkeypatch.setenv("STREAMING_DB", "showcase_pix_test")
+    monkeypatch.setenv("GEO_DB", "showcase_geo_test")
 
     class NaoConecta:
         def __init__(self, *a, **k):
@@ -104,3 +104,79 @@ def test_check_aponta_colecao_vazia():
     db["produtos"] = Col(0)
     problemas = reset_demo.check(db)
     assert any("produtos vazia" in p for p in problemas)
+
+
+def _carregar_cleanup():
+    spec = importlib.util.spec_from_file_location("cleanup_streaming_t", ROOT / "scripts" / "cleanup-streaming-data.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _ClienteProibido:
+    def __init__(self, *a, **k):
+        pytest.fail("não deveria conectar")
+
+
+@pytest.mark.parametrize("streaming, geo", [
+    ("pix_test", "showcase_geo_test"),          # *_test genérico de outra PoV
+    ("showcase_pix_test", "geo_test"),          # geo_test = banco live do geo-showcase
+])
+def test_reset_recusa_streaming_e_geo_que_nao_sao_proprios(monkeypatch, streaming, geo):
+    monkeypatch.delenv("ALLOW_DEMO_DB_WRITE", raising=False)
+    monkeypatch.setenv("MONGO_URI", "mongodb://" + "127.0.0.1:1")
+    monkeypatch.setenv("MONGO_DB", "showcase_poc_test")
+    monkeypatch.setenv("STREAMING_DB", streaming)
+    monkeypatch.setenv("GEO_DB", geo)
+    monkeypatch.setattr(reset_demo, "MongoClient", lambda *a, **k: _ClienteNulo())
+    monkeypatch.setattr(reset_demo, "reset", lambda *a, **k: pytest.fail("não deveria escrever"))
+    with pytest.raises(SystemExit) as erro:
+        reset_demo.main([])
+    assert "showcase_*_test" in str(erro.value)
+
+
+class _ClienteNulo:
+    def __getitem__(self, k):
+        return Db()
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("variavel, valor", [
+    ("STREAMING_DB", "pix"), ("STREAMING_DB", "pix_test"),
+    ("GEO_DB", "geo"), ("GEO_DB", "geo_test"),
+])
+def test_cleanup_main_recusa_banco_que_nao_e_proprio(monkeypatch, variavel, valor):
+    cleanup = _carregar_cleanup()
+    monkeypatch.delenv("ALLOW_DEMO_DB_WRITE", raising=False)
+    monkeypatch.setenv("MONGO_URI", "mongodb://" + "127.0.0.1:1")
+    monkeypatch.setenv("STREAMING_DB", "showcase_pix_test")
+    monkeypatch.setenv("GEO_DB", "showcase_geo_test")
+    monkeypatch.setenv(variavel, valor)
+    monkeypatch.setattr(cleanup, "MongoClient", _ClienteProibido)
+    monkeypatch.setattr(cleanup, "cleanup", lambda *a, **k: pytest.fail("não deveria limpar"))
+    with pytest.raises(SystemExit) as erro:
+        cleanup.main()
+    assert variavel in str(erro.value)
+
+
+def test_cleanup_main_aceita_banco_da_demo_com_a_flag(monkeypatch):
+    cleanup = _carregar_cleanup()
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    monkeypatch.setenv("MONGO_URI", "mongodb://" + "127.0.0.1:1")
+    monkeypatch.setenv("STREAMING_DB", "pix")
+    monkeypatch.setenv("GEO_DB", "geo")
+    chamadas = []
+
+    class ClienteFalso:
+        def __init__(self, *a, **k):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cleanup, "MongoClient", ClienteFalso)
+    monkeypatch.setattr(cleanup, "cleanup", lambda c, db, ttl, geo: chamadas.append((db, geo)) or [])
+    assert cleanup.main() == 0
+    assert chamadas == [("pix", "geo")]
