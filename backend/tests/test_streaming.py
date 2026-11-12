@@ -1578,3 +1578,98 @@ def test_erro_de_escrita_individual_conta_uma_vez(monkeypatch):
 
     assert g.write_errors == 1
     assert g.inserted == 0
+
+
+def test_parar_nao_trava_com_escrita_que_nunca_termina(monkeypatch, caplog):
+    """Socket travado: o Parar desiste depois do teto e conta o que ficou em voo."""
+    class ColecaoTravada:
+        async def insert_one(self, doc):
+            await asyncio.Event().wait()     # nunca responde
+
+    monkeypatch.setattr(streaming, "acol_tx", lambda: ColecaoTravada())
+    monkeypatch.setattr(streaming, "STOP_ESPERA_S", 0.1)
+
+    async def cenario():
+        g = streaming.Generator()
+        g._start_mono = time.monotonic()
+        g.workers_ativos = 3
+        g.tps_alvo = 100
+        g.task = asyncio.create_task(g._run_individual())
+        await asyncio.sleep(0.02)
+        inicio = time.monotonic()
+        await g.stop()
+        duracao = time.monotonic() - inicio
+        pendentes = g.escritas_pendentes_no_stop
+        for t in list(g._inflight):
+            t.cancel()
+        await asyncio.sleep(0)
+        return duracao, pendentes, g
+
+    with caplog.at_level("WARNING"):
+        duracao, pendentes, g = asyncio.run(cenario())
+    assert duracao < 1.0
+    assert pendentes == 3
+    assert g.inserted == 0
+    assert "em voo" in caplog.text
+
+
+def test_cliente_async_tem_timeout_de_escrita():
+    assert streaming.ESCRITA_TIMEOUT_MS >= 1_000
+    assert streaming.STOP_ESPERA_S > streaming.ESCRITA_TIMEOUT_MS / 1000
+
+
+def test_erro_de_escrita_sem_ninguem_aguardando_e_consumido(monkeypatch):
+    """No Parar ninguém aguarda a task: o callback consome a exceção (sem aviso do asyncio)."""
+    from pymongo.errors import AutoReconnect
+
+    class ColecaoQueFalhaDepois:
+        async def insert_one(self, doc):
+            await asyncio.sleep(0.02)
+            raise AutoReconnect("eleição")
+
+    monkeypatch.setattr(streaming, "acol_tx", lambda: ColecaoQueFalhaDepois())
+    avisos = []
+
+    async def cenario():
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: avisos.append(ctx))
+        g = streaming.Generator()
+        g._start_mono = time.monotonic()
+        g.workers_ativos = 2
+        g.tps_alvo = 100
+        g.task = asyncio.create_task(g._run_individual())
+        await asyncio.sleep(0.005)
+        await g.stop()
+        import gc
+        gc.collect()
+        await asyncio.sleep(0)
+        return g
+
+    g = asyncio.run(cenario())
+    assert g.write_errors == 2
+    assert not [a for a in avisos if "never retrieved" in str(a.get("message", ""))]
+
+
+def test_brl_sem_centavos():
+    from formato import brl
+    assert brl(1669.76, 0) == "R$ 1.670"
+
+
+def test_task_em_voo_que_falha_sem_ninguem_aguardando_nao_gera_aviso():
+    """Lotes e escritas soltas no Parar: o callback de `_inflight` consome a exceção."""
+    avisos = []
+
+    async def falha():
+        raise RuntimeError("boom")
+
+    async def cenario():
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: avisos.append(ctx))
+        g = streaming.Generator()
+        g._registrar_em_voo(asyncio.ensure_future(falha()))
+        await asyncio.sleep(0.01)
+        import gc
+        gc.collect()
+        await asyncio.sleep(0)
+        assert not g._inflight
+
+    asyncio.run(cenario())
+    assert not avisos

@@ -43,6 +43,7 @@ from pymongo.errors import BulkWriteError, DuplicateKeyError, OperationFailure, 
 
 from database import client
 from settings import settings
+from formato import brl
 
 router = APIRouter(prefix="/streaming", tags=["Streaming"])
 logger = logging.getLogger("showcase.streaming")
@@ -84,6 +85,11 @@ CLUSTER_TIER = os.getenv("CLUSTER_TIER", "M20").strip() or "M20"
 # Capacidade e sizing continuam dependendo de teste representativo, working set,
 # indices, duracao, latencia de rede e SLOs do cliente.
 TPS_MAX = 15_000
+# Teto de uma escrita do gerador (CSOT do driver assíncrono). Sem ele, um socket
+# travado deixava a escrita em voo para sempre e o Parar/o /reset esperavam junto.
+ESCRITA_TIMEOUT_MS = max(1_000, int(os.getenv("STREAMING_ESCRITA_TIMEOUT_MS", "15000")))
+# O Parar espera as escritas em voo por no máximo isto; o que sobrar é contado e logado.
+STOP_ESPERA_S = ESCRITA_TIMEOUT_MS / 1000 + 5
 CONCEPT_TPS = min(TPS_MAX, max(10, int(os.getenv("STREAMING_CONCEPT_TPS", "200"))))
 # Modo de escrita da demo. "individual" é o padrão porque é o que corresponde a
 # um PIX real: uma transação, um insert. Ele só se tornou viável com o cluster
@@ -170,6 +176,7 @@ def acol_tx():
             appname="atlas-showcase-async",
             maxPoolSize=Generator.WORKERS_MAX + 20,
             serverSelectionTimeoutMS=settings.mongo_timeout_ms,
+            timeoutMS=ESCRITA_TIMEOUT_MS,
         )
     return _acliente[STREAM_DB][COL_TX]
 
@@ -1024,6 +1031,7 @@ class Generator:
         self._start_mono: float | None = None
         self._lock = threading.Lock()                # _recent/_inserted são tocados pelas threads de insert
         self._inflight: set[asyncio.Task] = set()
+        self.escritas_pendentes_no_stop = 0          # passaram do teto do Parar
 
     @property
     def running(self) -> bool:
@@ -1157,8 +1165,7 @@ class Generator:
         # asyncio.to_thread não interrompe um insert_many já iniciado. Esperar
         # os batches evita que /reset apague a coleção e um insert atrasado
         # volte a preenchê-la logo depois.
-        if self._inflight:
-            await asyncio.gather(*list(self._inflight), return_exceptions=True)
+        await self._aguardar_em_voo()
         self.tps_alvo = 0
         if advance_watermark and ASP_ENABLED and self.run_id and self.inserted:
             # Em event time, fonte ociosa nao fecha a ultima janela. O marcador
@@ -1171,6 +1178,36 @@ class Generator:
                 await asyncio.to_thread(sdb[COL_TX].insert_one, marcador)
             except PyMongoError:
                 logger.exception("Falha ao inserir marcador de fechamento da janela ASP")
+
+    async def _aguardar_em_voo(self, limite_s: float | None = None) -> int:
+        """Espera as escritas em voo, com teto. Devolve quantas ficaram pendentes.
+
+        O teto existe porque um socket travado prenderia o Parar e o /reset para
+        sempre. O que passar do teto não some em silêncio: fica em
+        `escritas_pendentes_no_stop` (exposto no status) e no log.
+        """
+        if not self._inflight:
+            self.escritas_pendentes_no_stop = 0
+            return 0
+        _feitas, pendentes = await asyncio.wait(
+            list(self._inflight), timeout=STOP_ESPERA_S if limite_s is None else limite_s
+        )
+        self.escritas_pendentes_no_stop = len(pendentes)
+        if pendentes:
+            logger.warning("Parar: %d escrita(s) ainda em voo após %.0f s; seguem sem contagem",
+                           len(pendentes), STOP_ESPERA_S if limite_s is None else limite_s)
+        return len(pendentes)
+
+    def _registrar_em_voo(self, tarefa: asyncio.Future) -> None:
+        self._inflight.add(tarefa)
+        tarefa.add_done_callback(self._fim_em_voo)
+
+    def _fim_em_voo(self, tarefa: asyncio.Future) -> None:
+        self._inflight.discard(tarefa)
+        # Consome a exceção: no Parar ninguém mais aguarda a task, e o asyncio
+        # registraria "Task exception was never retrieved". O erro já foi contado.
+        if not tarefa.cancelled():
+            tarefa.exception()
 
     def reset_counters(self) -> None:
         with self._lock:
@@ -1274,8 +1311,7 @@ class Generator:
         `_stop` aguarda o fim dela, como já fazia com os lotes.
         """
         tarefa = asyncio.ensure_future(self._gravar_um(doc))
-        self._inflight.add(tarefa)
-        tarefa.add_done_callback(self._inflight.discard)
+        self._registrar_em_voo(tarefa)
         await asyncio.shield(tarefa)
 
     async def _worker_individual(self, intervalo_s: float) -> None:
@@ -1366,8 +1402,7 @@ class Generator:
                         for i in range(batch_size)
                     ]
                     task = asyncio.create_task(self._batch(docs))
-                    self._inflight.add(task)
-                    task.add_done_callback(self._inflight.discard)
+                    self._registrar_em_voo(task)
             next_tick += self.TICK_S
             await asyncio.sleep(max(0.0, next_tick - time.monotonic()))
 
@@ -1436,6 +1471,7 @@ async def generator_status():
         "ingestao_servidor": await asyncio.to_thread(ingestao_servidor.medir),
         "entrega": _diagnostico_entrega(medido, write_ack),
         "escritas_rejeitadas": generator.write_errors,
+        "escritas_pendentes_no_stop": generator.escritas_pendentes_no_stop,
         # Vai junto do status para a tela não abrir mais um poll só por causa
         # de um evento que dura dois minutos.
         "failover": failover_tracker.snapshot(),
@@ -4192,7 +4228,7 @@ def _reconcile_run(run_id: str) -> dict[str, Any]:
                 "conteúdo compara cada documento campo a campo (forma canônica: valor numérico, não tipo "
                 "BSON) e só bate quando Change Streams e Kafka viram os mesmos documentos com o mesmo "
                 "conteúdo da fonte. O ASP entrega agregado por janela: ele confere por contagem e valor "
-                f"dentro de ±R$ {tolerancia_centavos / 100:.2f} ({asp_janelas} janela(s) arredondadas "
+                f"dentro de ±{brl(tolerancia_centavos / 100)} ({asp_janelas} janela(s) arredondadas "
                 "a 2 casas), sem digest de documento."
             ),
         },
