@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from database import db
+from formato import brl
 from datetime import datetime, timezone
 import asyncio
 import json
@@ -63,7 +64,7 @@ def _resumo(op: str, doc: dict, prev: dict) -> dict:
     if op == "insert":
         return {
             "texto":   f"{doc.get('pagador','?')} → {doc.get('recebedor','?')}",
-            "detalhe": f"R$ {doc.get('valor',0):,.2f} via {doc.get('tipo','?')}",
+            "detalhe": f"{brl(doc.get('valor', 0))} via {doc.get('tipo','?')}",
             "alerta":  doc.get("suspeita", False),
         }
     if op == "update":
@@ -76,7 +77,16 @@ def _resumo(op: str, doc: dict, prev: dict) -> dict:
             "alerta":  False,
         }
     if op == "delete":
-        return {"texto": "Transação removida", "detalhe": "", "alerta": False}
+        # A coleção tem changeStreamPreAndPostImages: o evento de delete traz o
+        # documento como era antes (fullDocumentBeforeChange). Sem ele, o audit
+        # trail diria só "algo foi removido".
+        if prev:
+            return {
+                "texto":   f"Transação removida: {prev.get('pagador', '?')} → {prev.get('recebedor', '?')}",
+                "detalhe": f"pre-image: {brl(prev.get('valor', 0))} · status {prev.get('status', '?')}",
+                "alerta":  False,
+            }
+        return {"texto": "Transação removida", "detalhe": "sem pre-image disponível", "alerta": False}
     return {"texto": op, "detalhe": "", "alerta": False}
 
 

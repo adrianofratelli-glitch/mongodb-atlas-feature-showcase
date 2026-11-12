@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pymongo import WriteConcern
 from pymongo.errors import PyMongoError
 from database import db, client
+from formato import brl
 from datetime import datetime, timezone
 import threading
 import time
@@ -74,7 +75,7 @@ def executar_transacao(simular_falha: bool = False):
         steps.append({
             "step": 1, "ok": True,
             "descricao": "Produto localizado no estoque",
-            "detalhe": f"{produto['nome']} — R$ {produto['preco']:.2f}",
+            "detalhe": f"{produto['nome']} — {brl(produto['preco'])}",
         })
 
         # ── Step 2: Inserir pedido ────────────────────────────────────

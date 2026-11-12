@@ -86,3 +86,30 @@ def test_generation_antiga_nao_polui_o_feed():
     cs._append_event({"n": "atual"}, generation=7)
     cs._append_event({"n": "obsoleto"}, generation=6)
     assert cs._state["events"] == [{"n": "atual"}]
+
+
+def test_delete_mostra_o_documento_da_pre_image():
+    """A coleção liga pre/post-images; o delete deve dizer o que saiu, não só que saiu."""
+    prev = {"pagador": "Ana Lima", "recebedor": "Loja X", "valor": 17429.6, "status": "pendente"}
+    info = cs._resumo("delete", {}, prev)
+    assert "Ana Lima → Loja X" in info["texto"]
+    assert info["detalhe"] == "pre-image: R$ 17.429,60 · status pendente"
+
+
+def test_delete_sem_pre_image_declara_a_ausencia():
+    info = cs._resumo("delete", {}, {})
+    assert info["detalhe"] == "sem pre-image disponível"
+
+
+def test_insert_formata_valor_em_pt_br():
+    info = cs._resumo("insert", {"pagador": "A", "recebedor": "B", "valor": 1234.5, "tipo": "pix"}, {})
+    assert info["detalhe"] == "R$ 1.234,50 via pix"
+
+
+@pytest.mark.parametrize("valor, esperado", [
+    (0, "R$ 0,00"), (7819.85, "R$ 7.819,85"), (1234567.891, "R$ 1.234.567,89"),
+    (-50, "-R$ 50,00"), (None, "R$ —"), ("abc", "R$ —"),
+])
+def test_brl(valor, esperado):
+    from formato import brl
+    assert brl(valor) == esperado
