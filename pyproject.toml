@@ -1,6 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
 addopts = "-q"
+markers = ["live: contra o Atlas real, opt-in (LIVE_TESTS=1 e bancos *_test)"]
 
 [tool.ruff]
 target-version = "py311"

@@ -116,7 +116,7 @@ O guard **ignora métodos seguros** (GET), e é por isso que **todo endpoint SSE
 
 ## Testes
 
-Todos unitários, Mongo stubado/monkeypatchado — **nenhum teste exige cluster ao vivo** (CI não tem credencial). `backend/tests/test_endpoints_adversarial.py` cobre entradas hostis (operadores Mongo em query/body, nomes de índice alheios, JSON malformado, corpo de 1 MB, paginação fora do contrato), concorrência (409 em benchmark e medição simultâneos) e degradação sem Mongo.
+A suíte offline (`pytest`, a mesma da CI) usa Mongo stubado/monkeypatchado e não exige cluster: 253 testes, mais 1 módulo live pulado. A suíte live, `backend/tests/live/test_live_modulos.py`, é opt-in (`LIVE_TESTS=1`) e só roda com `MONGO_DB`/`STREAMING_DB`/`GEO_DB` terminando em `_test`. Ela sobe o próprio backend numa porta livre, com ASP desligado e Kafka numa porta morta, e exercita 00–07 por HTTP. No 07 ela confere a reconciliação por Change Streams e `inseridos == fonte` (decisão em `docs/adr/0001-testes-live-opt-in.md`). O frontend tem testes `node --test` (`frontend/tests/`: polling, `useApi`, formatadores de `src/lib/formato.js`), que rodam na CI. `backend/tests/test_endpoints_adversarial.py` cobre entradas hostis (operadores Mongo em query/body, nomes de índice alheios, JSON malformado, corpo de 1 MB, paginação fora do contrato), concorrência (409 em benchmark e medição simultâneos) e degradação sem Mongo.
 
 ```bash
 pytest                                  # testpaths = backend/tests

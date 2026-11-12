@@ -20,7 +20,7 @@ The app opens on a **thesis** page, not on module 01: none of the capabilities i
 | **02** Hot/cold tiering | Online Archive moves old documents to cheap storage, still queryable in a single namespace. |
 | **03** Aggregation Pipeline | `$lookup`, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto`. |
 | **04** Schema validation | `strict` rejects new violations; MongoDB 9.0 `constraint` checks and enforces the contract for existing data too. |
-| **05** Change Streams | Ordered feed of inserts/updates/deletes with pre/post-images. |
+| **05** Change Streams | Ordered feed of inserts/updates/deletes with pre/post-images: an update shows the old status, a delete shows the removed document. |
 | **06** ACID transactions | Multi-document transactions walked step by step, rollback included, and measured: `majority` latency, the cost over the same single-document write, and behavior under contention. |
 | **07** Streaming | Change Streams, Kafka Connector, and Atlas Stream Processing over the same writes. |
 
@@ -145,9 +145,19 @@ Python 3.11+ · FastAPI · PyMongo · React 19 · Vite · MongoDB Atlas. Module 
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 242 unit + adversarial tests, stubbed Mongo, no cluster needed
+pytest             # 253 unit + adversarial tests, stubbed Mongo, no cluster needed
 ruff check backend
+(cd frontend && node --test tests/*.test.mjs)   # 12 frontend tests (formatters, useApi, polling)
 ```
+
+Live tests run every module (00–07) against a real cluster, opt-in and only on `*_test` databases. They start their own backend on a free port with ASP off and Kafka pointed at a dead port, so they never start a billed stream processor:
+
+```bash
+LIVE_TESTS=1 MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test \
+  backend/venv/bin/python -m pytest -m live backend/tests/live
+```
+
+Why they are opt-in and what they write: [ADR 0001](docs/adr/0001-testes-live-opt-in.md).
 
 [`ARCHITECTURE.md`](ARCHITECTURE.md)
 

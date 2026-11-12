@@ -114,7 +114,11 @@ python scripts/live_monitor.py
 - O `backend/.env` está no gitignore. Nunca commite credenciais reais.
 - Testes: `pip install -r backend/requirements-dev.txt && pytest` (unitários e
   adversariais, com Mongo stubado — não é preciso cluster). Lint com `ruff check backend`.
-- O GitHub Actions compila as duas aplicações, roda testes/lint e audita as dependências.
+- Testes live (opt-in, só bancos `*_test`, depois do `reset_demo.py` nos mesmos bancos):
+  `LIVE_TESTS=1 MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test backend/venv/bin/python -m pytest -m live backend/tests/live`.
+  Sobem um backend próprio numa porta livre (ASP desligado, Kafka numa porta morta) e exercitam 00–07.
+- Frontend: `(cd frontend && node --test tests/*.test.mjs)`.
+- O GitHub Actions compila as duas aplicações, roda testes/lint (incluindo `node --test`) e audita as dependências.
 
 
 ## Revisão de apresentação — setembro de 2026

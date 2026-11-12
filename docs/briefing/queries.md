@@ -226,7 +226,7 @@ Com `strict`, dados inválidos já armazenados podem permanecer. No MongoDB 9.0+
 
 ## Módulo Change Streams — `backend/routers/change_streams.py`
 
-Coleção `POC.transacoes_cs_demo`, criada com `changeStreamPreAndPostImages={"enabled": True}` (linha 165-168) para o stream entregar o before-image real em updates.
+Coleção `POC.transacoes_cs_demo`, criada com `changeStreamPreAndPostImages={"enabled": True}` (linha 175-178) para o stream entregar o before-image real em updates.
 
 ```python
 pipeline = [{"$match": {"operationType": {"$in": ["insert", "update", "delete"]}}}]
@@ -235,9 +235,9 @@ db["transacoes_cs_demo"].watch(
     full_document_before_change="whenAvailable", max_await_time_ms=400,
 )
 ```
-Onde: linha 83-91. O que faz: observa inserts/updates/deletes em tempo real, entregando o feed via SSE (`GET /change-streams/feed`) sem polling no MongoDB. Por que `full_document_before_change`: permite mostrar `status: pendente → aprovada` como trilha de auditoria, não só o pós-estado.
+Onde: linha 93-101. O que faz: observa inserts/updates/deletes em tempo real, entregando o feed via SSE (`GET /change-streams/feed`) sem polling no MongoDB. Por que `full_document_before_change`: permite mostrar `status: pendente → aprovada` como trilha de auditoria, não só o pós-estado. No delete, a pre-image é o único registro do que saiu: `_resumo` mostra pagador → recebedor e `pre-image: R$ … · status …`. Sem pre-image, diz `sem pre-image disponível`. Valores em BRL formatados em pt-BR por `backend/formato.py::brl`.
 
-`GET /change-streams/collection` (linha 294): `col.find({}, {"_id": 0}).sort("created_at", -1).limit(50)` — prova que os eventos também estão persistidos, não só na UI.
+`GET /change-streams/collection` (linha 304): `col.find({}, {"_id": 0}).sort("created_at", -1).limit(50)` — prova que os eventos também estão persistidos, não só na UI.
 
 ---
 
@@ -246,7 +246,7 @@ Onde: linha 83-91. O que faz: observa inserts/updates/deletes em tempo real, ent
 Sem aggregation pipeline — transações ACID multi-documento via `session.with_transaction()`.
 
 - **`POST /transactions/executar`** — 4 steps numa transação: lê `produtos` (find), insere `pedidos_demo`, `$inc` em `estoque_demo` (upsert), insere `pagamentos_demo`. Com `simular_falha=True`, o step 4 lança exceção e o driver reverte automaticamente os writes dos steps 2 e 3 (rollback real, visível no payload).
-- **`POST /transactions/benchmark`** (linha 260-424) — não é uma query de produto, é medição: compara **A)** transação multi-documento sobre 3 coleções, **B)** a mesma intenção como documento único, **C)** a mesma transação sob contenção (N sessões na mesma chave via `$inc` em `estoque_demo`), sempre com `WriteConcern("majority")` nos dois lados. Mede também o RTT puro (`ping` no admin) antes de tudo, para não atribuir ao produto um limite que é da rede.
+- **`POST /transactions/benchmark`** (linha 261-425) — não é uma query de produto, é medição: compara **A)** transação multi-documento sobre 3 coleções, **B)** a mesma intenção como documento único, **C)** a mesma transação sob contenção (N sessões na mesma chave via `$inc` em `estoque_demo`), sempre com `WriteConcern("majority")` nos dois lados. Mede também o RTT puro (`ping` no admin) antes de tudo, para não atribuir ao produto um limite que é da rede.
 
 ---
 
