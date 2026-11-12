@@ -31,6 +31,7 @@ remove índices que ele mesmo criou (prefixo `demo01_`).
 # banco de teste (recomendado para ensaio e testes que escrevem)
 MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test backend/venv/bin/python scripts/reset_demo.py
 # sem a flag, STREAMING_DB/GEO_DB precisam ser showcase_*_test (a limpeza dropa coleções; geo_test é do geo-showcase)
+# com a flag, só os nomes do arquivo backend/.env (ou pix/geo); override exportado no shell é recusado
 # banco da demo: exige consentimento explícito e nunca durante uma apresentação
 ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py
 # só verifica (usado pelo overview)

@@ -98,7 +98,8 @@ PY
 limpa_dados_pix() {
   # O overview é dono do ciclo de vida da demo: limpar os dados PIX da rodada
   # anterior no banco configurado (o da demo) é o comportamento esperado aqui.
-  # Fora do overview, o script recusa banco que não seja showcase_*_test.
+  # Fora do overview, o script recusa banco que não seja showcase_*_test. Mesmo com a
+  # flag, só aceita os nomes do arquivo backend/.env: override no shell é recusado.
   ALLOW_DEMO_DB_WRITE=1 "$BASE/backend/venv/bin/python" "$BASE/scripts/cleanup-streaming-data.py"
 }
 

@@ -161,8 +161,11 @@ def test_cleanup_main_recusa_banco_que_nao_e_proprio(monkeypatch, variavel, valo
     assert variavel in str(erro.value)
 
 
-def test_cleanup_main_aceita_banco_da_demo_com_a_flag(monkeypatch):
+def test_cleanup_main_aceita_banco_da_demo_com_a_flag(monkeypatch, tmp_path):
     cleanup = _carregar_cleanup()
+    env = tmp_path / ".env"
+    env.write_text("MONGO_URI=mongodb://127.0.0.1:1\n", encoding="utf-8")   # sem STREAMING_DB/GEO_DB: padrão pix/geo
+    monkeypatch.setattr(cleanup, "ENV_FILE", env)
     monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
     monkeypatch.setenv("MONGO_URI", "mongodb://" + "127.0.0.1:1")
     monkeypatch.setenv("STREAMING_DB", "pix")
@@ -180,3 +183,64 @@ def test_cleanup_main_aceita_banco_da_demo_com_a_flag(monkeypatch):
     monkeypatch.setattr(cleanup, "cleanup", lambda c, db, ttl, geo: chamadas.append((db, geo)) or [])
     assert cleanup.main() == 0
     assert chamadas == [("pix", "geo")]
+
+
+def _env_demo(tmp_path, linhas: str):
+    arquivo = tmp_path / ".env"
+    arquivo.write_text("MONGO_URI=mongodb://127.0.0.1:1\n" + linhas, encoding="utf-8")
+    return arquivo
+
+
+@pytest.mark.parametrize("variavel, valor", [("GEO_DB", "geo_test"), ("STREAMING_DB", "geo")])
+def test_flag_recusa_banco_alheio_exportado_no_shell(monkeypatch, tmp_path, variavel, valor):
+    """(a) Com a flag, um nome que não é o do backend/.env é recusado."""
+    cleanup = _carregar_cleanup()
+    monkeypatch.setattr(cleanup, "ENV_FILE", _env_demo(tmp_path, "STREAMING_DB=pix\nGEO_DB=geo\n"))
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    monkeypatch.setenv("STREAMING_DB", "pix")
+    monkeypatch.setenv("GEO_DB", "geo")
+    monkeypatch.setenv(variavel, valor)
+    monkeypatch.setattr(cleanup, "MongoClient", _ClienteProibido)
+    monkeypatch.setattr(cleanup, "cleanup", lambda *a, **k: pytest.fail("não deveria limpar"))
+    with pytest.raises(SystemExit) as erro:
+        cleanup.main()
+    assert "backend/.env" in str(erro.value) and valor in str(erro.value)
+
+
+def test_ambiente_nao_sobrepoe_o_env_na_decisao_da_flag(tmp_path, monkeypatch):
+    """(b) O banco autorizado pela flag vem do arquivo, mesmo com override no ambiente."""
+    cleanup = _carregar_cleanup()
+    arquivo = _env_demo(tmp_path, "GEO_DB=geo_demo\n")
+    monkeypatch.setenv("GEO_DB", "geo_test")
+    assert cleanup.banco_da_demo("GEO_DB", arquivo) == "geo_demo"
+    assert cleanup.banco_da_demo("STREAMING_DB", arquivo) == "pix"      # padrão do código
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    with pytest.raises(SystemExit):
+        cleanup.assert_banco_proprio("geo_test", "GEO_DB", arquivo)
+
+
+def test_flag_aceita_o_banco_do_env(tmp_path, monkeypatch):
+    """(c) Com a flag, o nome definido no backend/.env passa; showcase_*_test passa sempre."""
+    cleanup = _carregar_cleanup()
+    arquivo = _env_demo(tmp_path, "STREAMING_DB=pix_demo\nGEO_DB=geo_demo\n")
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    cleanup.assert_banco_proprio("pix_demo", "STREAMING_DB", arquivo)
+    cleanup.assert_banco_proprio("geo_demo", "GEO_DB", arquivo)
+    cleanup.assert_banco_proprio("showcase_geo_test", "GEO_DB", arquivo)
+
+
+def test_reset_com_flag_recusa_geo_alheio(monkeypatch, tmp_path):
+    """O reset_demo usa a mesma regra (o load_dotenv dele deixa o ambiente sobrepor)."""
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    monkeypatch.setenv("MONGO_URI", "mongodb://" + "127.0.0.1:1")
+    monkeypatch.setenv("MONGO_DB", "showcase_poc_test")
+    monkeypatch.setenv("STREAMING_DB", "pix")
+    monkeypatch.setenv("GEO_DB", "geo_test")
+    cleanup = _carregar_cleanup()
+    monkeypatch.setattr(cleanup, "ENV_FILE", _env_demo(tmp_path, ""))
+    monkeypatch.setattr(reset_demo, "_load_cleanup", lambda: cleanup)
+    monkeypatch.setattr(reset_demo, "MongoClient", lambda *a, **k: _ClienteNulo())
+    monkeypatch.setattr(reset_demo, "reset", lambda *a, **k: pytest.fail("não deveria escrever"))
+    with pytest.raises(SystemExit) as erro:
+        reset_demo.main([])
+    assert "geo_test" in str(erro.value)

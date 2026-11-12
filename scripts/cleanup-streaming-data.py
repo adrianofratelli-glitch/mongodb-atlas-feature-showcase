@@ -30,22 +30,44 @@ COLLECTIONS = (
 # No database `geo`, e por isso fora da tupla acima.
 COLLECTION_SINAIS = "sinais_ao_vivo"
 ENV_KEYS = ("MONGO_URI", "STREAMING_DB", "GEO_DB", "STREAMING_TTL_SEGUNDOS")
+ENV_FILE = Path(__file__).resolve().parents[1] / "backend" / ".env"
+# Padrão do código quando o backend/.env não define a variável: é o banco da demo.
+PADRAO_DEMO = {"STREAMING_DB": "pix", "GEO_DB": "geo"}
 
 
 def banco_proprio(nome: str) -> bool:
     return bool(nome) and nome.startswith("showcase_") and nome.endswith("_test")
 
 
-def assert_banco_proprio(nome: str, variavel: str) -> None:
-    """Recusa banco que não é desta PoV sem consentimento explícito (ALLOW_DEMO_DB_WRITE=1)."""
+def banco_da_demo(variavel: str, env_file: Path | None = None) -> str:
+    """Nome do banco da demo segundo o ARQUIVO backend/.env (ou o padrão do código).
+
+    Lido do arquivo de propósito, sem o override do ambiente: a flag
+    ALLOW_DEMO_DB_WRITE=1 autoriza limpar o banco que a PoV está configurada para
+    usar, não qualquer nome exportado no shell (`GEO_DB=geo_test` é de outra PoV).
+    """
+    arquivo = ENV_FILE if env_file is None else env_file
+    valores = read_env(arquivo) if arquivo.exists() else {}
+    return valores.get(variavel) or PADRAO_DEMO[variavel]
+
+
+def assert_banco_proprio(nome: str, variavel: str, env_file: Path | None = None) -> None:
+    """Aceita `showcase_*_test`; com ALLOW_DEMO_DB_WRITE=1, também o banco da demo do backend/.env."""
     if banco_proprio(nome):
         return
     if os.getenv("ALLOW_DEMO_DB_WRITE") == "1":
-        print(f"⚠  ALLOW_DEMO_DB_WRITE=1 — limpando dados de streaming em '{nome}' ({variavel}).")
-        return
+        demo = banco_da_demo(variavel, env_file)
+        if nome == demo:
+            print(f"⚠  ALLOW_DEMO_DB_WRITE=1 — limpando dados de streaming em '{nome}' ({variavel}).")
+            return
+        raise SystemExit(
+            f"❌ Recusado: {variavel}='{nome}' não é o banco da demo configurado em backend/.env "
+            f"('{demo}') nem um banco próprio showcase_*_test. ALLOW_DEMO_DB_WRITE=1 só autoriza o "
+            "banco do backend/.env; confira se há um override exportado no shell."
+        )
     raise SystemExit(
         f"❌ Recusado: {variavel}='{nome}' não é um banco próprio desta PoV (showcase_*_test). "
-        "Um *_test genérico pode ser de outra PoV. Para o banco da demo, rode com "
+        "Um *_test genérico pode ser de outra PoV. Para o banco da demo (o do backend/.env), rode com "
         "ALLOW_DEMO_DB_WRITE=1 (nunca durante uma demo ao vivo)."
     )
 
@@ -87,8 +109,7 @@ def cleanup(client: MongoClient, database: str, ttl_seconds: int, geo_database: 
 
 
 def main() -> int:
-    root = Path(__file__).resolve().parents[1]
-    env_file = root / "backend" / ".env"
+    env_file = ENV_FILE
     # O ambiente tem precedência; sem backend/.env, basta o ambiente trazer MONGO_URI.
     base = read_env(env_file) if env_file.exists() else {}
     env = {**base, **{k: v for k, v in os.environ.items() if k in ENV_KEYS}}
