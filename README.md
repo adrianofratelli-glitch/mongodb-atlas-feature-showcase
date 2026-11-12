@@ -84,6 +84,15 @@ docker build -t atlas-showcase .
 docker run --env-file backend/.env -p 127.0.0.1:18002:8080 atlas-showcase   # http://127.0.0.1:18002
 ```
 
+Prebuilt image (published to GHCR on every push to `main` that touches the image):
+
+```bash
+docker pull ghcr.io/adrianofratelli-glitch/mongodb-atlas-feature-showcase:latest
+docker run --env-file backend/.env -p 127.0.0.1:8080:8080 ghcr.io/adrianofratelli-glitch/mongodb-atlas-feature-showcase:latest
+```
+
+Same `--env-file` rule as above (`KEY=value`, no quotes); tags: `latest` and `sha-<7-char commit>`.
+
 `docker run --env-file` does not strip quotes: a line `KEY="value"` arrives with the quotes, so write `KEY=value` in the file you pass. For UI mutations, add the page origin (e.g. `http://127.0.0.1:18002`) to `ALLOWED_ORIGINS`; keep the port bound to `127.0.0.1`, because behind nginx every request reaches the backend from loopback. Module 07 runs from the recorded replay; the live Kafka/ASP mode (`bin/overview`) stays on the host (`localhost` inside the container is not the host: use `KAFKA_BROKERS=host.docker.internal:9092` if needed). Health: `GET /api/health/live`; readiness: `/api/preflight`.
 
 ## Module 07: three consumers, one write
