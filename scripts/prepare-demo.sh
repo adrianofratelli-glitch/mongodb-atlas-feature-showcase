@@ -3,7 +3,7 @@
 # O `overview` apenas verifica o resultado (reset_demo.py --check); não cria
 # índices nem toca no cluster.
 #
-# Escreve no banco configurado em backend/.env. Se ele não terminar em `_test`,
+# Escreve nos bancos configurados em backend/.env. Fora de `showcase_*_test`,
 # o reset recusa sem ALLOW_DEMO_DB_WRITE=1 — por exemplo:
 #   ALLOW_DEMO_DB_WRITE=1 ./scripts/prepare-demo.sh
 set -euo pipefail

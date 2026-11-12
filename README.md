@@ -46,7 +46,7 @@ MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_te
 MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test ./start.sh   # API :8002 + UI :5174
 ```
 
-`scripts/reset_demo.py` is the single reset. Unless `ALLOW_DEMO_DB_WRITE=1` is set, it refuses a `MONGO_DB` that does not end in `_test`, and a `STREAMING_DB`/`GEO_DB` that is not this PoV's own `showcase_*_test`: the streaming cleanup drops whole collections there, and a generic `*_test` may belong to another PoV on the same cluster (`geo_test` is the geo showcase's). With the flag, only the names configured in `backend/.env` (or the code defaults `pix`/`geo`) are accepted, never a name exported in the shell. `scripts/cleanup-streaming-data.py` applies the same rule on its own; `bin/overview` passes the flag because it owns the demo lifecycle (`ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py` for the demo database, never during a live demo). It drops only collections the modules create, removes only indexes created by module 01 (`demo01_` prefix), upserts `produtos`/`avaliacoes` deterministically (a rerun never duplicates) and cleans the streaming run. It never drops `produtos`/`avaliacoes`, because in a shared demo database they may belong to another PoV as well. `--check` only verifies. The first run on an empty database writes 120k documents (164.6 s measured over the network to an M20); a rerun on populated data took 5.5 s.
+`scripts/reset_demo.py` is the single reset. Unless `ALLOW_DEMO_DB_WRITE=1` is set, it refuses any `MONGO_DB`/`STREAMING_DB`/`GEO_DB` that is not this PoV's own `showcase_*_test`: the streaming cleanup drops whole collections there, and a generic `*_test` may belong to another PoV on the same cluster (`geo_test` is the geo showcase's). With the flag, only the names configured in `backend/.env` (or the code defaults `POC`/`pix`/`geo`) are accepted, never a name exported in the shell. `scripts/cleanup-streaming-data.py` applies the same rule on its own; `bin/overview` passes the flag because it owns the demo lifecycle (`ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py` for the demo database, never during a live demo). It drops only collections the modules create, removes only indexes created by module 01 (`demo01_` prefix), upserts `produtos`/`avaliacoes` deterministically (a rerun never duplicates) and cleans the streaming run. It never drops `produtos`/`avaliacoes`, because in a shared demo database they may belong to another PoV as well. `--check` only verifies. The first run on an empty database writes 120k documents (164.6 s measured over the network to an M20); a rerun on populated data took 5.5 s.
 
 The launcher uses a no-reload backend and an optimized frontend build by default. For reload/HMR development run `POV_DEV=1 ./start.sh`; the build is only redone when sources, lockfile, or configuration change.
 
@@ -145,7 +145,7 @@ Python 3.11+ · FastAPI · PyMongo · React 19 · Vite · MongoDB Atlas. Module 
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 270 unit + adversarial tests, stubbed Mongo, no cluster needed
+pytest             # 273 unit + adversarial tests, stubbed Mongo, no cluster needed
 ruff check backend
 (cd frontend && node --test tests/*.test.mjs)   # 14 frontend tests (formatters, useApi, polling)
 ```

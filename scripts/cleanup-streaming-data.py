@@ -122,6 +122,10 @@ def main() -> int:
         return 1
     assert_banco_proprio(database, "STREAMING_DB")
     assert_banco_proprio(geo_database, "GEO_DB")
+    # Banco da demo autorizado pela flag: o cluster também é o do backend/.env, não
+    # um MONGO_URI exportado no shell. Sem .env (CI), segue o do ambiente.
+    if not (banco_proprio(database) and banco_proprio(geo_database)) and base.get("MONGO_URI"):
+        uri = base["MONGO_URI"]
 
     client = MongoClient(
         uri,

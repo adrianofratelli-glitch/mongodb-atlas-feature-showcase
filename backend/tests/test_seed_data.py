@@ -70,7 +70,8 @@ def test_seed_garante_indices_dos_modulos():
 
 
 @pytest.mark.parametrize("nome,permitido", [
-    ("POC_test", True), ("pix_test", True), ("POC", False), ("pix", False), ("POC_test_test", False), ("", False),
+    ("showcase_poc_test", True), ("POC_test", False), ("pix_test", False), ("POC", False),
+    ("showcase_poc_test_test", False), ("POC_test_test", False), ("", False),
 ])
 def test_guarda_do_banco_da_demo(monkeypatch, nome, permitido):
     monkeypatch.delenv("ALLOW_DEMO_DB_WRITE", raising=False)
@@ -81,11 +82,27 @@ def test_guarda_do_banco_da_demo(monkeypatch, nome, permitido):
             seed_data.assert_writable_db(nome)
 
 
-def test_guarda_aceita_demo_com_consentimento(monkeypatch):
+def test_guarda_aceita_demo_com_consentimento(monkeypatch, tmp_path):
+    env = tmp_path / ".env"
+    env.write_text("MONGO_URI=mongodb://127.0.0.1:1\n", encoding="utf-8")      # sem MONGO_DB: padrão POC
     monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
-    seed_data.assert_writable_db("POC")
+    seed_data.assert_writable_db("POC", env)
     with pytest.raises(SystemExit):
-        seed_data.assert_writable_db("POC_test_test")
+        seed_data.assert_writable_db("POC_test_test", env)
+
+
+def test_flag_so_autoriza_o_mongo_db_do_arquivo(monkeypatch, tmp_path):
+    """Com a flag, um MONGO_DB exportado no shell que não é o do backend/.env é recusado."""
+    env = tmp_path / ".env"
+    env.write_text("MONGO_DB=POC_demo\n", encoding="utf-8")
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    monkeypatch.setenv("MONGO_DB", "POC_test")                  # override no ambiente não conta
+    assert seed_data.mongo_db_da_demo(env) == "POC_demo"
+    seed_data.assert_writable_db("POC_demo", env)
+    seed_data.assert_writable_db("showcase_poc_test", env)
+    for alheio in ("POC_test", "POC", "pix"):
+        with pytest.raises(SystemExit):
+            seed_data.assert_writable_db(alheio, env)
 
 
 def test_indice_produto_id_nao_unico_de_outra_pov_nao_derruba_o_reset():

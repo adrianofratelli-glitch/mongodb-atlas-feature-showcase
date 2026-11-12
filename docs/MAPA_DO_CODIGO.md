@@ -183,8 +183,8 @@ Briefing com o texto completo de cada query: [queries.md](briefing/queries.md). 
 
 | O que faz | arquivo::função (linha) | Operador / pipeline principal | Collection(s) |
 |---|---|---|---|
-| Seed idempotente | `backend/seed_data.py` (`bulk_write` `:164`) | upsert determinístico em lote | `produtos`, `avaliacoes` |
-| Índices base | `seed_data.py::ensure_indexes` (`:131-152`) | `create_index` (categoria, `total_av_idx`, `cat_total_av_idx`, `recent_nota_idx`...) | `produtos`, `avaliacoes` |
+| Seed idempotente | `backend/seed_data.py` (`bulk_write` `:192`) | upsert determinístico em lote | `produtos`, `avaliacoes` |
+| Índices base | `seed_data.py::ensure_indexes` (`:166-187`) | `create_index` (categoria, `total_av_idx`, `cat_total_av_idx`, `recent_nota_idx`...) | `produtos`, `avaliacoes` |
 | Ping/readiness | `database.py` (`:23`), `main.py::preflight` | `admin.command("ping")` | - |
 | Criar índice online | `reindexacao.py::_build_worker` (`:81`) | `create_index` (hybrid build) | `produtos` |
 | Listar/derrubar índice | `reindexacao.py::list_indexes` (`:68`), `drop_index` (`:177`) | `list_indexes`, `drop_index` | `produtos` |
@@ -269,7 +269,7 @@ Comando (README): `pytest` na raiz (`pyproject.toml`: `testpaths = backend/tests
 | `backend/tests/test_security.py` | `MutationGuardMiddleware` e `ApiHardeningMiddleware` |
 | `backend/tests/test_change_streams.py` | Fila de eventos/geração do módulo 05 |
 | `backend/tests/test_transactions_benchmark.py` | Benchmark de transação |
-| `backend/tests/test_seed_data.py` | Seed idempotente e recusa de banco sem `_test` |
+| `backend/tests/test_seed_data.py` | Seed idempotente e recusa de banco fora de `showcase_*_test` (ou do `backend/.env` com a flag) |
 | `backend/tests/test_reset_demo.py` | `scripts/reset_demo.py` |
 | `backend/tests/test_aggregation_evidence.py` | Evidência (pipeline devolvido) das aggregations |
 | `frontend/tests/polling.test.mjs` | `usePolling`: nenhum timer com a aba escondida |

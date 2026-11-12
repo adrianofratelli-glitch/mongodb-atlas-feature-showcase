@@ -244,3 +244,27 @@ def test_reset_com_flag_recusa_geo_alheio(monkeypatch, tmp_path):
     with pytest.raises(SystemExit) as erro:
         reset_demo.main([])
     assert "geo_test" in str(erro.value)
+
+
+def test_flag_no_banco_da_demo_usa_a_uri_do_env(monkeypatch, tmp_path):
+    cleanup = _carregar_cleanup()
+    env = tmp_path / ".env"
+    env.write_text("MONGO_URI=mongodb://demo.invalid:1\n", encoding="utf-8")
+    monkeypatch.setattr(cleanup, "ENV_FILE", env)
+    monkeypatch.setenv("ALLOW_DEMO_DB_WRITE", "1")
+    monkeypatch.setenv("MONGO_URI", "mongodb://shell.invalid:1")
+    monkeypatch.setenv("STREAMING_DB", "pix")
+    monkeypatch.setenv("GEO_DB", "geo")
+    usadas = []
+
+    class ClienteFalso:
+        def __init__(self, uri, **k):
+            usadas.append(uri)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cleanup, "MongoClient", ClienteFalso)
+    monkeypatch.setattr(cleanup, "cleanup", lambda *a, **k: [])
+    assert cleanup.main() == 0
+    assert usadas == ["mongodb://demo.invalid:1"]

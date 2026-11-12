@@ -21,8 +21,8 @@ Uso:
     ALLOW_DEMO_DB_WRITE=1 python scripts/reset_demo.py     # banco da demo (backend/.env)
     python scripts/reset_demo.py --check                    # só verifica, não escreve
 
-Guarda: sem ALLOW_DEMO_DB_WRITE=1, recusa MONGO_DB que não termine em `_test` e
-STREAMING_DB/GEO_DB fora do formato `showcase_*_test` (a limpeza do streaming dropa
+Guarda: sem ALLOW_DEMO_DB_WRITE=1, recusa MONGO_DB, STREAMING_DB e GEO_DB fora do
+formato `showcase_*_test`; com a flag, só os nomes do arquivo backend/.env (a limpeza do streaming dropa
 coleções inteiras, e um `*_test` genérico pode ser de outra PoV: `geo_test` é do
 geo-showcase). Com a flag, o reset do banco da demo continua possível.
 """

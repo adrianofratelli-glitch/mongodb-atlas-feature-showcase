@@ -16,7 +16,7 @@ mesmo banco (no cluster de demo, `POC` também atende o marketplace de busca).
 Por isso o seed nunca dropa essas coleções: só faz upsert dos seus próprios
 documentos e garante os índices B-tree que os módulos usam.
 
-Guarda: recusa um banco que não termina em `_test` sem ALLOW_DEMO_DB_WRITE=1.
+Guarda: sem ALLOW_DEMO_DB_WRITE=1, só aceita `showcase_*_test`; com a flag, só o MONGO_DB do backend/.env.
 
 Requer backend/.env configurado (MONGO_URI, MONGO_DB).
 """
@@ -57,20 +57,48 @@ PRODUTO_NS = uuid.UUID("6f1d0c1e-5b7a-4c4e-9f61-0c5d2b8a7e10")
 AVALIACAO_PREFIXO = "seed-av-"
 
 
-def assert_writable_db(name: str) -> None:
-    """Recusa o banco da demo sem consentimento explícito."""
+ENV_FILE = Path(__file__).resolve().parent / ".env"
+
+
+def mongo_db_da_demo(env_file: Path | None = None) -> str:
+    """MONGO_DB segundo o ARQUIVO backend/.env (padrão `POC`), sem override do ambiente.
+
+    A flag ALLOW_DEMO_DB_WRITE=1 autoriza o banco que a PoV está configurada para
+    usar, não qualquer nome exportado no shell (um `POC_test` pode ser de outra PoV).
+    """
+    arquivo = ENV_FILE if env_file is None else env_file
+    if arquivo.exists():
+        for linha in arquivo.read_text(encoding="utf-8").splitlines():
+            linha = linha.strip()
+            if linha.startswith("MONGO_DB=") and not linha.startswith("#"):
+                valor = linha.split("=", 1)[1].strip().strip("\"'")
+                if valor:
+                    return valor
+    return "POC"
+
+
+def assert_writable_db(name: str, env_file: Path | None = None) -> None:
+    """Aceita `showcase_*_test`; com ALLOW_DEMO_DB_WRITE=1, também o MONGO_DB do backend/.env."""
     name = (name or "").strip()
     if not name:
         raise SystemExit("❌ MONGO_DB vazio — informe o banco de destino.")
     if name.endswith("_test_test"):
         raise SystemExit(f"❌ '{name}' tem sufixo _test duplicado — confira MONGO_DB.")
-    if name.endswith("_test"):
+    if name.startswith("showcase_") and name.endswith("_test"):
         return
     if os.getenv("ALLOW_DEMO_DB_WRITE") == "1":
-        print(f"⚠  ALLOW_DEMO_DB_WRITE=1 — escrevendo no banco '{name}'.")
-        return
+        demo = mongo_db_da_demo(env_file)
+        if name == demo:
+            print(f"⚠  ALLOW_DEMO_DB_WRITE=1 — escrevendo no banco '{name}'.")
+            return
+        raise SystemExit(
+            f"❌ Recusado: MONGO_DB='{name}' não é o banco da demo do backend/.env ('{demo}') nem um "
+            "banco próprio showcase_*_test. ALLOW_DEMO_DB_WRITE=1 só autoriza o banco do backend/.env; "
+            "confira se há um override exportado no shell."
+        )
     raise SystemExit(
-        f"❌ Recusado: '{name}' não termina em _test. Para o banco da demo, rode de novo com "
+        f"❌ Recusado: '{name}' não é um banco próprio desta PoV (showcase_*_test; um *_test genérico "
+        "pode ser de outra PoV). Para o banco da demo (o do backend/.env), rode de novo com "
         "ALLOW_DEMO_DB_WRITE=1 (e nunca durante uma demo ao vivo)."
     )
 
