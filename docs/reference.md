@@ -29,7 +29,7 @@ remove índices que ele mesmo criou (prefixo `demo01_`).
 
 ```bash
 # banco de teste (recomendado para ensaio e testes que escrevem)
-MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test backend/venv/bin/python scripts/reset_demo.py
+MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test backend/venv/bin/python scripts/reset_demo.py
 # banco da demo: exige consentimento explícito e nunca durante uma apresentação
 ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py
 # só verifica (usado pelo overview)
@@ -114,8 +114,8 @@ python scripts/live_monitor.py
 - O `backend/.env` está no gitignore. Nunca commite credenciais reais.
 - Testes: `pip install -r backend/requirements-dev.txt && pytest` (unitários e
   adversariais, com Mongo stubado — não é preciso cluster). Lint com `ruff check backend`.
-- Testes live (opt-in, só bancos `*_test`, depois do `reset_demo.py` nos mesmos bancos):
-  `LIVE_TESTS=1 MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test backend/venv/bin/python -m pytest -m live backend/tests/live`.
+- Testes live (opt-in, só bancos próprios `showcase_*_test`, depois do `reset_demo.py` nos mesmos bancos). O reset do streaming apaga `<GEO_DB>.sinais_ao_vivo` inteiro, então um `geo_test` de outra PoV é recusado:
+  `LIVE_TESTS=1 MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test backend/venv/bin/python -m pytest -m live backend/tests/live`.
   Sobem um backend próprio numa porta livre (ASP desligado, Kafka numa porta morta) e exercitam 00–07.
 - Frontend: `(cd frontend && node --test tests/*.test.mjs)`.
 - O GitHub Actions compila as duas aplicações, roda testes/lint (incluindo `node --test`) e audita as dependências.

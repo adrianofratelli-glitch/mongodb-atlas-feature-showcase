@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import Limites from '../components/Limites'
-import { fmtMsPreciso as fmtMs } from '../lib/formato'
+import { fmtMsPreciso as fmtMs, fmtReais } from '../lib/formato'
 
 
 // Uma coluna do painel de medição. `nota` é o que impede o número de ser lido
@@ -247,7 +247,7 @@ export default function Transactions() {
                 ✅ Documentos criados — verifique no Atlas Data Explorer
               </div>
               <IDCard
-                label={`pedidos_demo — ${result.produto} — R$ ${result.valor?.toFixed(2)}`}
+                label={`pedidos_demo — ${result.produto} — ${fmtReais(result.valor)}`}
                 id={result.pedido_id}
                 collection={`${result.banco || 'POC'} › pedidos_demo`}
               />

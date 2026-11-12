@@ -59,9 +59,9 @@ Os componentes chamam o backend pela função `call(...)` do hook `useApi` (`fro
 
 | Ação | Componente | HTTP | Handler | Função de negócio | MongoDB |
 |---|---|---|---|---|---|
-| Abrir a página (selo de prontidão) | `App.jsx:96` | `GET /preflight` | `backend/main.py:112` | `readiness()` (`database.py`) + `streaming.preflight_atlas_admin` (`streaming.py:3138`) | `ping` (`database.py`) |
+| Abrir a página (selo de prontidão) | `App.jsx:96` | `GET /preflight` | `backend/main.py:112` | `readiness()` (`database.py`) + `streaming.preflight_atlas_admin` (`streaming.py:3174`) | `ping` (`database.py`) |
 | Contadores do topo | `App.jsx:122` | `GET /stats` | `main.py:145` | `stats()` | `produtos`, `avaliacoes`: `estimated_document_count` |
-| Info de cluster/tier no topo | `App.jsx:132` | `GET /streaming/cluster` | `streaming.py:1725` | `_cluster_info_sync` (`streaming.py:1494`) | Atlas Admin API (sem query Mongo) |
+| Info de cluster/tier no topo | `App.jsx:132` | `GET /streaming/cluster` | `streaming.py:1761` | `_cluster_info_sync` (`streaming.py:1530`) | Atlas Admin API (sem query Mongo) |
 | Trocar de módulo | `App.jsx:192` (select) + `hashchange` (`App.jsx:114`) | nenhuma | - | só troca o componente | - |
 
 ### 00 A tese (`frontend/src/pages/Tese.jsx`)
@@ -87,25 +87,25 @@ Os componentes chamam o backend pela função `call(...)` do hook `useApi` (`fro
 
 | Ação | Componente | HTTP | Handler | Função de negócio | MongoDB / externo |
 |---|---|---|---|---|---|
-| Distribuição por ano | `HotCold.jsx:30` (`fetchDistribution`) | `GET /hot-cold/distribution` | `hot_cold.py:114` | `data_distribution` | `produtos`: `aggregate` + `estimated_document_count` |
-| Simulação de arquivamento | `HotCold.jsx:31` | `GET /hot-cold/archive-simulation` | `hot_cold.py:168` | `archive_simulation` | `produtos`: `aggregate` |
-| Query transparente quente+frio | `HotCold.jsx:32` | `GET /hot-cold/query-transparent` | `hot_cold.py:205` | `query_transparent` | `produtos`: dois `find` (data >= e < corte) |
-| Listar archives | `HotCold.jsx:17` | `GET /hot-cold/online-archive/list` | `hot_cold.py:251` | `list_online_archives` -> `_atlas_request` (`hot_cold.py:55`) | Atlas Admin API |
-| **Criar Online Archive** | `HotCold.jsx:34` (`createArchive`) | `POST /hot-cold/online-archive/create` | `hot_cold.py:277` | `create_online_archive` | Atlas Admin API (`hot_cold.py:301`) |
-| **Remover** archive | `HotCold.jsx:43` (`deleteArchive`) | `DELETE /hot-cold/online-archive/{archive_id}` | `hot_cold.py:319` | `delete_online_archive` | Atlas Admin API (`hot_cold.py:333`) |
+| Distribuição por ano | `HotCold.jsx:31` (`fetchDistribution`) | `GET /hot-cold/distribution` | `hot_cold.py:114` | `data_distribution` | `produtos`: `aggregate` + `estimated_document_count` |
+| Simulação de arquivamento | `HotCold.jsx:32` | `GET /hot-cold/archive-simulation` | `hot_cold.py:168` | `archive_simulation` | `produtos`: `aggregate` |
+| Query transparente quente+frio | `HotCold.jsx:33` | `GET /hot-cold/query-transparent` | `hot_cold.py:205` | `query_transparent` | `produtos`: dois `find` (data >= e < corte) |
+| Listar archives | `HotCold.jsx:18` | `GET /hot-cold/online-archive/list` | `hot_cold.py:251` | `list_online_archives` -> `_atlas_request` (`hot_cold.py:55`) | Atlas Admin API |
+| **Criar Online Archive** | `HotCold.jsx:35` (`createArchive`) | `POST /hot-cold/online-archive/create` | `hot_cold.py:277` | `create_online_archive` | Atlas Admin API (`hot_cold.py:301`) |
+| **Remover** archive | `HotCold.jsx:44` (`deleteArchive`) | `DELETE /hot-cold/online-archive/{archive_id}` | `hot_cold.py:319` | `delete_online_archive` | Atlas Admin API (`hot_cold.py:333`) |
 
 ### 03 Aggregation Pipeline (`pages/Aggregations.jsx`)
 
-Abas `lookup/facet/union/group/window/bucket` (`Aggregations.jsx:351`) + botão **Executar** (`Aggregations.jsx:337`, `run`). O mapa de rotas está em `Aggregations.jsx:328` (`ENDPOINTS`).
+Abas `lookup/facet/union/group/window/bucket` (`Aggregations.jsx:352`) + botão **Executar** (`Aggregations.jsx:338`, `run`). O mapa de rotas está em `Aggregations.jsx:329` (`ENDPOINTS`).
 
 | Aba | HTTP | Handler | MongoDB |
 |---|---|---|---|
-| `$lookup` | `GET /aggregations/lookup` | `aggregations.py:22` (`lookup_produtos_avaliacoes`) | `avaliacoes`: aggregate (`:76`) |
-| `$facet` | `GET /aggregations/facet` | `aggregations.py:82` (`facet_analytics`) | `produtos`: aggregate (`:113`) |
-| `$unionWith` | `GET /aggregations/union-with` | `aggregations.py:118` (`union_with`) | `avaliacoes`: aggregate (`:166`) |
-| `$group` avançado | `GET /aggregations/group-advanced` | `aggregations.py:170` (`group_advanced`) | `produtos`: aggregate (`:189`) |
-| `$setWindowFields` | `GET /aggregations/window-functions` | `aggregations.py:198` (`window_functions`) | `produtos`: aggregate (`:233`) |
-| `$bucketAuto` | `GET /aggregations/bucket-auto` | `aggregations.py:242` (`bucket_auto`) | `produtos`: aggregate (`:256`) |
+| `$lookup` | `GET /aggregations/lookup` | `aggregations.py:23` (`lookup_produtos_avaliacoes`) | `avaliacoes`: aggregate (`:77`) |
+| `$facet` | `GET /aggregations/facet` | `aggregations.py:83` (`facet_analytics`) | `produtos`: aggregate (`:114`) |
+| `$unionWith` | `GET /aggregations/union-with` | `aggregations.py:119` (`union_with`) | `avaliacoes`: aggregate (`:167`) |
+| `$group` avançado | `GET /aggregations/group-advanced` | `aggregations.py:171` (`group_advanced`) | `produtos`: aggregate (`:190`) |
+| `$setWindowFields` | `GET /aggregations/window-functions` | `aggregations.py:199` (`window_functions`) | `produtos`: aggregate (`:234`) |
+| `$bucketAuto` | `GET /aggregations/bucket-auto` | `aggregations.py:243` (`bucket_auto`) | `produtos`: aggregate (`:257`) |
 
 A função de negócio é o próprio handler: o pipeline é montado na função e devolvido junto com o resultado para o `QueryBlock` exibir.
 
@@ -129,12 +129,12 @@ Passos numerados via `runStep` (`SchemaValidation.jsx:88`); lista de passos em `
 
 | Ação | Componente | HTTP | Handler | Função de negócio | MongoDB |
 |---|---|---|---|---|---|
-| **Iniciar demo** | `ChangeStreams.jsx:54` (`startDemo`) | `POST /change-streams/start` | `change_streams.py:159` | `start_watch` abre thread `_watch_worker` (`:93`) | `transacoes_cs_demo`: drop + `create_collection`, depois `watch` (`:96`) |
-| Feed ao vivo | `ChangeStreams.jsx:63` (`EventSource`) | `GET /change-streams/feed` (SSE) | `change_streams.py:249` | `stream_events` | lê eventos em memória (`_append_event` `:32`) |
-| Disparar insert/update/delete | `ChangeStreams.jsx:70` | `POST /change-streams/trigger?operacao=` | `change_streams.py:202` | `trigger_event` | `insert_one`, `update_one`, `delete_one` |
-| Parar / **Reiniciar** | `ChangeStreams.jsx:76,85,92` | `POST /change-streams/stop` | `change_streams.py:318` | `stop_watch` | fecha o cursor |
-| Ver coleção | `ChangeStreams.jsx:78` | `GET /change-streams/collection` | `change_streams.py:296` | `get_collection` | `count_documents`, `find` |
-| **Limpar coleção** | `ChangeStreams.jsx:96` | `DELETE /change-streams/clear` | `change_streams.py:328` | `clear_collection` | `drop` |
+| **Iniciar demo** | `ChangeStreams.jsx:55` (`startDemo`) | `POST /change-streams/start` | `change_streams.py:159` | `start_watch` abre thread `_watch_worker` (`:93`) | `transacoes_cs_demo`: drop + `create_collection`, depois `watch` (`:96`) |
+| Feed ao vivo | `ChangeStreams.jsx:64` (`EventSource`) | `GET /change-streams/feed` (SSE) | `change_streams.py:249` | `stream_events` | lê eventos em memória (`_append_event` `:32`) |
+| Disparar insert/update/delete | `ChangeStreams.jsx:71` | `POST /change-streams/trigger?operacao=` | `change_streams.py:202` | `trigger_event` | `insert_one`, `update_one`, `delete_one` |
+| Parar / **Reiniciar** | `ChangeStreams.jsx:77,85,92` | `POST /change-streams/stop` | `change_streams.py:318` | `stop_watch` | fecha o cursor |
+| Ver coleção | `ChangeStreams.jsx:79` | `GET /change-streams/collection` | `change_streams.py:296` | `get_collection` | `count_documents`, `find` |
+| **Limpar coleção** | `ChangeStreams.jsx:97` | `DELETE /change-streams/clear` | `change_streams.py:328` | `clear_collection` | `drop` |
 | (existe, sem uso direto pela tela) | - | `GET /change-streams/events` | `change_streams.py:235` | `get_events` | - |
 
 ### 06 Transações (`pages/Transactions.jsx`)
@@ -154,28 +154,28 @@ Modo "ao vivo" usa `/streaming/*`; modo "replay" usa `/replay/*` com o mesmo con
 | Ação | Componente | HTTP | Handler | Função de negócio | MongoDB / externo |
 |---|---|---|---|---|---|
 | Alternar **Ao vivo / Replay** | `Streaming.jsx:524-550` | só estado local; replay carrega `GET /replay/manifest` (`:174`) | `replay.py:180` | `manifest` | lê `data/replay_streaming.json` |
-| **Iniciar** corrida | `Streaming.jsx:192` (`iniciar`) | `POST /streaming/reset` (`:229`) e `POST /streaming/generator/start` (`:252`); replay: `POST /replay/play` | `streaming.py:2267`, `:1388` | `reset` limpa a rodada; `generator_start` -> `Generator.start` (`:1067`) | `transacoes`: `insert_many`/`insert_one` (`Generator._insert_batch` `:1189`, `_insert_um` `:1253`) |
-| **Parar** | `Streaming.jsx:255` (`stopGen`) | `POST /streaming/generator/stop` (ou `/replay/stop`) | `streaming.py:1403` | `Generator.stop` (`:1123`) | - |
-| **Resetar execução** | `Streaming.jsx:303` (`resetExecucao`) | `POST /streaming/reset` | `streaming.py:2267` | `reset`: `_drop_and_recreate` 2183, `_purge` 2215, `_resto_exato` 2200, para o ASP via `_asp_stop_wait` 2150 | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit`, `consumer_checkpoints`; `delete_many` em `geo.sinais_ao_vivo` (`:2350`) |
-| Coluna 1: eventos Change Streams | `Streaming.jsx:321` (`useSse`) | `GET /streaming/changestream` (SSE) | `streaming.py:2718` | `ChangeStreamCluster` (`:2653`) / `ChangeStreamWorker` (`:2399`) | `transacoes`: `watch` (`:2555`); checkpoint em `consumer_checkpoints` |
-| Derrubar e retomar o cursor | `Streaming.jsx:339` (`dropResume`) | `POST /streaming/changestream/drop-resume` | `streaming.py:2732` | `ChangeStreamCluster.request_drop` | resume token em `consumer_checkpoints` |
-| Coluna 2: Kafka Connector | `Streaming.jsx:346` (`useSse`), status `:378` | `GET /streaming/kafka` (SSE), `GET /streaming/kafka/status` | `streaming.py:3469`, `:3422` | `KafkaConsumer` (`:2770`), `classifica_connectors` (`:2901`) | Kafka Connect REST + broker Kafka (sem query Mongo) |
-| **Reiniciar Kafka** / consumidor | `Streaming.jsx:364`, `:392` | `POST /streaming/kafka/restart`, `POST /streaming/kafka/consumer/restart` | `streaming.py:3450`, `:3458` | `_connector_restart_sync` (`:2972`), `KafkaConsumer.restart` (`:2795`) | Kafka Connect REST |
-| Coluna 3: Atlas Stream Processing | `Streaming.jsx:379` (`useSse`), status `:409` | `GET /streaming/asp` (SSE), `GET /streaming/asp/status` | `streaming.py:3776`, `:3671` | `AspWatcher` (`:3704`), `_asp_runtime_stats` (`:3560`), `_asp_totais` (`:3658`) | `metricas_janela`: `watch` (`:3728`), `find` (`:3779`), `aggregate` (`:3661`) |
-| Injetar 1 / 1000 inválidos (ASP) | `Streaming.jsx:469` (`injectInvalid`) | `POST /streaming/asp/inject-invalid?quantidade=` | `streaming.py:3818` | `asp_inject_invalid` + `_doc_invalido` (`:3804`) | `transacoes`: `insert_many` (`:3833`) |
-| **Reprocessar DLQ** | `Streaming.jsx:472` (`reprocessarDlq`) | `POST /streaming/asp/dlq/reprocessar` | `streaming.py:3965` | `_reprocessa_dlq` (`:3878`) | `dlq` (find/delete_many), `transacoes` (insert_one), `dlq_audit` (replace_one) |
-| Resumo da DLQ | `Streaming.jsx:413` | `GET /streaming/asp/dlq/resumo` | `streaming.py:3874` | `_dlq_resumo` (`:3850`) | `dlq`: aggregate + `count_documents` |
-| **Reiniciar ASP do checkpoint** | `Streaming.jsx:476` | `POST /streaming/asp/restart-checkpoint` | `streaming.py:3697` | `_asp_restart_from_checkpoint` (`:3595`) | comandos `stopStreamProcessor`/`startStreamProcessor` na instância ASP |
-| Falha: **derrubar connector** | `Streaming.jsx:260` | `POST /streaming/falha/connector` | `streaming.py:3309` | `_connector_derrubar_sync` (`:2999`) | Kafka Connect REST |
-| Falha: **evento inválido** | `Streaming.jsx:290` | `POST /streaming/falha/evento-invalido` | `streaming.py:3318` | `falha_evento_invalido` | `transacoes`: `insert_one` (`:3339`) |
-| Falha: **schema incompatível** | `Streaming.jsx:281` | `POST /streaming/falha/schema-incompativel` | `streaming.py:3386` | `falha_schema_incompativel` | `transacoes`: `insert_one` (`:3409`) |
-| Falha: **forçar failover** | `Streaming.jsx:272` | `POST /streaming/falha/failover` | `streaming.py:3251` | `_atlas_test_failover_sync` (`:3085`) + `_acompanha_failover` (`:3215`) | Atlas Admin API (testFailover) |
-| Painel de reconciliação | `Streaming.jsx:428,437` | `GET /streaming/reconciliacao?run_id=` | `streaming.py:4217` | `_reconcile_run` (`:4075`), `_fonte_conferivel` (`:4019`), `_digest_da_fonte` (`:4010`) | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit` |
-| Folga de CPU do primário | `Streaming.jsx:408` | `GET /streaming/folga` | `streaming.py:1964` | `_folga_cluster_sync` (`:1808`) | Atlas Admin API (métricas) |
-| Latência de leitura / oplog | `Streaming.jsx:413` | `GET /streaming/leitura`, `GET /streaming/oplog` | `streaming.py:1706`, `:1720` | `SondaLeitura` (`:1650`), `_oplog_janela` (`:1615`) | `transacoes` (`find_one`), `local.oplog.rs` |
-| Cenário/preset de TPS | `Streaming.jsx:162,664` | `GET /streaming/cenario`, `GET /streaming/rede`, `GET /streaming/contrato` | `streaming.py:2088`, `:1989`, `:3366` | `cenario`, `_medir_rtt` (`:1968`), `contrato` | `ping` (rede) |
+| **Iniciar** corrida | `Streaming.jsx:192` (`iniciar`) | `POST /streaming/reset` (`:236`) e `POST /streaming/generator/start` (`:259`); replay: `POST /replay/play` | `streaming.py:2303`, `:1423` | `reset` limpa a rodada; `generator_start` -> `Generator.start` (`:1075`) | `transacoes`: `insert_many`/`insert_one` (`Generator._insert_batch` `:1226`, `_insert_um` `:1290`) |
+| **Parar** | `Streaming.jsx:255` (`stopGen`) | `POST /streaming/generator/stop` (ou `/replay/stop`) | `streaming.py:1438` | `Generator.stop` (`:1131`) | - |
+| **Resetar execução** | `Streaming.jsx:303` (`resetExecucao`) | `POST /streaming/reset` | `streaming.py:2303` | `reset`: `_drop_and_recreate` 2183, `_purge` 2215, `_resto_exato` 2200, para o ASP via `_asp_stop_wait` 2150 | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit`, `consumer_checkpoints`; `delete_many` em `geo.sinais_ao_vivo` (`:2386`) |
+| Coluna 1: eventos Change Streams | `Streaming.jsx:321` (`useSse`) | `GET /streaming/changestream` (SSE) | `streaming.py:2754` | `ChangeStreamCluster` (`:2689`) / `ChangeStreamWorker` (`:2435`) | `transacoes`: `watch` (`:2591`); checkpoint em `consumer_checkpoints` |
+| Derrubar e retomar o cursor | `Streaming.jsx:339` (`dropResume`) | `POST /streaming/changestream/drop-resume` | `streaming.py:2768` | `ChangeStreamCluster.request_drop` | resume token em `consumer_checkpoints` |
+| Coluna 2: Kafka Connector | `Streaming.jsx:346` (`useSse`), status `:385` | `GET /streaming/kafka` (SSE), `GET /streaming/kafka/status` | `streaming.py:3505`, `:3458` | `KafkaConsumer` (`:2806`), `classifica_connectors` (`:2937`) | Kafka Connect REST + broker Kafka (sem query Mongo) |
+| **Reiniciar Kafka** / consumidor | `Streaming.jsx:364`, `:399` | `POST /streaming/kafka/restart`, `POST /streaming/kafka/consumer/restart` | `streaming.py:3486`, `:3494` | `_connector_restart_sync` (`:3008`), `KafkaConsumer.restart` (`:2831`) | Kafka Connect REST |
+| Coluna 3: Atlas Stream Processing | `Streaming.jsx:379` (`useSse`), status `:416` | `GET /streaming/asp` (SSE), `GET /streaming/asp/status` | `streaming.py:3812`, `:3707` | `AspWatcher` (`:3740`), `_asp_runtime_stats` (`:3596`), `_asp_totais` (`:3694`) | `metricas_janela`: `watch` (`:3764`), `find` (`:3815`), `aggregate` (`:3697`) |
+| Injetar 1 / 1000 inválidos (ASP) | `Streaming.jsx:469` (`injectInvalid`) | `POST /streaming/asp/inject-invalid?quantidade=` | `streaming.py:3854` | `asp_inject_invalid` + `_doc_invalido` (`:3840`) | `transacoes`: `insert_many` (`:3869`) |
+| **Reprocessar DLQ** | `Streaming.jsx:472` (`reprocessarDlq`) | `POST /streaming/asp/dlq/reprocessar` | `streaming.py:4001` | `_reprocessa_dlq` (`:3914`) | `dlq` (find/delete_many), `transacoes` (insert_one), `dlq_audit` (replace_one) |
+| Resumo da DLQ | `Streaming.jsx:413` | `GET /streaming/asp/dlq/resumo` | `streaming.py:3910` | `_dlq_resumo` (`:3886`) | `dlq`: aggregate + `count_documents` |
+| **Reiniciar ASP do checkpoint** | `Streaming.jsx:476` | `POST /streaming/asp/restart-checkpoint` | `streaming.py:3733` | `_asp_restart_from_checkpoint` (`:3631`) | comandos `stopStreamProcessor`/`startStreamProcessor` na instância ASP |
+| Falha: **derrubar connector** | `Streaming.jsx:260` | `POST /streaming/falha/connector` | `streaming.py:3345` | `_connector_derrubar_sync` (`:3035`) | Kafka Connect REST |
+| Falha: **evento inválido** | `Streaming.jsx:290` | `POST /streaming/falha/evento-invalido` | `streaming.py:3354` | `falha_evento_invalido` | `transacoes`: `insert_one` (`:3375`) |
+| Falha: **schema incompatível** | `Streaming.jsx:281` | `POST /streaming/falha/schema-incompativel` | `streaming.py:3422` | `falha_schema_incompativel` | `transacoes`: `insert_one` (`:3445`) |
+| Falha: **forçar failover** | `Streaming.jsx:272` | `POST /streaming/falha/failover` | `streaming.py:3287` | `_atlas_test_failover_sync` (`:3121`) + `_acompanha_failover` (`:3251`) | Atlas Admin API (testFailover) |
+| Painel de reconciliação | `Streaming.jsx:428,437` | `GET /streaming/reconciliacao?run_id=` | `streaming.py:4253` | `_reconcile_run` (`:4111`), `_fonte_conferivel` (`:4055`), `_digest_da_fonte` (`:4046`) | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit` |
+| Folga de CPU do primário | `Streaming.jsx:408` | `GET /streaming/folga` | `streaming.py:2000` | `_folga_cluster_sync` (`:1844`) | Atlas Admin API (métricas) |
+| Latência de leitura / oplog | `Streaming.jsx:413` | `GET /streaming/leitura`, `GET /streaming/oplog` | `streaming.py:1742`, `:1756` | `SondaLeitura` (`:1686`), `_oplog_janela` (`:1651`) | `transacoes` (`find_one`), `local.oplog.rs` |
+| Cenário/preset de TPS | `Streaming.jsx:162,664` | `GET /streaming/cenario`, `GET /streaming/rede`, `GET /streaming/contrato` | `streaming.py:2124`, `:2025`, `:3402` | `cenario`, `_medir_rtt` (`:2004`), `contrato` | `ping` (rede) |
 
-Rotas só de apoio, sem botão direto: `GET /streaming/perfil-valores` (`streaming.py:1593`), `GET /streaming/generator/status` (usada pelo polling, `Streaming.jsx:181`), `GET /streaming/asp/dlq` (`streaming.py:3971`), `GET /streaming/asp/janelas` (`streaming.py:3979`), `GET /streaming/changestream/status` (`streaming.py:2738`), `GET /streaming/falha/failover/status` (`streaming.py:3304`).
+Rotas só de apoio, sem botão direto: `GET /streaming/perfil-valores` (`streaming.py:1629`), `GET /streaming/generator/status` (usada pelo polling, `Streaming.jsx:181`), `GET /streaming/asp/dlq` (`streaming.py:4007`), `GET /streaming/asp/janelas` (`streaming.py:4015`), `GET /streaming/changestream/status` (`streaming.py:2774`), `GET /streaming/falha/failover/status` (`streaming.py:3340`).
 
 ## 3. Onde estão as queries MongoDB
 
@@ -194,32 +194,32 @@ Briefing com o texto completo de cada query: [queries.md](briefing/queries.md). 
 | Simulação de arquivamento | `hot_cold.py::archive_simulation` (`:168`) | `aggregate` (`:180`) | `produtos` |
 | Query quente+fria | `hot_cold.py::query_transparent` (`:205`) | dois `find` com `created_at` (`:214-215`) | `produtos` |
 | Online Archive | `hot_cold.py::_atlas_request` (`:55`) usado em `:255,:301,:324,:333` | Atlas Admin API (não é query Mongo) | - |
-| `$lookup` | `aggregations.py::lookup_produtos_avaliacoes` (`:22`) | aggregate (`:76`) | `avaliacoes` -> `produtos` |
-| `$facet` | `aggregations.py::facet_analytics` (`:82`) | aggregate (`:113`) | `produtos` |
-| `$unionWith` | `aggregations.py::union_with` (`:118`) | aggregate (`:166`) | `avaliacoes` |
-| `$group` avançado | `aggregations.py::group_advanced` (`:170`) | aggregate (`:189`) | `produtos` |
-| `$setWindowFields` | `aggregations.py::window_functions` (`:198`) | aggregate (`:233`) | `produtos` |
-| `$bucketAuto` | `aggregations.py::bucket_auto` (`:242`) | aggregate (`:256`) | `produtos` |
+| `$lookup` | `aggregations.py::lookup_produtos_avaliacoes` (`:23`) | aggregate (`:77`) | `avaliacoes` -> `produtos` |
+| `$facet` | `aggregations.py::facet_analytics` (`:83`) | aggregate (`:114`) | `produtos` |
+| `$unionWith` | `aggregations.py::union_with` (`:119`) | aggregate (`:167`) | `avaliacoes` |
+| `$group` avançado | `aggregations.py::group_advanced` (`:171`) | aggregate (`:190`) | `produtos` |
+| `$setWindowFields` | `aggregations.py::window_functions` (`:199`) | aggregate (`:234`) | `produtos` |
+| `$bucketAuto` | `aggregations.py::bucket_auto` (`:243`) | aggregate (`:257`) | `produtos` |
 | Schema validation | `schema_validation.py` (`:84`-`:231`) | `create_collection`, `collMod` (`:123,124,166`), `insert_*`, `update_many`, `drop` | coleção da demo `COL` |
 | Change stream da demo | `change_streams.py::_watch_worker` (`:93`, `watch` em `:96`) | `watch` | `transacoes_cs_demo` |
 | Eventos da demo | `change_streams.py::start_watch/trigger_event/get_collection/clear_collection` | `create_collection`, `insert_one`, `update_one`, `delete_one`, `find`, `drop` | `transacoes_cs_demo` |
 | Transação de compra | `transactions.py::executar_transacao` (`:39`, callback `with_transaction` `:135`) | `with_transaction` com 4 operações | `produtos`, `pedidos_demo`, `estoque_demo`, `pagamentos_demo` |
 | Benchmark de transação | `transactions.py::_benchmark` (`:294`) e `_transacao_multi` (`:262`) | `with_transaction` (`:327,:371`), `getParameter transactionLifetimeLimitSeconds` (`:256`) | coleções `BENCH_COL_*` |
 | Medição da tese | `tese.py::_medir_*` (`:58-138`) | `find`+`explain` (`:72,:74`), aggregate (`:97`), `create_collection` com `$jsonSchema` (`:104`), `watch` (`:123`), `with_transaction` (`:147`) | `produtos` + coleções temporárias |
-| Gerador de carga | `streaming.py::Generator._insert_batch` (`:1189`, `:1205`), `_insert_um` (`:1253`) | `insert_many(ordered=False)`, `insert_one` (driver assíncrono `AsyncMongoClient`, `acol_tx` `:164`) | `pix.transacoes` |
-| Índices do streaming | `streaming.py::_ensure_indexes` (`:829`) | `create_index` único em `endToEndId`, `run_id`, TTL em `ts` (`:845-862`), `command` (`:864`) | `transacoes` |
-| Change stream por partição | `streaming.py::ChangeStreamWorker._run` (`:2537`, `watch` `:2555`) | `watch` com pipeline e resume token | `transacoes` |
-| Checkpoint do resume token | `ChangeStreamWorker._load_checkpoint/_persist_checkpoint/discard_checkpoint` (`:2474-2509`) | `find_one`, `replace_one`, `delete_one` | `consumer_checkpoints` |
-| Watch das janelas ASP | `streaming.py::AspWatcher._run` (`:3724`, `watch` `:3728`) | `watch` com `updateLookup` | `metricas_janela` (e demais) |
-| Últimas janelas | `streaming.py::asp_sse` (`:3779`), `asp_janelas` (`:3979`) | `find` ordenado por `window_end` desc | `metricas_janela` |
-| Totais do ASP | `streaming.py::_asp_totais` (`:3658`), `_asp_atraso_s` (`:3639`) | aggregate / `find` ordenado | `metricas_janela` |
-| Perfil de valores | `streaming.py::_perfil_medido` (`:1556`, aggregate `:1578`) | aggregate | `transacoes` |
-| Latência de leitura | `streaming.py::SondaLeitura._consulta` (`:1680`) | `find_one` por `endToEndId` | `transacoes` |
-| Oplog / serverStatus | `streaming.py::_oplog_janela` (`:1615`), `_oplatencies_writes` (`:473`) | `find` em `$natural` no oplog, `serverStatus` | `local.oplog.rs` |
-| DLQ | `streaming.py::_dlq_resumo` (`:3850`), `_reprocessa_dlq` (`:3878`), `asp_dlq` (`:3971`) | aggregate por motivo, `find`, `delete_many`, `replace_one` | `dlq`, `dlq_audit`, `transacoes` |
-| Reconciliação | `streaming.py::_fonte_conferivel` (`:4019`), `_reconcile_run` (`:4075`), `reconciliacao` (`:4217`) | aggregate, `find`, `count_documents` | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit` |
-| Reset do streaming | `streaming.py::_drop_and_recreate` (`:2203`), `_resto_exato` (`:2220`), `_purge` (`:2235`), `reset` (`:2267`) | `drop`, `count_documents(limit=1)`, `delete_many` | coleções do streaming + `geo.sinais_ao_vivo` |
-| Controle do ASP | `streaming.py::_asp_command` (`:2152`), `_asp_stop_wait` (`:2170`), `_asp_restart_from_checkpoint` (`:3595`) | `listStreamProcessors`, `stopStreamProcessor`, `startStreamProcessor` | instância ASP (outra connection string) |
+| Gerador de carga | `streaming.py::Generator._insert_batch` (`:1226`, `:1242`), `_insert_um` (`:1290`) | `insert_many(ordered=False)`, `insert_one` (driver assíncrono `AsyncMongoClient`, `acol_tx` `:170`) | `pix.transacoes` |
+| Índices do streaming | `streaming.py::_ensure_indexes` (`:836`) | `create_index` único em `endToEndId`, `run_id`, TTL em `ts` (`:852-862`), `command` (`:871`) | `transacoes` |
+| Change stream por partição | `streaming.py::ChangeStreamWorker._run` (`:2573`, `watch` `:2591`) | `watch` com pipeline e resume token | `transacoes` |
+| Checkpoint do resume token | `ChangeStreamWorker._load_checkpoint/_persist_checkpoint/discard_checkpoint` (`:2530-2567`) | `find_one`, `replace_one`, `delete_one` | `consumer_checkpoints` |
+| Watch das janelas ASP | `streaming.py::AspWatcher._run` (`:3760`, `watch` `:3764`) | `watch` com `updateLookup` | `metricas_janela` (e demais) |
+| Últimas janelas | `streaming.py::asp_sse` (`:3815`), `asp_janelas` (`:4015`) | `find` ordenado por `window_end` desc | `metricas_janela` |
+| Totais do ASP | `streaming.py::_asp_totais` (`:3694`), `_asp_atraso_s` (`:3675`) | aggregate / `find` ordenado | `metricas_janela` |
+| Perfil de valores | `streaming.py::_perfil_medido` (`:1592`, aggregate `:1614`) | aggregate | `transacoes` |
+| Latência de leitura | `streaming.py::SondaLeitura._consulta` (`:1716`) | `find_one` por `endToEndId` | `transacoes` |
+| Oplog / serverStatus | `streaming.py::_oplog_janela` (`:1651`), `_oplatencies_writes` (`:480`) | `find` em `$natural` no oplog, `serverStatus` | `local.oplog.rs` |
+| DLQ | `streaming.py::_dlq_resumo` (`:3886`), `_reprocessa_dlq` (`:3914`), `asp_dlq` (`:4007`) | aggregate por motivo, `find`, `delete_many`, `replace_one` | `dlq`, `dlq_audit`, `transacoes` |
+| Reconciliação | `streaming.py::_fonte_conferivel` (`:4055`), `_reconcile_run` (`:4111`), `reconciliacao` (`:4253`) | aggregate, `find`, `count_documents` | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit` |
+| Reset do streaming | `streaming.py::_drop_and_recreate` (`:2239`), `_resto_exato` (`:2256`), `_purge` (`:2271`), `reset` (`:2303`) | `drop`, `count_documents(limit=1)`, `delete_many` | coleções do streaming + `geo.sinais_ao_vivo` |
+| Controle do ASP | `streaming.py::_asp_command` (`:2188`), `_asp_stop_wait` (`:2206`), `_asp_restart_from_checkpoint` (`:3631`) | `listStreamProcessors`, `stopStreamProcessor`, `startStreamProcessor` | instância ASP (outra connection string) |
 | Reset geral | `scripts/reset_demo.py::reset` (`:89`) | drop só das coleções dos módulos + seed | vários (ver script) |
 | Monitor ao vivo | `scripts/live_monitor.py::do_read` (`:61`) / `do_write` (`:69`) | leitura e escrita em loop | coleção da demo |
 
@@ -238,18 +238,18 @@ Briefing com o texto completo de cada query: [queries.md](briefing/queries.md). 
 
 **Chamadas externas** (todas sem LLM): Atlas Admin API (`hot_cold.py::_atlas_request`, `streaming.py::_atlas_get`/`_atlas_test_failover_sync`), Kafka Connect REST e broker Kafka (`streaming.py::_connector_*_sync`, `KafkaConsumer`), instância de Atlas Stream Processing (`streaming.py::_asp_command`). Não há Grove, Voyage nem Langfuse.
 
-**Resto do módulo Geo:** o `docs/briefing/architecture.md` diz que não existe mais código de Geo (a tela de fato saiu), mas ainda há rastro no código: `GEO_DB_NOME`/`COL_SINAIS` (`streaming.py:201-202`), limpeza de `geo.sinais_ao_vivo` no `reset` (`streaming.py:2350`), `backend/data/municipios.json` lido pelo gerador (`streaming.py:208`), `scripts/setup-asp-geo.js` e `GEO_DB`/`ASP_GEO_PROCESSOR_NAME` no `.env.example`. O módulo de tela foi removido; o canal "cartão presencial" do gerador e o segundo processor ainda existem.
+**Resto do módulo Geo:** o `docs/briefing/architecture.md` diz que não existe mais código de Geo (a tela de fato saiu), mas ainda há rastro no código: `GEO_DB_NOME`/`COL_SINAIS` (`streaming.py:208-209`), limpeza de `geo.sinais_ao_vivo` no `reset` (`streaming.py:2386`), `backend/data/municipios.json` lido pelo gerador (`streaming.py:215`), `scripts/setup-asp-geo.js` e `GEO_DB`/`ASP_GEO_PROCESSOR_NAME` no `.env.example`. O módulo de tela foi removido; o canal "cartão presencial" do gerador e o segundo processor ainda existem.
 
 ## 5. "Quero mexer em..." (atalhos)
 
 - Texto/ordem das abas -> `frontend/src/App.jsx`, array `MODULES` (linha 14).
 - Texto da tese e dos não-objetivos -> `frontend/src/pages/Tese.jsx`; o que é medido -> `backend/routers/tese.py::_executar` (`:163`).
-- Mudar um pipeline de aggregation -> `backend/routers/aggregations.py` (a função da aba correspondente); nome da aba/rota -> `Aggregations.jsx:328`.
+- Mudar um pipeline de aggregation -> `backend/routers/aggregations.py` (a função da aba correspondente); nome da aba/rota -> `Aggregations.jsx:329`.
 - Mudar os cenários de índice da reindexação -> `frontend/src/pages/Reindexacao.jsx` (constantes `SCENARIOS` linha 10 e `EXPLAIN_SCENARIOS` linha 32) e a lista de campos permitidos em `backend/routers/reindexacao.py` (`ALLOWED_INDEX_FIELDS`).
 - Mudar o schema validado -> `backend/routers/schema_validation.py` (`step3_activate`, `:163`).
 - Adicionar uma rota nova -> criar função no router do módulo; se for módulo novo, registrar em `backend/main.py:84-92` (`include_router`). Lembrar: SSE tem que ser `GET` (o `MutationGuardMiddleware` barra o resto).
 - Mudar o que a transação faz -> `backend/routers/transactions.py::executar_transacao` (`:39`).
-- Mudar taxa/duração do gerador de streaming -> `STREAMING_DEMO_TPS`/`STREAMING_DEMO_DURATION_S` no `.env`; presets na tela em `Streaming.jsx:664`; lógica em `streaming.py::Generator` (`:990`).
+- Mudar taxa/duração do gerador de streaming -> `STREAMING_DEMO_TPS`/`STREAMING_DEMO_DURATION_S` no `.env`; presets na tela em `Streaming.jsx:664`; lógica em `streaming.py::Generator` (`:997`).
 - Mudar dados da demo (seed) -> `backend/seed_data.py`; reset -> `scripts/reset_demo.py`.
 - Mudar a corrida gravada do modo replay -> regravar com `scripts/capture_replay.py`; leitura em `backend/routers/replay.py`.
 - Mudar permissão de mutação/CORS -> `backend/security.py` e `ALLOWED_ORIGINS` / `DEMO_ADMIN_TOKEN` no `.env`.
@@ -258,7 +258,7 @@ Briefing com o texto completo de cada query: [queries.md](briefing/queries.md). 
 
 ## 6. Testes
 
-Comando (README): `pytest` na raiz (`pyproject.toml`: `testpaths = backend/tests`). Mongo é stubado; nenhum teste da CI precisa de cluster. A suíte live (`backend/tests/live/`, `LIVE_TESTS=1`, só bancos `*_test`) roda local; ver `docs/adr/0001-testes-live-opt-in.md`. Lint: `ruff check backend`. Frontend: `node --test tests/*.test.mjs` em `frontend/` (polling, `useApi`, formatadores de `src/lib/formato.js`) e `npm run build`, os dois na CI (`.github/workflows/ci.yml`).
+Comando (README): `pytest` na raiz (`pyproject.toml`: `testpaths = backend/tests`). Mongo é stubado; nenhum teste da CI precisa de cluster. A suíte live (`backend/tests/live/`, `LIVE_TESTS=1`, só bancos `showcase_*_test`) roda local; ver `docs/adr/0001-testes-live-opt-in.md`. Lint: `ruff check backend`. Frontend: `node --test tests/*.test.mjs` em `frontend/` (polling, `useApi`, formatadores de `src/lib/formato.js`) e `npm run build`, os dois na CI (`.github/workflows/ci.yml`).
 
 | Arquivo | O que cobre |
 |---|---|

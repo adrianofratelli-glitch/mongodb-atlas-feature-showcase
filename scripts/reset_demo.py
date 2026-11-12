@@ -17,7 +17,7 @@ Nunca dropa `produtos`/`avaliacoes` (perderia o índice Atlas Search de outra
 PoV) e nunca mexe em Online Archive, tier ou stream processors.
 
 Uso:
-    MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test python scripts/reset_demo.py
+    MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test python scripts/reset_demo.py
     ALLOW_DEMO_DB_WRITE=1 python scripts/reset_demo.py     # banco da demo (backend/.env)
     python scripts/reset_demo.py --check                    # só verifica, não escreve
 

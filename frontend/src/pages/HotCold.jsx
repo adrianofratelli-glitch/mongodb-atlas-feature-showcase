@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { useApi } from '../hooks/useApi'
 import Limites from '../components/Limites'
+import { fmtReais } from '../lib/formato'
 
 export default function HotCold() {
   const { call, loading } = useApi()
@@ -87,7 +88,7 @@ export default function HotCold() {
                   <strong>{row.year}</strong>
                   <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>≈ {row.count.toLocaleString()} docs ± {Math.round(row.margem_erro_estimada || 0).toLocaleString()} (1σ)</span>
                 </div>
-                <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>preço médio R$ {row.avg_preco.toFixed(2)}</span>
+                <span style={{ color: 'var(--text-secondary)', fontSize: 13 }}>preço médio {fmtReais(row.avg_preco)}</span>
               </div>
             ))}
           </div>
@@ -132,7 +133,7 @@ export default function HotCold() {
               {transparent.hot_samples.map((d, i) => (
                 <div key={i} style={{ padding: '8px 12px', background: 'rgba(249,115,22,.06)', borderRadius: 6, marginBottom: 6, fontSize: 13 }}>
                   <div style={{ fontWeight: 500 }}>{d.nome}</div>
-                  <div style={{ color: 'var(--text-secondary)' }}>R$ {d.preco?.toFixed(2)} · {d.created_at?.slice(0, 10)}</div>
+                  <div style={{ color: 'var(--text-secondary)' }}>{fmtReais(d.preco)} · {d.created_at?.slice(0, 10)}</div>
                 </div>
               ))}
             </div>
@@ -141,7 +142,7 @@ export default function HotCold() {
               {transparent.cold_samples.map((d, i) => (
                 <div key={i} style={{ padding: '8px 12px', background: 'rgba(6,182,212,.06)', borderRadius: 6, marginBottom: 6, fontSize: 13 }}>
                   <div style={{ fontWeight: 500 }}>{d.nome}</div>
-                  <div style={{ color: 'var(--text-secondary)' }}>R$ {d.preco?.toFixed(2)} · {d.created_at?.slice(0, 10)}</div>
+                  <div style={{ color: 'var(--text-secondary)' }}>{fmtReais(d.preco)} · {d.created_at?.slice(0, 10)}</div>
                 </div>
               ))}
             </div>

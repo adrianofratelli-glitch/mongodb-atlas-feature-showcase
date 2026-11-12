@@ -4,6 +4,7 @@ import js from 'react-syntax-highlighter/dist/esm/languages/hljs/javascript'
 import { atomOneDark } from 'react-syntax-highlighter/dist/esm/styles/hljs'
 import { useApi } from '../hooks/useApi'
 import Limites from '../components/Limites'
+import { fmtReais } from '../lib/formato'
 
 SyntaxHighlighter.registerLanguage('javascript', js)
 
@@ -190,7 +191,7 @@ function LookupResults({ data }) {
             <span className="badge badge-gray">{p.marca}</span>
             <strong style={{ fontSize: 13 }}>{p.nome}</strong>
             <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--text-secondary)' }}>
-              R$ {p.preco?.toFixed(2)} · ⭐ {p.avg_nota} ({p.total_reviews?.toLocaleString()} reviews)
+              {fmtReais(p.preco)} · ⭐ {p.avg_nota} ({p.total_reviews?.toLocaleString()} reviews)
             </span>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -218,7 +219,7 @@ function FacetResults({ data }) {
           {(d.por_categoria || []).map((c, i) => (
             <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '4px 0', borderBottom: '1px solid var(--border-color)' }}>
               <span>{c._id}</span>
-              <span><strong>{c.count?.toLocaleString()}</strong> · R$ {c.avg_preco?.toFixed(0)}</span>
+              <span><strong>{c.count?.toLocaleString()}</strong> · {fmtReais(c.avg_preco, 0)}</span>
             </div>
           ))}
         </div>
@@ -239,7 +240,7 @@ function FacetResults({ data }) {
             <div key={i} style={{ background: 'var(--bg-subtle)', border: '1px solid var(--border-color)', borderRadius: 6, padding: '8px 14px', fontSize: 12, textAlign: 'center' }}>
               <div style={{ fontWeight: 700, fontSize: 15 }}>{b.count?.toLocaleString()}</div>
               <div style={{ color: 'var(--text-secondary)', marginTop: 2 }}>
-                R$ {(b._id === 'Outro' ? '5k' : b._id?.toLocaleString())}+
+                R$ {(b._id === 'Outro' ? '5k' : b._id?.toLocaleString('pt-BR'))}+
               </div>
             </div>
           ))}
@@ -279,9 +280,9 @@ const TABLE_COLS = {
   group: [
     { key: '_id',             label: 'Categoria' },
     { key: 'total_produtos',  label: 'Produtos',    render: r => r.total_produtos?.toLocaleString() },
-    { key: 'preco_medio',     label: 'Preço Médio', render: r => `R$ ${r.preco_medio?.toFixed(2)}` },
-    { key: 'preco_max',       label: 'Preço Máx',   render: r => `R$ ${r.preco_max?.toFixed(0)}` },
-    { key: 'amplitude_preco', label: 'Amplitude',   render: r => `R$ ${r.amplitude_preco?.toFixed(0)}` },
+    { key: 'preco_medio',     label: 'Preço Médio', render: r => fmtReais(r.preco_medio) },
+    { key: 'preco_max',       label: 'Preço Máx',   render: r => fmtReais(r.preco_max, 0) },
+    { key: 'amplitude_preco', label: 'Amplitude',   render: r => fmtReais(r.amplitude_preco, 0) },
     { key: 'avaliacao_media', label: 'Avg ⭐',      render: r => r.avaliacao_media?.toFixed(2) },
   ],
   window: [
@@ -289,13 +290,13 @@ const TABLE_COLS = {
     { key: 'marca',               label: 'Marca' },
     { key: 'rank_marca',          label: 'Rank',       render: r => <span className="badge badge-blue">#{r.rank_marca}</span> },
     { key: 'total_avaliacoes',    label: 'Reviews',    render: r => r.total_avaliacoes?.toLocaleString() },
-    { key: 'media_movel_preco',   label: 'MM Preço',   render: r => `R$ ${r.media_movel_preco?.toFixed(0)}` },
+    { key: 'media_movel_preco',   label: 'MM Preço',   render: r => fmtReais(r.media_movel_preco, 0) },
     { key: 'acumulado_avaliacoes',label: 'Acum.',      render: r => r.acumulado_avaliacoes?.toLocaleString() },
   ],
   bucket: [
     { key: 'faixa',        label: 'Faixa de Preço' },
     { key: 'count',        label: 'Produtos',    render: r => r.count?.toLocaleString() },
-    { key: 'avg_preco',    label: 'Preço Médio', render: r => `R$ ${r.avg_preco?.toFixed(2)}` },
+    { key: 'avg_preco',    label: 'Preço Médio', render: r => fmtReais(r.avg_preco) },
     { key: 'avg_avaliacao',label: '⭐ Média',    render: r => r.avg_avaliacao?.toFixed(2) },
   ],
 }

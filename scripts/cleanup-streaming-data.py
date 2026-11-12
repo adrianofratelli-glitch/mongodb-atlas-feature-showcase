@@ -3,7 +3,7 @@
 
 Também é chamado por `scripts/reset_demo.py` (função `cleanup`). Variáveis do
 ambiente têm precedência sobre `backend/.env`, o que permite apontar para um
-banco `*_test` (ex.: `STREAMING_DB=pix_test GEO_DB=geo_test`).
+banco `*_test` (ex.: `STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test`).
 """
 
 from __future__ import annotations

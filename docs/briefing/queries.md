@@ -28,9 +28,9 @@
 
 **Seed idempotente:** `seed()` grava por `ReplaceOne(..., upsert=True)` com chave natural determinística (`produto_id` = uuid5 do índice; `_id = "seed-av-<n>"` nas avaliações), via `bulk_write(ordered=False)` em lotes de 10 mil. O índice único `produto_id_1` é criado **antes** dos upserts. `produtos`/`avaliacoes` podem ser compartilhadas com outra PoV no mesmo banco (no cluster de demo, o marketplace de busca tem `marca_1`, `subcategoria_1` e o índice Atlas Search `produtos_search` em `POC.produtos`); nem o seed nem o `scripts/reset_demo.py` dropam essas coleções.
 
-**Nota importante:** o `$group` inicial de `/aggregations/lookup` **não tem índice cobrindo** a chave de agrupamento (`produto_id`) sobre a coleção inteira — em `--full` (1M avaliações) isso é um COLLSCAN completo. Por isso o endpoint cacheia o resultado por `limit` durante 45s (`LOOKUP_CACHE_TTL_S` em `backend/routers/aggregations.py:17`), para refresh de tela na demo não repetir o scan.
+**Nota importante:** o `$group` inicial de `/aggregations/lookup` **não tem índice cobrindo** a chave de agrupamento (`produto_id`) sobre a coleção inteira — em `--full` (1M avaliações) isso é um COLLSCAN completo. Por isso o endpoint cacheia o resultado por `limit` durante 45s (`LOOKUP_CACHE_TTL_S` em `backend/routers/aggregations.py:18`), para refresh de tela na demo não repetir o scan.
 
-### `pix.transacoes` — criados em `backend/routers/streaming.py:730-751` (função `_ensure_indexes()`)
+### `pix.transacoes` — criados em `backend/routers/streaming.py:836-875` (função `_ensure_indexes()`)
 
 | Nome | Campos | Tipo | Por que existe |
 |---|---|---|---|

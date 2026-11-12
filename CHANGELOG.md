@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- Module 07: stopping the generator no longer undercounts. An individual write that was in flight when *Stop* cancelled the workers was confirmed by Atlas but never counted (measured: 87 on screen, 92 in the collection). Each write now runs as a shielded task that `stop` waits for, so *Inserted* equals the source count.
-- Module 05: a delete event shows the removed document from the pre-image (`fullDocumentBeforeChange`) instead of an empty line. BRL amounts in modules 05/06 use the pt-BR format (`R$ 17.429,60`).
-- Live tests: `backend/tests/live/` exercises modules 00–07 over HTTP against `*_test` databases, opt-in with `LIVE_TESTS=1` ([ADR 0001](docs/adr/0001-testes-live-opt-in.md)).
+- Module 07: stopping the generator no longer undercounts. An individual write that was in flight when *Stop* cancelled the workers was confirmed by Atlas but never counted (measured: 87 on screen, 92 in the collection). Each write now runs as a shielded task that `stop` waits for, so *Inserted* equals the source count. The wait is bounded: the async client has a write timeout (`STREAMING_ESCRITA_TIMEOUT_MS`, default 15 s), and writes still pending after it are logged and reported as `escritas_pendentes_no_stop` instead of hanging *Stop* and `/streaming/reset`.
+- Module 05: a delete event shows the removed document from the pre-image (`fullDocumentBeforeChange`) instead of an empty line. BRL amounts use the pt-BR format (`R$ 17.429,60`) in every module: `backend/formato.py::brl` on the API side, `fmtReais`/`fmtBRL` from `frontend/src/lib/formato.js` in the UI.
+- Live tests: `backend/tests/live/` exercises modules 00–07 over HTTP against `*_test` databases, opt-in with `LIVE_TESTS=1`, only on this PoV's own `showcase_*_test` databases ([ADR 0001](docs/adr/0001-testes-live-opt-in.md)).
 - Frontend: pure formatters moved to `src/lib/formato.js` with tests; `useApi` tests; `node --test` now runs in CI.
 
 - Reorganização: `live_monitor.py` saiu da raiz para `scripts/`.

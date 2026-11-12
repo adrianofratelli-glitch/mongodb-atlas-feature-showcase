@@ -2,10 +2,12 @@
 Testes live: os módulos 00–07 contra o cluster real, por HTTP, num backend próprio.
 
 Opt-in. Só rodam com `LIVE_TESTS=1` e com `MONGO_DB`, `STREAMING_DB` e `GEO_DB`
-terminando em `_test` (o teste recusa qualquer outro banco). Pré-requisito: dados
+no formato `showcase_*_test`: bancos só desta PoV. Um `*_test` genérico pode ser de
+outra PoV (o `/streaming/reset` apaga `<GEO_DB>.sinais_ao_vivo` inteiro, e `geo_test`
+é o banco live do geo-showcase), então o teste recusa qualquer outro nome. Pré-requisito: dados
 do `scripts/reset_demo.py` no mesmo `MONGO_DB`. Ver docs/adr/0001-testes-live-opt-in.md.
 
-    LIVE_TESTS=1 MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test \\
+    LIVE_TESTS=1 MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test \\
         backend/venv/bin/python -m pytest -m live backend/tests/live
 
 O backend sobe numa porta livre com `ASP_ENABLED=false` e Kafka apontado para uma
@@ -33,12 +35,16 @@ BACKEND = Path(__file__).resolve().parents[2]
 BANCOS = ("MONGO_DB", "STREAMING_DB", "GEO_DB")
 
 
+def _banco_proprio(nome: str | None) -> bool:
+    return bool(nome) and nome.startswith("showcase_") and nome.endswith("_test")
+
+
 def _motivo_para_pular() -> str | None:
     if os.environ.get("LIVE_TESTS") != "1":
         return "testes live desligados (LIVE_TESTS=1 liga)"
-    fora = [f"{v}={os.environ.get(v)!r}" for v in BANCOS if not (os.environ.get(v) or "").endswith("_test")]
+    fora = [f"{v}={os.environ.get(v)!r}" for v in BANCOS if not _banco_proprio(os.environ.get(v))]
     if fora:
-        return "testes live só rodam em bancos *_test: " + ", ".join(fora)
+        return "testes live só rodam em bancos próprios showcase_*_test: " + ", ".join(fora)
     return None
 
 
@@ -81,7 +87,7 @@ def api():
         if not checks["mongodb"]["ok"]:
             pytest.skip(f"Atlas indisponível (cluster pausado?): {checks['mongodb']['message']}")
         if not checks["collection_produtos"]["ok"]:
-            pytest.skip("POC_test sem dados: rode scripts/reset_demo.py com os mesmos bancos")
+            pytest.skip(f"{os.environ['MONGO_DB']} sem dados: rode scripts/reset_demo.py com os mesmos bancos")
         yield cliente
     finally:
         cliente.close()

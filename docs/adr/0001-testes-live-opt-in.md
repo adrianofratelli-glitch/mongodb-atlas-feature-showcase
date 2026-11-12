@@ -11,7 +11,7 @@ A CI do GitHub não tem credencial do Atlas. O smoke diário na nuvem só confer
 
 ## Decisão
 
-- `backend/tests/live/test_live_modulos.py` exercita os módulos 00 a 07 por HTTP, num backend próprio iniciado pelo teste numa porta livre. Os testes têm o marcador `live` e só rodam com `LIVE_TESTS=1`. Se `MONGO_DB`, `STREAMING_DB` ou `GEO_DB` não terminar em `_test`, a suíte é pulada inteira, com o motivo.
+- `backend/tests/live/test_live_modulos.py` exercita os módulos 00 a 07 por HTTP, num backend próprio iniciado pelo teste numa porta livre. Os testes têm o marcador `live` e só rodam com `LIVE_TESTS=1`. Os três bancos (`MONGO_DB`, `STREAMING_DB`, `GEO_DB`) precisam ter o formato `showcase_*_test`; com qualquer outro nome, a suíte é pulada inteira, com o motivo. Bancos próprios, e não um `*_test` qualquer, porque os mesmos nomes são usados por outras PoVs no mesmo cluster. O `/streaming/reset` faz `delete_many({})` em `<GEO_DB>.sinais_ao_vivo`, e `geo_test` é o banco live do `mongodb-atlas-geo-showcase`. A revisão de 2026-11-12 pegou esse risco. Na execução daquele dia, `geo_test` não tinha `sinais_ao_vivo` (o `reset_demo.py` listou só `transacoes` e o reset manual removeu 0), então nada foi apagado.
 - O backend do teste sobe com `ASP_ENABLED=false` e Kafka apontado para uma porta morta. O teste não liga stream processor (cobrado por segundo) nem disputa o consumer group de uma demo aberta. O 07 é verificado pelo caminho Change Streams: contagem, valor e digest de conteúdo reconciliam, e `inseridos` é igual à fonte.
 - Atlas pausado vira skip com a mensagem do preflight, não falha. Sem `reset_demo.py` no `MONGO_DB`, também.
 - A CI segue offline. Os testes live rodam localmente, antes de demo ou de release.
@@ -20,4 +20,4 @@ A CI do GitHub não tem credencial do Atlas. O smoke diário na nuvem só confer
 
 - Uma regressão de comportamento real (contagem, rollback, pre-image, `constraint`, reconciliação) aparece num comando. O custo é ≈ 2–4 min com RTT alto.
 - Kafka e ASP ao vivo continuam sem teste automatizado: dependem de infraestrutura fora do repositório. O replay gravado segue como contingência declarada.
-- O teste escreve nos bancos `*_test`: dropa e recria `schema_demo`, `transacoes_cs_demo` e as coleções do 06, cria e remove um índice `demo01_` e limpa `pix_test`.
+- O teste escreve só nos bancos `showcase_*_test`. No `MONGO_DB`, dropa e recria `schema_demo`, `transacoes_cs_demo` e as coleções do 06, e cria e remove um índice `demo01_`. No `STREAMING_DB`, limpa `transacoes`, `metricas_janela`, `dlq` e `dlq_audit` (o `/streaming/reset`). No `GEO_DB`, apaga todos os documentos de `sinais_ao_vivo`.

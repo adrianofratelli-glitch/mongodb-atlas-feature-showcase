@@ -19,7 +19,7 @@ The app opens on a **thesis** page, not on module 01: none of the capabilities i
 | **01** Online reindexing | Rolling index build with no downtime. `scripts/live_monitor.py` prints read/write latency while it happens. |
 | **02** Hot/cold tiering | Online Archive moves old documents to cheap storage, still queryable in a single namespace. |
 | **03** Aggregation Pipeline | `$lookup`, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto`. |
-| **04** Schema validation | `strict` rejects new violations; MongoDB 9.0 `constraint` checks and enforces the contract for existing data too. |
+| **04** Schema validation | `strict` rejects new violations; `validationLevel: constraint` (MongoDB 9.0+, per the [9.0 manual](https://www.mongodb.com/docs/manual/core/schema-validation/specify-validation-level/); GA/Preview status still to be confirmed against the release notes) checks and enforces the contract for existing data too. |
 | **05** Change Streams | Ordered feed of inserts/updates/deletes with pre/post-images: an update shows the old status, a delete shows the removed document. |
 | **06** ACID transactions | Multi-document transactions walked step by step, rollback included, and measured: `majority` latency, the cost over the same single-document write, and behavior under contention. |
 | **07** Streaming | Change Streams, Kafka Connector, and Atlas Stream Processing over the same writes. |
@@ -42,8 +42,8 @@ pip install -r requirements.txt
 cp .env.example .env          # MONGO_URI, optionally the Atlas API keys
 cd ../frontend && npm ci && cd ..
 # idempotent reset: data + B-tree indexes + streaming leftovers (safe to rerun)
-MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test backend/venv/bin/python scripts/reset_demo.py
-MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test ./start.sh   # API :8002 + UI :5174
+MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test backend/venv/bin/python scripts/reset_demo.py
+MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test ./start.sh   # API :8002 + UI :5174
 ```
 
 `scripts/reset_demo.py` is the single reset. It refuses any database that does not end in `_test` unless `ALLOW_DEMO_DB_WRITE=1` is set (`ALLOW_DEMO_DB_WRITE=1 backend/venv/bin/python scripts/reset_demo.py` for the demo database, never during a live demo). It drops only collections the modules create, removes only indexes created by module 01 (`demo01_` prefix), upserts `produtos`/`avaliacoes` deterministically (a rerun never duplicates) and cleans the streaming run. It never drops `produtos`/`avaliacoes`, because in a shared demo database they may belong to another PoV as well. `--check` only verifies. The first run on an empty database writes 120k documents (164.6 s measured over the network to an M20); a rerun on populated data took 5.5 s.
@@ -145,15 +145,15 @@ Python 3.11+ · FastAPI · PyMongo · React 19 · Vite · MongoDB Atlas. Module 
 
 ```bash
 pip install -r backend/requirements-dev.txt
-pytest             # 253 unit + adversarial tests, stubbed Mongo, no cluster needed
+pytest             # 258 unit + adversarial tests, stubbed Mongo, no cluster needed
 ruff check backend
-(cd frontend && node --test tests/*.test.mjs)   # 12 frontend tests (formatters, useApi, polling)
+(cd frontend && node --test tests/*.test.mjs)   # 13 frontend tests (formatters, useApi, polling)
 ```
 
-Live tests run every module (00–07) against a real cluster, opt-in and only on `*_test` databases. They start their own backend on a free port with ASP off and Kafka pointed at a dead port, so they never start a billed stream processor:
+Live tests run every module (00–07) against a real cluster, opt-in and only on this PoV's own `showcase_*_test` databases (the streaming reset wipes `<GEO_DB>.sinais_ao_vivo`, so a generic `geo_test` shared with another PoV is refused). They start their own backend on a free port with ASP off and Kafka pointed at a dead port, so they never start a billed stream processor:
 
 ```bash
-LIVE_TESTS=1 MONGO_DB=POC_test STREAMING_DB=pix_test GEO_DB=geo_test \
+LIVE_TESTS=1 MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test \
   backend/venv/bin/python -m pytest -m live backend/tests/live
 ```
 

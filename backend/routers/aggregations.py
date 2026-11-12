@@ -2,6 +2,7 @@ import time
 
 from fastapi import APIRouter, Query
 from database import db
+from formato import brl
 
 router = APIRouter(prefix="/aggregations", tags=["Aggregations"])
 
@@ -260,5 +261,5 @@ def bucket_auto():
         if "_id" in r:
             lo = r["_id"].get("min", 0)
             hi = r["_id"].get("max", 0)
-            r["faixa"] = f"R$ {lo:.0f} – R$ {hi:.0f}"
+            r["faixa"] = f"{brl(lo, 0)} – {brl(hi, 0)}"
     return {"results": result, "pipeline": pipeline, "colecao": "produtos"}

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useApi } from '../hooks/useApi'
 import Limites from '../components/Limites'
+import { fmtReais } from '../lib/formato'
 
 const OP_STYLE = {
   insert: { bg: 'rgba(0,237,100,.08)', border: 'rgba(0,237,100,.3)', text: '#00ED64', label: 'NOVA TRANSAÇÃO' },
@@ -231,7 +232,7 @@ export default function ChangeStreams() {
                   <tr key={i}>
                     <td><code style={{ fontSize: 11 }}>{(d.transacao_id || '').slice(0, 8)}…</code></td>
                     <td>{d.pagador} → {d.recebedor}</td>
-                    <td style={{ fontFamily: 'var(--font-mono)' }}>R$ {Number(d.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</td>
+                    <td style={{ fontFamily: 'var(--font-mono)' }}>{fmtReais(d.valor)}</td>
                     <td>{d.tipo}</td>
                     <td>
                       <span className={`badge ${d.status === 'recusada' ? 'badge-red' : d.status === 'pendente' ? 'badge-yellow' : 'badge-green'}`}>

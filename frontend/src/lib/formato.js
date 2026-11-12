@@ -16,6 +16,10 @@ export const num = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR')
 
 export const fmtBRL = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
 
+// Moeda completa: 17429.6 → "R$ 17.429,60"; casas = 0 para preço médio/faixas.
+export const fmtReais = (v, casas = 2) => (v == null || Number.isNaN(Number(v)) ? '—'
+  : `R$ ${Number(v).toLocaleString('pt-BR', { minimumFractionDigits: casas, maximumFractionDigits: casas })}`)
+
 // 1.234.567.890 → "1,2 bi" / "30 mi" — números de escala PIX não cabem por extenso.
 export function fmtEscala(v) {
   if (v == null) return '—'

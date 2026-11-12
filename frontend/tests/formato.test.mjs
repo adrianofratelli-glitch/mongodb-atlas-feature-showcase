@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  fmtBRL, fmtCount, fmtDataGravacao, fmtEscala, fmtMs, fmtMsPreciso, num,
+  fmtBRL, fmtCount, fmtDataGravacao, fmtEscala, fmtMs, fmtMsPreciso, fmtReais, num,
 } from '../src/lib/formato.js';
 
 test('fmtMs troca para segundos só a partir de 10 s', () => {
@@ -47,4 +47,11 @@ test('fmtCount abrevia contagens do cabeçalho', () => {
   assert.equal(fmtCount(120_000), '120k');
   assert.equal(fmtCount(5_000_000), '5M');
   assert.equal(fmtCount(6_000_000 + 200_000), '6.2M');
+});
+
+test('fmtReais formata moeda completa em pt-BR', () => {
+  assert.equal(fmtReais(17429.6), 'R$ 17.429,60');
+  assert.equal(fmtReais(1669.76, 0), 'R$ 1.670');
+  assert.equal(fmtReais(null), '—');
+  assert.equal(fmtReais('x'), '—');
 });
