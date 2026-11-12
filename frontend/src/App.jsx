@@ -1,6 +1,7 @@
 import React, { lazy, Suspense, useCallback, useState, useEffect } from 'react'
 import { useIntervaloVisivel } from './hooks/usePolling'
 import QueryBlock from './components/QueryBlock'
+import { fmtCount } from './lib/formato'
 
 const Tese = lazy(() => import('./pages/Tese'))
 const Reindexacao = lazy(() => import('./pages/Reindexacao'))
@@ -79,14 +80,6 @@ function ApiErrorToast() {
       }}>×</button>
     </div>
   )
-}
-
-// Formata contagens grandes: 5_000_000 → "5M", 100_000 → "100k"
-function fmtCount(n) {
-  if (n == null) return '…'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 >= 100_000 ? 1 : 0)}M`
-  if (n >= 1_000) return `${Math.round(n / 1_000)}k`
-  return String(n)
 }
 
 export default function App() {

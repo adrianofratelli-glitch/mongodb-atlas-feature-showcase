@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import { useIntervaloVisivel, useVisivel } from '../hooks/usePolling'
 import QueryBlock from '../components/QueryBlock'
+import { fmtBRL, fmtDataGravacao, fmtEscala, fmtMs, num } from '../lib/formato'
 
 const MAX_FEED = 40
 
@@ -55,30 +56,6 @@ function useSse(path, onMessage, enabled = true) {
 }
 
 const push = (list, item) => [item, ...list].slice(0, MAX_FEED)
-// Acima de 10 s, milissegundos com 5 dígitos obrigam a plateia a fazer conta.
-const fmtMs = (v) => {
-  if (v == null) return '—'
-  return v >= 10000 ? `${(v / 1000).toFixed(1).replace('.', ',')} s` : `${Math.round(v)} ms`
-}
-const num = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR'))
-const fmtBRL = (v) => (v == null ? '—' : Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }))
-
-// 1.234.567.890 → "1,2 bi" / "30 mi" — números de escala PIX não cabem por extenso.
-function fmtEscala(v) {
-  if (v == null) return '—'
-  if (v >= 1e9) return `${(v / 1e9).toFixed(1).replace('.', ',')} bi`
-  if (v >= 1e6) return `${(v / 1e6).toFixed(v >= 1e7 ? 0 : 1).replace('.', ',')} mi`
-  if (v >= 1e3) return `${Math.round(v / 1e3)} mil`
-  return String(v)
-}
-
-function fmtDataGravacao(v) {
-  if (!v) return 'data não informada'
-  const d = new Date(v)
-  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString('pt-BR', {
-    dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Sao_Paulo',
-  })
-}
 
 function Stat({ label, value, sub, color }) {
   return (

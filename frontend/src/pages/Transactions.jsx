@@ -1,10 +1,8 @@
 import React, { useState } from 'react'
 import { useApi } from '../hooks/useApi'
 import Limites from '../components/Limites'
+import { fmtMsPreciso as fmtMs } from '../lib/formato'
 
-const fmtMs = (v) => (v == null ? '—' : v >= 1000
-  ? `${(v / 1000).toFixed(2).replace('.', ',')} s`
-  : `${v.toFixed(v < 10 ? 1 : 0).replace('.', ',')} ms`)
 
 // Uma coluna do painel de medição. `nota` é o que impede o número de ser lido
 // sozinho — em medição, o número sem a condição em que foi obtido é a parte
