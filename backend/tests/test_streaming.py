@@ -1526,3 +1526,55 @@ def test_folga_nao_troca_a_pontuacao_da_frase_pelo_separador_de_milhar(monkeypat
 
     assert "1.614 TPS" in detalhe            # separador aplicado ao número
     assert "trabalho real, ainda com folga," in detalhe   # e só a ele
+
+
+def test_parar_no_meio_do_insert_nao_perde_a_contagem(monkeypatch):
+    """O Parar cancela os workers; a escrita em voo termina e entra em `inseridos`.
+
+    Medido ao vivo antes da correção: 87 na tela, 92 na coleção (5 workers em voo).
+    """
+    class ColecaoLenta:
+        def __init__(self):
+            self.docs = []
+
+        async def insert_one(self, doc):
+            await asyncio.sleep(0.05)       # o Atlas confirma depois do cancelamento
+            self.docs.append(doc)
+
+    colecao = ColecaoLenta()
+    monkeypatch.setattr(streaming, "acol_tx", lambda: colecao)
+    streaming.meter_write_ack.reset()
+
+    async def cenario():
+        g = streaming.Generator()
+        g._start_mono = time.monotonic()
+        g.run_id = "run-parar"
+        g.workers_ativos = 4
+        g.tps_alvo = 1000
+        g.task = asyncio.create_task(g._run_individual())
+        await asyncio.sleep(0.02)           # os 4 workers estão no meio do insert
+        await g.stop()
+        return g
+
+    g = asyncio.run(cenario())
+    assert len(colecao.docs) >= 4
+    assert g.inserted == len(colecao.docs)
+    assert not g._inflight
+
+
+def test_erro_de_escrita_individual_conta_uma_vez(monkeypatch):
+    from pymongo.errors import AutoReconnect
+
+    class ColecaoQueFalha:
+        async def insert_one(self, doc):
+            raise AutoReconnect("eleição")
+
+    monkeypatch.setattr(streaming, "acol_tx", lambda: ColecaoQueFalha())
+    g = streaming.Generator()
+    g._start_mono = time.monotonic()
+
+    with pytest.raises(AutoReconnect):
+        asyncio.run(g._insert_um(streaming._new_transacao("run-e", 1)))
+
+    assert g.write_errors == 1
+    assert g.inserted == 0

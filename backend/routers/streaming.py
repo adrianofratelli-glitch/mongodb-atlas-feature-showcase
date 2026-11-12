@@ -1250,12 +1250,33 @@ class Generator:
         necessarios = math.ceil(tps * self.CUSTO_ESCRITA_S) + 1
         return max(2, min(self.WORKERS_MAX, necessarios))
 
-    async def _insert_um(self, doc: dict[str, Any]) -> None:
+    async def _gravar_um(self, doc: dict[str, Any]) -> None:
         doc["ts"] = _now()
         inicio = time.monotonic()
-        await acol_tx().insert_one(doc)
+        try:
+            await acol_tx().insert_one(doc)
+        except PyMongoError:
+            # Contado aqui, dentro da task blindada, e não em quem a aguarda: no
+            # Parar, quem aguardava já foi cancelado e o erro se perderia.
+            self.write_errors += 1
+            raise
         meter_write_ack.record((time.monotonic() - inicio) * 1000)
         self._record(1)
+
+    async def _insert_um(self, doc: dict[str, Any]) -> None:
+        """
+        Uma escrita que sobrevive ao Parar.
+
+        O Parar cancela as corrotinas dos workers. Sem a blindagem, o cancelamento
+        caía no meio do `insert_one`: o Atlas confirmava a escrita, mas `_record`
+        nunca rodava e o contador "Inseridos" ficava abaixo da coleção (medido:
+        87 na tela, 92 no banco, com 5 workers). A task fica em `_inflight`, e
+        `_stop` aguarda o fim dela, como já fazia com os lotes.
+        """
+        tarefa = asyncio.ensure_future(self._gravar_um(doc))
+        self._inflight.add(tarefa)
+        tarefa.add_done_callback(self._inflight.discard)
+        await asyncio.shield(tarefa)
 
     async def _worker_individual(self, intervalo_s: float) -> None:
         """Uma corrotina: insere e espera o bastante para manter a taxa."""
@@ -1272,8 +1293,7 @@ class Generator:
                 # sozinho (retryWrites). O que chega aqui é o que nem a
                 # retentativa salvou: conta como erro e some do fluxo, sem ser
                 # persistido — a reconciliação compara contra o que está na
-                # coleção, então continua fechando.
-                self.write_errors += 1
+                # coleção, então continua fechando. `_gravar_um` já contou o erro.
                 logger.exception("Falha ao inserir PIX individual")
             proximo += intervalo_s
             await asyncio.sleep(max(0.0, proximo - time.monotonic()))
