@@ -134,5 +134,6 @@ const COMPONENTES_FALLBACK = [
   { capacidade: 'Change Streams (CDC ordenado)', atlas: 'cluster', stack: 'conector CDC + broker' },
   { capacidade: 'Transação multi-documento', atlas: 'cluster', stack: 'banco transacional' },
   { capacidade: 'Hot/cold tiering consultável', atlas: 'Online Archive (mesmo namespace)', stack: 'object storage + motor de consulta federada' },
+  { capacidade: 'Busca textual (fuzzy, facetas)', atlas: 'MongoDB Search (mesmo cluster)', stack: 'motor de busca + pipeline de sincronização' },
   { capacidade: 'Janelas sobre o fluxo', atlas: 'Atlas Stream Processing', stack: 'processador de stream dedicado' },
 ]

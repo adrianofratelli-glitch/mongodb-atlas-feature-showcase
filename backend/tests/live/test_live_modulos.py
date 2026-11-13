@@ -1,5 +1,5 @@
 """
-Testes live: os módulos 00–07 contra o cluster real, por HTTP, num backend próprio.
+Testes live: os módulos 00–08 contra o cluster real, por HTTP, num backend próprio.
 
 Opt-in. Só rodam com `LIVE_TESTS=1` e com `MONGO_DB`, `STREAMING_DB` e `GEO_DB`
 no formato `showcase_*_test`: bancos só desta PoV. Um `*_test` genérico pode ser de
@@ -250,3 +250,22 @@ def test_07_change_streams_reconcilia_e_inseridos_bate_com_a_fonte(api):
     cs = rec["change_streams"]
     assert cs["contagem_confere"] and cs["valor_confere"] and cs["digest_confere"], cs
     assert cs["duplicados"] == 0
+
+
+def test_08_busca_fuzzy_acha_o_que_o_termo_exato_nao_acha(api):
+    """Cria o índice próprio se faltar (fica no showcase_poc_test: recriar custa um build)."""
+    _ok(api.post("/busca/indice"))
+    for _ in range(60):
+        estado = _ok(api.get("/busca/indice"))["estado"]
+        if estado in ("pronto", "falhou", "indisponivel"):
+            break
+        time.sleep(5)
+    assert estado == "pronto", estado
+    fuzzy = _ok(api.get("/busca", params={"q": "notebok", "fuzzy": "true"}))
+    assert fuzzy["executado"] is True and fuzzy["total"] > 0
+    assert all("Notebook" in r["nome"] for r in fuzzy["resultados"])
+    assert sum(b["n"] for b in fuzzy["facetas"]["categoria"]) == fuzzy["total"]
+    exato = _ok(api.get("/busca", params={"q": "notebok", "fuzzy": "false"}))
+    assert exato["executado"] is True and exato["total"] == 0
+    estoque = _ok(api.get("/busca", params={"q": "notebook", "so_em_estoque": "true"}))
+    assert estoque["resultados"] and all(r["em_estoque"] for r in estoque["resultados"])

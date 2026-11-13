@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from database import db, readiness
 from routers import (
     aggregations,
+    busca,
     change_streams,
     hot_cold,
     reindexacao,
@@ -90,6 +91,7 @@ app.include_router(transactions.router)
 app.include_router(streaming.router)
 app.include_router(replay.router)
 app.include_router(tese.router)
+app.include_router(busca.router)
 
 
 @app.get("/")
@@ -133,10 +135,20 @@ async def preflight():
                 "message": "disponível" if collection in names else "ausente — rode scripts/reset_demo.py",
             }
         checks.update(await streaming.preflight_checks())
+        indice_busca = await asyncio.to_thread(busca._info_indice)
+        checks["busca_indice"] = {
+            "ok": indice_busca["estado"] == "pronto",
+            "message": {
+                "pronto": "índice showcase_busca pronto",
+                "construindo": "índice showcase_busca em construção",
+                "ausente": "índice showcase_busca ausente — crie pela aba 08",
+                "falhou": "índice showcase_busca falhou — veja o Atlas",
+            }.get(indice_busca["estado"], "MongoDB Search indisponível neste cluster"),
+        }
 
     # Kafka e ASP são opcionais: a UI mostra "não configurado" e o
     # resto roda. Eles aparecem no diagnóstico, mas não reprovam o pré-voo.
-    opcionais = {"atlas_admin_api", "streaming_kafka", "streaming_asp"}
+    opcionais = {"atlas_admin_api", "streaming_kafka", "streaming_asp", "busca_indice"}
     ready = all(check["ok"] for key, check in checks.items() if key not in opcionais)
     return JSONResponse(status_code=200 if ready else 503, content={"ready": ready, "checks": checks})
 

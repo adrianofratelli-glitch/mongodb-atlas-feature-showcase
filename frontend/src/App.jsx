@@ -11,6 +11,7 @@ const SchemaValidation = lazy(() => import('./pages/SchemaValidation'))
 const ChangeStreams = lazy(() => import('./pages/ChangeStreams'))
 const Transactions = lazy(() => import('./pages/Transactions'))
 const Streaming = lazy(() => import('./pages/Streaming'))
+const Busca = lazy(() => import('./pages/Busca'))
 
 const MODULES = [
   // A tese abre a lista e é o destino padrão. Ver a nota no topo de Tese.jsx:
@@ -23,6 +24,7 @@ const MODULES = [
   { key: 'streams', num: '05', title: 'Change Streams',       subtitle: 'Eventos em tempo real — insert, update, delete', color: '#14b8a6', component: ChangeStreams },
   { key: 'tx',      num: '06', title: 'Transações ACID',      subtitle: 'Multi-documento, multi-coleção, rollback total', color: '#ffad00', component: Transactions },
   { key: 'streaming', num: '07', title: 'Streaming',            subtitle: 'Change Streams × Kafka Connector × Atlas Stream Processing', color: '#e11d48', component: Streaming },
+  { key: 'busca',   num: '08', title: 'Busca',                subtitle: 'MongoDB Search — fuzzy e facetas no mesmo cluster', color: '#00c2eb', component: Busca },
 ]
 
 // MongoDB leaf logo SVG (official mark)

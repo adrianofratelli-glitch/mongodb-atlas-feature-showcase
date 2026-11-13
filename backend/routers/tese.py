@@ -39,6 +39,8 @@ COMPONENTES_STACK = [
     {"capacidade": "Transação multi-documento", "atlas": "cluster", "stack": "banco transacional"},
     {"capacidade": "Hot/cold tiering consultável", "atlas": "Online Archive (mesmo namespace)",
      "stack": "object storage + motor de consulta federada"},
+    {"capacidade": "Busca textual (fuzzy, facetas)", "atlas": "MongoDB Search (mesmo cluster)",
+     "stack": "motor de busca + pipeline de sincronização"},
     {"capacidade": "Janelas sobre o fluxo", "atlas": "Atlas Stream Processing", "stack": "processador de stream dedicado"},
 ]
 
@@ -183,6 +185,7 @@ def _executar() -> dict:
             {"capacidade": "Hot/Cold (Online Archive)", "onde": "módulo 02 (Atlas Admin API)"},
             {"capacidade": "Streaming (Kafka + ASP)", "onde": "módulo 07 (reconciliação medida)"},
             {"capacidade": "Reindexação online", "onde": "módulo 01 (leituras durante o build)"},
+            {"capacidade": "Busca textual (MongoDB Search)", "onde": "módulo 08 (índice próprio, fuzzy e facetas)"},
         ],
         "componentes": COMPONENTES_STACK,
         "aviso": "Latência inclui ida e volta de rede até o cluster. Prova funcional, não benchmark.",
