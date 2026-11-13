@@ -25,7 +25,7 @@ db.avaliacoes.aggregate([
       _id: "$produto_id",
       total_reviews: { $sum: 1 },
       avg_nota: { $avg: "$nota" },
-      top_reviews: { $topN: {           // 5.2+: só as 3 melhores
+      top_reviews: { $topN: {           // só as 3 melhores
         output: { usuario: "$usuario", nota: "$nota" },
         sortBy: { nota: -1 }, n: 3
       }}

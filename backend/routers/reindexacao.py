@@ -115,9 +115,9 @@ def create_index(
         return {"status": "exists", "index_name": equivalent, "message": "Índice equivalente já existe na coleção."}
 
     name = _index_name(fields, sparse=sparse, partial=partial_filter is not None)
-    # Desde o MongoDB 4.2 todo build de índice é "hybrid": não bloqueia leituras
-    # e escritas durante a maior parte do processo; locks exclusivos curtos
-    # ainda existem no início e no fim.
+    # Build otimizado ("hybrid"): lock exclusivo só no início e no fim; no resto cede a
+    # leituras e escritas (manual 9.0, "Index Builds on Populated Collections", 2026-11-13).
+    # A versão de introdução (4.2) saiu do manual atual: a confirmar (docs/status-de-produto.md).
     kwargs: dict = {"name": name, "sparse": sparse}
     if partial_filter:
         kwargs["partialFilterExpression"] = partial_filter
@@ -146,7 +146,7 @@ def create_index(
         "index_name": name,
         "fields": fields,
         "note": (
-            "Build iniciado (hybrid build, MongoDB 4.2+). Leituras e escritas "
+            "Build iniciado (processo otimizado de build). Leituras e escritas "
             "continuam durante a maior parte da construção; há locks curtos nas transições."
         ),
     }

@@ -6,11 +6,11 @@
 
 ## O que é
 
-Um showcase interativo que exercita **capacidades centrais do Atlas contra um cluster real** (não simulação): reindexação online, tiering quente/frio (Online Archive), Aggregation Pipeline, validação de schema, Change Streams, transações ACID, e um módulo de Streaming que compara três formas de capturar mudança (Change Streams / Kafka Connector / Atlas Stream Processing).
+Um showcase interativo que exercita **capacidades centrais do Atlas contra um cluster real** (não simulação): reindexação online, tiering quente/frio (Online Archive), Aggregation Pipeline, validação de schema, Change Streams, transações ACID, um módulo de Streaming que compara três formas de capturar mudança (Change Streams / Kafka Connector / Atlas Stream Processing) e, desde 2026-11-13, busca textual com MongoDB Search (módulo 08). Versões mínimas e status GA/Preview de cada recurso, com fonte e data: `docs/status-de-produto.md`.
 
 **Sem LLM nesta PoV.** Decisão deliberada — o objetivo é responder "o Atlas aguenta?" e "o Atlas faz?" com número medido, não com narrativa de IA.
 
-**Nota de escopo:** o antigo módulo 08 (risco geográfico / Geo) foi extraído em 2026-09-11 para o repositório standalone `mongodb-atlas-geo-showcase`. Não existe mais o módulo/telas de Geo neste repositório (routers, frontend), mas restam resquícios ligados ao streaming: `GEO_DB`/`GEO_DB_NOME` e a coleção `sinais_ao_vivo` em `backend/routers/streaming.py` (sink do processor ASP `geoSinais30s`, limpo no reset de streaming), `backend/data/municipios.json` e `scripts/setup-asp-geo.js`. O que permanece deste histórico é só o canal `CARTAO_PRESENCIAL` dentro do gerador do módulo de Streaming (ver abaixo), que é história do módulo 07, não do antigo 08.
+**Nota de escopo:** o número 08 hoje é a Busca. O módulo 08 anterior (risco geográfico / Geo) foi extraído em 2026-09-11 para o repositório standalone `mongodb-atlas-geo-showcase`. Não existe mais o módulo/telas de Geo neste repositório (routers, frontend), mas restam resquícios ligados ao streaming: `GEO_DB`/`GEO_DB_NOME` e a coleção `sinais_ao_vivo` em `backend/routers/streaming.py` (sink do processor ASP `geoSinais30s`, limpo no reset de streaming), `backend/data/municipios.json` e `scripts/setup-asp-geo.js`. O que permanece deste histórico é só o canal `CARTAO_PRESENCIAL` dentro do gerador do módulo de Streaming (ver abaixo), que é história do módulo 07, não do antigo 08.
 
 ## Stack
 
@@ -28,7 +28,7 @@ React 19 + Vite (frontend/, :5174)
    │  EventSource /api/replay/streaming/*   (SSE — fallback gravado)
    ▼
 FastAPI (backend/main.py, :8002)
-   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.*)
+   ├─ PyMongo ─────────────► MongoDB Atlas   (POC.*, pix.*; $search via mongot do mesmo cluster)
    ├─ requests ────────────► Atlas Admin API v2      (só Online Archive + métricas de CPU)
    ├─ requests ────────────► Kafka Connect REST      (:8083, modo ao vivo)
    ├─ aiokafka (opcional) ─► broker Kafka (:9092, KRaft via Homebrew, modo ao vivo)
@@ -45,7 +45,7 @@ O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removen
 | `backend/settings.py` | Dataclass congelada que lê env vars uma vez; `settings.atlas_configured` habilita o módulo de Online Archive sem estourar quando a credencial falta |
 | `backend/database.py` | Um único `MongoClient` (`connect=False`, `appname`, timeouts explícitos) + `readiness()`. Cai para URI de localhost no import — falta de `MONGO_URI` aparece em `/health/ready`, não derruba o processo |
 | `backend/security.py` | `MutationGuardMiddleware` + `ApiHardeningMiddleware` (ver seção de segurança) |
-| `backend/routers/*.py` | Um módulo por demo — reindexacao, hot_cold, aggregations, schema_validation, change_streams, transactions, streaming, replay, tese (`POST /tese/medir`) |
+| `backend/routers/*.py` | Um módulo por demo — reindexacao, hot_cold, aggregations, schema_validation, change_streams, transactions, streaming, replay, tese (`POST /tese/medir`), busca (MongoDB Search) |
 | `backend/seed_data.py` | Upsert determinístico (idempotente) de `produtos`/`avaliacoes` + `ensure_indexes()`; sem `ALLOW_DEMO_DB_WRITE=1`, recusa `MONGO_DB` fora de `showcase_*_test`; com a flag, aceita só o `MONGO_DB` do arquivo `backend/.env` (padrão `POC`, `mongo_db_da_demo()`). O `scripts/reset_demo.py` e o `scripts/cleanup-streaming-data.py` exigem ainda `STREAMING_DB`/`GEO_DB` no formato `showcase_*_test` sem a flag (a limpeza dropa coleções; `geo_test` é do geo-showcase). Com a flag, só passam os nomes do arquivo `backend/.env` (ou o padrão `pix`/`geo`), nunca um override exportado no shell (`banco_da_demo()` em `scripts/cleanup-streaming-data.py`). O `scripts/ambiente.sh` passa a flag porque o `overview` é dono do ciclo da demo |
 | `scripts/reset_demo.py` | Reset único: dropa só coleções dos módulos, remove índices `demo01_*`, garante dados/índices e limpa o streaming; `--check` só verifica |
 
@@ -53,7 +53,7 @@ O dev server do Vite faz proxy de `/api` para `http://localhost:8002`, **removen
 
 ## Componentes do frontend
 
-- `src/App.jsx` — casca, seletor compacto de módulo, roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`). Rota padrão é `/#tese`.
+- `src/App.jsx` — casca, seletor compacto de módulo, roteamento por hash (`/#tese`, `/#agg`, `/#streams`, `/#tx`, `/#streaming`, `/#busca`). Rota padrão é `/#tese`.
 - `src/pages/` — um componente por módulo, mais `Tese.jsx` (a abertura: tese de convergência + não-objetivos, ~70 palavras).
 - `src/components/` — `QueryBlock` (mostra o pipeline/query executado), `Limites` (bloco de limite declarado, `<details>` fechado, usado por todo módulo).
 - `src/hooks/useApi.js` — wrapper de fetch com `X-Demo-Token`, timeout de 30s (configurável até 300s), erro traduzido para linguagem de operador, contador de pendentes em vez de booleano de loading.
@@ -116,7 +116,7 @@ O guard **ignora métodos seguros** (GET), e é por isso que **todo endpoint SSE
 
 ## Testes
 
-A suíte offline (`pytest`, a mesma da CI) usa Mongo stubado/monkeypatchado e não exige cluster: 273 testes, mais 1 módulo live pulado. A suíte live, `backend/tests/live/test_live_modulos.py`, é opt-in (`LIVE_TESTS=1`) e só roda com `MONGO_DB`/`STREAMING_DB`/`GEO_DB` no formato `showcase_*_test` (bancos próprios: o reset do streaming apaga `<GEO_DB>.sinais_ao_vivo`). Ela sobe o próprio backend numa porta livre, com ASP desligado e Kafka numa porta morta, e exercita 00–07 por HTTP. No 07 ela confere a reconciliação por Change Streams e `inseridos == fonte` (decisão em `docs/adr/0001-testes-live-opt-in.md`). O frontend tem testes `node --test` (`frontend/tests/`: polling, `useApi`, formatadores de `src/lib/formato.js`), que rodam na CI. `backend/tests/test_endpoints_adversarial.py` cobre entradas hostis (operadores Mongo em query/body, nomes de índice alheios, JSON malformado, corpo de 1 MB, paginação fora do contrato), concorrência (409 em benchmark e medição simultâneos) e degradação sem Mongo.
+A suíte offline (`pytest`, a mesma da CI) usa Mongo stubado/monkeypatchado e não exige cluster: 289 testes, mais 1 módulo live pulado. A suíte live, `backend/tests/live/test_live_modulos.py`, é opt-in (`LIVE_TESTS=1`) e só roda com `MONGO_DB`/`STREAMING_DB`/`GEO_DB` no formato `showcase_*_test` (bancos próprios: o reset do streaming apaga `<GEO_DB>.sinais_ao_vivo`). Ela sobe o próprio backend numa porta livre, com ASP desligado e Kafka numa porta morta, e exercita 00–08 por HTTP (no 08, cria o índice `showcase_busca` se faltar, espera `queryable` e confere fuzzy × termo exato). No 07 ela confere a reconciliação por Change Streams e `inseridos == fonte` (decisão em `docs/adr/0001-testes-live-opt-in.md`). O frontend tem testes `node --test` (`frontend/tests/`: polling, `useApi`, formatadores de `src/lib/formato.js`), que rodam na CI. `backend/tests/test_endpoints_adversarial.py` cobre entradas hostis (operadores Mongo em query/body, nomes de índice alheios, JSON malformado, corpo de 1 MB, paginação fora do contrato), concorrência (409 em benchmark e medição simultâneos) e degradação sem Mongo.
 
 ```bash
 pytest                                  # testpaths = backend/tests

@@ -10,7 +10,7 @@
 
 Não há sidebar. Um **seletor compacto** no topo troca entre os módulos e preserva os hashes de deep-link. A abertura da aplicação é a página `Tese.jsx` (`/#tese`), não o módulo 01 — entrar direto pela feature 01 fazia a demo ser lida como catálogo item a item, e um time de dados compara com o que já opera e conclui "já temos isso". A tese declara convergência (não capacidade) e os não-objetivos explícitos. Sem número de economia estimado — é a primeira coisa desmontada numa sala técnica. O botão **Medir agora** chama `POST /tese/medir` e mostra uma tabela p50/máx por capacidade (ping, consulta indexada, agregação, rejeição de schema, entrega de change stream, transação), com a evidência de cada linha; antes do clique a tela diz que não há medição, e falha vira banner com a ação a tomar. Um `<details>` fechado traz a comparação de componentes (rotulada como desenho de arquitetura, não medição).
 
-### As 8 entradas (`frontend/src/App.jsx`, array `MODULES`: a tese + 7 módulos)
+### As 9 entradas (`frontend/src/App.jsx`, array `MODULES`: a tese + 8 módulos)
 
 | Hash | Nº | Título | Componente | O que prova |
 |---|---|---|---|---|
@@ -18,10 +18,11 @@ Não há sidebar. Um **seletor compacto** no topo troca entre os módulos e pres
 | `#reindex` | 01 | Reindexação Online | `Reindexacao.jsx` | Índice sendo construído com o cluster servindo tráfego (hybrid build) |
 | `#hotcold` | 02 | Hot / Cold Tiering | `HotCold.jsx` | Online Archive movendo dado frio, query continuando unificada |
 | `#agg` | 03 | Aggregation Pipeline | `Aggregations.jsx` | Transformação e análise no servidor, sem trazer dado para a aplicação |
-| `#schema` | 04 | Schema Validation | `SchemaValidation.jsx` | `strict` rejeita escritas inválidas; `constraint` verifica e garante o contrato para a coleção inteira (MongoDB 9.0+) |
+| `#schema` | 04 | Schema Validation | `SchemaValidation.jsx` | `strict` rejeita escritas inválidas; `constraint` verifica e garante o contrato para a coleção inteira (MongoDB 9.0+, sem rótulo de Preview; fonte em `docs/status-de-produto.md`) |
 | `#streams` | 05 | Change Streams | `ChangeStreams.jsx` | Reação a mudança sem polling |
 | `#tx` | 06 | Transações ACID | `Transactions.jsx` | Multi-documento, com commit e rollback visíveis |
 | `#streaming` | 07 | Streaming | `Streaming.jsx` | Três abordagens de captura lado a lado, e o que acontece quando uma falha |
+| `#busca` | 08 | Busca | `Busca.jsx` | MongoDB Search no mesmo cluster: erro de digitação tolerado (fuzzy), filtro e facetas, sem sincronizar para outro motor. Estado do índice visível; sem índice pronto, a busca não roda e a tela diz por quê |
 
 Navegação por hash, lida no boot e reagindo a `hashchange` — suficiente para deep-link funcionar durante a apresentação (abrir um módulo específico direto pela URL).
 

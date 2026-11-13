@@ -1,6 +1,6 @@
 # MongoDB Atlas feature showcase
 
-Seven Atlas capabilities, one page each, running against a real cluster. Build an index and watch reads keep flowing. Break a change stream and watch it resume from its token. Roll back a transaction and watch the documents return.
+Eight Atlas capabilities, one page each, running against a real cluster. Build an index and watch reads keep flowing. Break a change stream and watch it resume from its token. Roll back a transaction and watch the documents return.
 
 Mapa do código: [docs/MAPA_DO_CODIGO.md](docs/MAPA_DO_CODIGO.md)
 
@@ -19,12 +19,15 @@ The app opens on a **thesis** page, not on module 01: none of the capabilities i
 | **01** Online reindexing | Rolling index build with no downtime. `scripts/live_monitor.py` prints read/write latency while it happens. |
 | **02** Hot/cold tiering | Online Archive moves old documents to cheap storage, still queryable in a single namespace. |
 | **03** Aggregation Pipeline | `$lookup`, `$facet`, `$unionWith`, `$setWindowFields`, `$bucketAuto`. |
-| **04** Schema validation | `strict` rejects new violations; `validationLevel: constraint` (MongoDB 9.0+, per the [9.0 manual](https://www.mongodb.com/docs/manual/core/schema-validation/specify-validation-level/); GA/Preview status still to be confirmed against the release notes) checks and enforces the contract for existing data too. |
+| **04** Schema validation | `strict` rejects new violations; `validationLevel: constraint` checks and enforces the contract for existing data too. Introduced in MongoDB 9.0 per the [9.0 release notes](https://www.mongodb.com/docs/manual/release-notes/9.0/), with no Preview label (checked 2026-11-13; cluster on 9.0.7). |
 | **05** Change Streams | Ordered feed of inserts/updates/deletes with pre/post-images: an update shows the old status, a delete shows the removed document. |
 | **06** ACID transactions | Multi-document transactions walked step by step, rollback included, and measured: `majority` latency, the cost over the same single-document write, and behavior under contention. |
 | **07** Streaming | Change Streams, Kafka Connector, and Atlas Stream Processing over the same writes. |
+| **08** Search | MongoDB Search (formerly Atlas Search) on the same `produtos` collection: typo-tolerant `text` (`fuzzy`), an in-stock filter and facets by category/brand (`$searchMeta`), with no sync pipeline to a separate engine. The module creates its own index (`showcase_busca`) and only runs `$search` once `$listSearchIndexes` reports it queryable, because `$search` against a missing index returns nothing and no error. Vector Search is out of scope ([ADR 0002](docs/adr/0002-modulo-busca-sem-vector.md)). |
 
-The geospatial-risk module (formerly 08) became a standalone PoV: [`mongodb-atlas-geo-showcase`](https://github.com/adrianofratelli-glitch/mongodb-atlas-geo-showcase).
+Every version or GA/Preview claim above is sourced and dated in [docs/status-de-produto.md](docs/status-de-produto.md); what the current docs do not support is marked "to be confirmed" there and kept off the screen.
+
+The geospatial-risk module (an earlier 08) became a standalone PoV: [`mongodb-atlas-geo-showcase`](https://github.com/adrianofratelli-glitch/mongodb-atlas-geo-showcase).
 
 Each module states where its capability does **not** go, before anyone asks.
 
@@ -56,7 +59,7 @@ Run `curl http://localhost:8002/preflight` before presenting. It checks the URI,
 
 | Mode | Command | Needs |
 |---|---|---|
-| Web demo (modules 00–07; without Kafka/ASP module 07 says "not configured") | `./start.sh` | `backend/.env` with `MONGO_URI`, the venv, `frontend/node_modules`, data from `reset_demo.py` |
+| Web demo (modules 00–08; without Kafka/ASP module 07 says "not configured") | `./start.sh` | `backend/.env` with `MONGO_URI`, the venv, `frontend/node_modules`, data from `reset_demo.py` |
 | Module 07 fallback | `./bin/overview --replay` | the same, plus the recorded run in `backend/data/replay_streaming.json` |
 | Full live demo | `./bin/overview` | the same, plus an Atlas Stream Processing workspace (`ASP_CONNECTION_STRING`, a connection named `ASP_CONNECTION_NAME` pointing at the cluster), `mongosh`, and `brew install kafka` (binaries only) |
 
@@ -150,7 +153,7 @@ ruff check backend
 (cd frontend && node --test tests/*.test.mjs)   # 14 frontend tests (formatters, useApi, polling)
 ```
 
-Live tests run every module (00–07) against a real cluster, opt-in and only on this PoV's own `showcase_*_test` databases (the streaming reset wipes `<GEO_DB>.sinais_ao_vivo`, so a generic `geo_test` shared with another PoV is refused). They start their own backend on a free port with ASP off and Kafka pointed at a dead port, so they never start a billed stream processor:
+Live tests run every module (00–08) against a real cluster, opt-in and only on this PoV's own `showcase_*_test` databases (the streaming reset wipes `<GEO_DB>.sinais_ao_vivo`, so a generic `geo_test` shared with another PoV is refused). They start their own backend on a free port with ASP off and Kafka pointed at a dead port, so they never start a billed stream processor:
 
 ```bash
 LIVE_TESTS=1 MONGO_DB=showcase_poc_test STREAMING_DB=showcase_pix_test GEO_DB=showcase_geo_test \

@@ -30,7 +30,7 @@
 
 **Nota importante:** o `$group` inicial de `/aggregations/lookup` **não tem índice cobrindo** a chave de agrupamento (`produto_id`) sobre a coleção inteira — em `--full` (1M avaliações) isso é um COLLSCAN completo. Por isso o endpoint cacheia o resultado por `limit` durante 45s (`LOOKUP_CACHE_TTL_S` em `backend/routers/aggregations.py:18`), para refresh de tela na demo não repetir o scan.
 
-### `pix.transacoes` — criados em `backend/routers/streaming.py:836-875` (função `_ensure_indexes()`)
+### `pix.transacoes` — criados em `backend/routers/streaming.py:851-890` (função `_ensure_indexes()`)
 
 | Nome | Campos | Tipo | Por que existe |
 |---|---|---|---|
@@ -50,7 +50,7 @@ A limpeza (`/streaming/reset`) precisa recriar os três índices sempre que drop
 db["produtos"].create_index(key, name=name, sparse=sparse, partialFilterExpression=partial_filter)
 ```
 
-- **`POST /reindexacao/create`** — cria índice em background (thread separada), até 4 campos, com suporte a `sparse` e a um único filtro parcial permitido (`{"em_estoque": True}`). Prova que o build é *hybrid* (MongoDB 4.2+): não bloqueia leitura/escrita na maior parte do processo.
+- **`POST /reindexacao/create`** — cria índice em background (thread separada), até 4 campos, com suporte a `sparse` e a um único filtro parcial permitido (`{"em_estoque": True}`). Prova que o build é *hybrid* (processo otimizado descrito no manual 9.0; a versão de introdução está "a confirmar" em `docs/status-de-produto.md`): não bloqueia leitura/escrita na maior parte do processo.
 - **`GET /reindexacao/explain`** — roda `db.command("explain", find_cmd, verbosity="executionStats")` sobre três cenários fixos:
 
 ```python
@@ -220,7 +220,7 @@ db.command("collMod", COL, validator=SCHEMA, validationLevel="strict", validatio
 ```
 Onde: `schema_validation.py`. O que faz: ativa validação **em uma coleção já existente**, sem recriar — o banco passa a recusar documentos fora do contrato, incluindo erro estruturado (`errInfo`) sobre qual regra falhou. Por que existe: diferencial vs validação só na aplicação — o contrato vive no banco.
 
-Com `strict`, dados inválidos já armazenados podem permanecer. No MongoDB 9.0+, a demo também prepara a coleção (`prepareConstraintValidationLevel: true`) e tenta `validationLevel: "constraint"`. O banco examina todos os documentos existentes e bloqueia a promoção enquanto encontrar violações. A tela corrige quatro exemplos sintéticos marcados e repete a promoção, que garante que os dados atuais e futuros atendam ao validador. A verificação examina a coleção; considere o custo em coleções grandes. Para mudar as regras após a promoção, retorne a `strict`, altere o validador e promova novamente.
+Com `strict`, dados inválidos já armazenados podem permanecer. No MongoDB 9.0+ (o `constraint` entrou na 9.0, sem rótulo de Preview nas release notes; ver `docs/status-de-produto.md`), a demo também prepara a coleção (`prepareConstraintValidationLevel: true`) e tenta `validationLevel: "constraint"`. O banco examina todos os documentos existentes e bloqueia a promoção enquanto encontrar violações. A tela corrige quatro exemplos sintéticos marcados e repete a promoção, que garante que os dados atuais e futuros atendam ao validador. A verificação examina a coleção; considere o custo em coleções grandes. Para mudar as regras após a promoção, retorne a `strict`, altere o validador e promova novamente.
 
 ---
 
@@ -254,7 +254,7 @@ Sem aggregation pipeline — transações ACID multi-documento via `session.with
 
 Todas sobre `pix.*` (`sdb` = handle do database, `STREAMING_DB`, padrão `pix`).
 
-### `_perfil_medido()` — `$percentile` (linha 1429-1441)
+### `_perfil_medido()` — `$percentile` (linha 1444-1456)
 
 ```python
 pipeline = [
@@ -267,14 +267,14 @@ pipeline = [
 ```
 Exposto em `GET /streaming/perfil-valores`. O que faz: mede mediana/p90/p99 real do valor das transações via `$percentile` nativo (MongoDB 7+), para não confundir ticket médio com distribuição — um fluxo assimétrico (PIX real) tem cauda longa que a média esconde.
 
-### `_asp_totais()` — soma de janelas do ASP (linha 3529)
+### `_asp_totais()` — soma de janelas do ASP (linha 3558)
 
 ```python
 [{"$group": {"_id": None, "qtd": {"$sum": "$qtd"}, "volume": {"$sum": "$volume"}}}]
 ```
 Sobre `pix.metricas_janela` — soma o que o Atlas Stream Processing já agregou.
 
-### `_dlq_resumo()` — DLQ agrupada por motivo (linha 3721-3729)
+### `_dlq_resumo()` — DLQ agrupada por motivo (linha 3750-3758)
 
 ```python
 [
@@ -285,7 +285,7 @@ Sobre `pix.metricas_janela` — soma o que o Atlas Stream Processing já agregou
 ```
 Exposto em `GET /streaming/asp/dlq/resumo`. Agrupa mensagens rejeitadas pelo `$validate` do processor, por motivo — é assim que se opera uma fila de rejeitados de verdade, não só "N erros".
 
-### `_fonte_conferivel()` — reconciliação, contagem + valor (linha 3880-3895)
+### `_fonte_conferivel()` — reconciliação, contagem + valor (linha 3909-3924)
 
 ```python
 [
@@ -304,7 +304,7 @@ Exposto em `GET /streaming/asp/dlq/resumo`. Agrupa mensagens rejeitadas pelo `$v
 ```
 Onde: `GET /streaming/reconciliacao`. O que faz: um único `$group` conta e soma em centavos inteiros (nunca ponto flutuante — três somas independentes de `double` deixam resíduo indistinguível de divergência real). `$isNumber` isola o evento inválido injetado de propósito (`valor` como string) para não contaminar a soma. Complementado por um **digest de conteúdo** (`_digest_da_fonte`: `find({"run_id": run_id})` sem projeção, SHA-256 da forma canônica de cada documento, agregado em ordem de `endToEndId`), calculado só depois que o gerador para e pulado acima de `MAX_DOCS_DIGEST = 200.000`. Change Streams e Kafka calculam o mesmo hash sobre o documento que recebem; só bate quando todos os campos de todos os documentos são iguais aos da fonte. A soma sozinha não detecta mutações que se compensam.
 
-### `_reconcile_run()` — soma das janelas do ASP para o mesmo run (linha 3920-3928)
+### `_reconcile_run()` — soma das janelas do ASP para o mesmo run (linha 3949-3957)
 
 ```python
 [
@@ -326,7 +326,7 @@ oplog = client["local"]["oplog.rs"]
 primeiro = next(oplog.find({}, {"ts": 1}).sort("$natural", 1).limit(1), None)
 ultimo   = next(oplog.find({}, {"ts": 1}).sort("$natural", -1).limit(1), None)
 ```
-Onde: linha 1495-1497, exposto em `GET /streaming/oplog`. O que faz: mede a janela de retenção real do oplog em minutos — é o limite operacional da garantia de resume token de um Change Stream.
+Onde: linha 1510-1512, exposto em `GET /streaming/oplog`. O que faz: mede a janela de retenção real do oplog em minutos — é o limite operacional da garantia de resume token de um Change Stream.
 
 ---
 
@@ -358,7 +358,36 @@ session.with_transaction(lambda s: (db["tese_probe"].insert_one(..., session=s),
 
 As coleções `tese_probe*` são dropadas ao fim da medição e pelo `reset_demo.py`.
 
+## Módulo Busca (MongoDB Search) — `backend/routers/busca.py`
+
+Índice próprio `showcase_busca` em `produtos` (nunca o `produtos_search` que outra PoV mantém no banco da demo). Mapeamento estático:
+
+```python
+{"mappings": {"dynamic": False, "fields": {
+    "nome": {"type": "string", "analyzer": "lucene.portuguese"},
+    "categoria": {"type": "token"}, "marca": {"type": "token"},
+    "em_estoque": {"type": "boolean"}}}}
+```
+
+- **`GET /busca/indice`** — `db.produtos.list_search_indexes("showcase_busca")` → `pronto` (`queryable`), `construindo`, `falhou`, `ausente` ou `indisponivel` (o servidor não tem MongoDB Search).
+- **`POST /busca/indice`** — `create_search_index(SearchIndexModel(definition=..., name="showcase_busca"))` só se ausente; devolve o comando equivalente `createSearchIndexes`.
+- **`GET /busca?q=&fuzzy=&so_em_estoque=`** — só executa com o índice `pronto`, porque `$search` com índice inexistente devolve vazio sem erro (confirmado ao vivo em 2026-11-13). Sem índice, a resposta traz `executado: false` e os pipelines em `pipeline_nao_executado`. Com índice, executa e devolve em `pipeline`:
+
+```python
+[{"$search": {"index": "showcase_busca", "compound": {
+    "must": [{"text": {"query": q, "path": "nome", "fuzzy": {"maxEdits": 1}}}],   # fuzzy opcional
+    "filter": [{"equals": {"path": "em_estoque", "value": True}}]}}},           # filtro opcional
+ {"$limit": 10},
+ {"$project": {"_id": 0, "nome": 1, "categoria": 1, "marca": 1, "preco": 1, "em_estoque": 1,
+               "score": {"$meta": "searchScore"}}}]
+[{"$searchMeta": {"index": "showcase_busca", "facet": {"operator": {"compound": ...},
+    "facets": {"categoria": {"type": "string", "path": "categoria"},
+               "marca": {"type": "string", "path": "marca"}}}, "count": {"type": "total"}}}]
+```
+
+Medido em `showcase_poc_test` (100 mil produtos, 2026-11-13): "notebok" com fuzzy → 5.558; sem fuzzy → 0; build do índice ≈ 30–45 s.
+
 ## O que NÃO foi encontrado / está fora deste repositório
 
-- **Nenhum índice `2dsphere`, `$geoNear`, `$search` ou `$vectorSearch`** no código atual — o módulo de risco geográfico (que os usava) foi extraído para `mongodb-atlas-geo-showcase` em 2026-09-11. Se precisar dessas queries, consulte aquele repositório.
-- Não há Vector Search nem Atlas Search configurados neste projeto (confirmado por grep em todo `backend/`).
+- **Nenhum índice `2dsphere`, `$geoNear` ou `$vectorSearch`** no código atual — o módulo de risco geográfico foi extraído para `mongodb-atlas-geo-showcase` em 2026-09-11. Se precisar dessas queries, consulte aquele repositório.
+- Não há Vector Search neste projeto (decisão em `docs/adr/0002-modulo-busca-sem-vector.md`).

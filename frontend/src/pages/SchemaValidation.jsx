@@ -318,7 +318,7 @@ export default function SchemaValidation() {
         itens={[
           <><strong>Não há chave estrangeira.</strong> O banco não impõe integridade referencial entre coleções. Um <code>pedidoId</code> apontando para nada é um documento válido.</>,
           <>A validação é <strong>por documento</strong>. Não impõe regras entre documentos ou coleções. Regras entre campos e arrays do próprio documento podem usar expressões.</>,
-          <>Com <code>strict</code>, documentos inválidos antigos podem continuar na coleção. <code>constraint</code> verifica os dados existentes ao ativar e garante que todos atendam às regras. Requer MongoDB 9.0+.</>,
+          <>Com <code>strict</code>, documentos inválidos antigos podem continuar na coleção. <code>constraint</code> verifica os dados existentes ao ativar e garante que todos atendam às regras. Requer MongoDB 9.0+ (introduzido na 9.0, sem rótulo de Preview nas release notes).</>,
           <><code>validationLevel: moderate</code> valida inserts e updates de documentos já válidos; updates de documentos inválidos ficam dispensados; <code>validationAction: warn</code> só registra em log e <strong>aceita a escrita</strong>. Confira qual está valendo antes de chamar isso de garantia.</>,
           <>É <strong>opt-in por coleção</strong>. Coleção nova nasce sem validador nenhum.</>,
           <>Não é transacional entre coleções, e Atlas Triggers rodam depois do fato — não servem para impor invariante no momento da escrita.</>,

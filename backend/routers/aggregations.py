@@ -41,7 +41,7 @@ def lookup_produtos_avaliacoes(limit: int = Query(5, ge=1, le=20)):
             "_id": "$produto_id",
             "total_reviews": {"$sum": 1},
             "avg_nota":      {"$avg": "$nota"},
-            # $topN (5.2+): guarda só as 3 melhores por grupo — memória limitada,
+            # $topN: guarda só as 3 melhores por grupo — memória limitada,
             # sem $push do array inteiro + $slice depois.
             "top_reviews":   {"$topN": {
                 "output": {"usuario": "$usuario", "nota": "$nota", "titulo": "$titulo"},

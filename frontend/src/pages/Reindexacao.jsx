@@ -12,7 +12,7 @@ const SCENARIOS = [
     key: 'simples', title: 'Índice Simples', fields: ['categoria'],
     description: 'Índice em campo único para filtros de categoria — base para a maioria das queries',
     command: 'db.produtos.createIndex({ categoria: 1 })',
-    query: `// Desde o 4.2, todo build é "hybrid":\n// leituras e escritas seguem durante a maior parte do build\ndb.produtos.createIndex(\n  { categoria: 1 }\n)`,
+    query: `// Build otimizado ("hybrid"), manual 9.0:\n// leituras e escritas seguem durante a maior parte do build\ndb.produtos.createIndex(\n  { categoria: 1 }\n)`,
   },
   {
     key: 'composto', title: 'Índice Composto', fields: ['categoria', '-preco'],
@@ -145,7 +145,7 @@ export default function Reindexacao() {
       <div className="banner banner-info">
         <span>ℹ️</span>
         <div>
-          <strong>Construção online de índices</strong> — desde o MongoDB 4.2, todo build de índice usa o processo
+          <strong>Construção online de índices</strong> — todo build de índice usa o processo
           otimizado (<em>hybrid build</em>): a coleção continua atendendo <strong>leituras e escritas durante a maior parte
           da construção</strong>. Locks exclusivos curtos ainda ocorrem no início e no fim; não há bloqueio prolongado.
         </div>
