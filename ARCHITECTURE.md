@@ -105,7 +105,11 @@ A PoV consegue abrir vários cursores `watch()` com filtros disjuntos. Isto é u
 técnica de demonstração, não particionamento nativo nem recomendação de sizing.
 Cada cursor persiste seu resume token em `pix.consumer_checkpoints`. Erros
 transitórios preservam o checkpoint; só uma condição confirmada de
-`ChangeStreamHistoryLost` o descarta.
+`ChangeStreamHistoryLost` o descarta. Ao subir o worker, um checkpoint gravado há mais de
+`STREAMING_CS_CHECKPOINT_MAX_S` (padrão 600 s; 0 desliga) é descartado e o cursor abre do
+agora: retomar de um token de ~18 h fazia cada `getMore` varrer o oplog do intervalo e
+estourar o socketTimeout, e a coluna ficava em zero eventos (medido em 2026-11-13). O
+descarte aparece em `GET /streaming/changestream/status` (`checkpoints_descartados_por_idade`).
 
 | Método | Caminho | Descrição |
 |---|---|---|
@@ -225,7 +229,7 @@ workspace é convenção, não garantia.
 - `src/pages/` — um componente por módulo, mais `Tese.jsx` (abertura: a tese e os
   não-objetivos, ~70 palavras).
 - `src/components/` — `QueryBlock` (drawer "Ver query / chamada executada") e `Limites`
-  (bloco de limite declarado, em `<details>` fechado, usado pelos sete módulos).
+  (bloco de limite declarado, em `<details>` fechado, usado pelos oito módulos).
 - `src/hooks/useApi.js` — wrapper de fetch que adiciona `X-Demo-Token`. Aborts esperados
   causados pelo unmount de um módulo são silenciosos; timeouts e falhas reais ainda disparam
   um erro global. O `App.jsx` deduplica toasts de erro idênticos por oito

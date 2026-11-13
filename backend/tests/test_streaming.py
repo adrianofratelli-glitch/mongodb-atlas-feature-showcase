@@ -265,6 +265,54 @@ def test_checkpoint_change_stream_e_persistido_e_recarregado(monkeypatch):
     assert checkpoints.doc["resume_token"] == {"_data": "def"}
 
 
+class _CheckpointsComIdade:
+    def __init__(self, idade_s):
+        quando = (streaming._now() - streaming.timedelta(seconds=idade_s)).replace(tzinfo=None)  # como o PyMongo devolve
+        self.doc = {"_id": "change-stream-partition-0", "resume_token": {"_data": "velho"}, "updated_at": quando}
+        self.apagados = 0
+
+    def find_one(self, _filter):
+        return self.doc
+
+    def delete_one(self, _filter):
+        self.apagados += 1
+        self.doc = None
+
+
+def test_checkpoint_velho_e_descartado_ao_subir(monkeypatch):
+    """Token de horas atrás: o getMore varre o oplog do intervalo, estoura o socketTimeout
+    e o worker nunca entrega um evento (medido no live de 2026-11-13). Abre do agora."""
+    checkpoints = _CheckpointsComIdade(18 * 3600)
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_CHECKPOINTS: checkpoints})
+    monkeypatch.setattr(streaming, "CS_CHECKPOINT_MAX_S", 600)
+    worker = streaming.ChangeStreamWorker(particao=0, particoes=4)
+    worker._load_checkpoint()
+    assert worker.token is None
+    assert checkpoints.apagados == 1
+    assert worker.checkpoint_descartado_idade_s > 600
+
+
+def test_checkpoint_recente_continua_valendo(monkeypatch):
+    checkpoints = _CheckpointsComIdade(30)
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_CHECKPOINTS: checkpoints})
+    monkeypatch.setattr(streaming, "CS_CHECKPOINT_MAX_S", 600)
+    worker = streaming.ChangeStreamWorker(particao=0, particoes=4)
+    worker._load_checkpoint()
+    assert worker.token == {"_data": "velho"}
+    assert checkpoints.apagados == 0
+    assert worker.checkpoint_descartado_idade_s is None
+
+
+def test_checkpoint_sem_data_ou_limite_zero_nao_e_descartado(monkeypatch):
+    checkpoints = _CheckpointsComIdade(18 * 3600)
+    monkeypatch.setattr(streaming, "sdb", {streaming.COL_CHECKPOINTS: checkpoints})
+    monkeypatch.setattr(streaming, "CS_CHECKPOINT_MAX_S", 0)  # 0 desliga a regra
+    worker = streaming.ChangeStreamWorker(particao=0, particoes=4)
+    worker._load_checkpoint()
+    assert worker.token == {"_data": "velho"}
+    assert streaming._idade_checkpoint_s({"resume_token": {}}) is None
+
+
 # ---------------------------------------------------------------------------
 # Perfil de valores — o formato importa mais que a média
 # ---------------------------------------------------------------------------

@@ -243,7 +243,7 @@ fluxo é só PIX e o processor `geoSinais30s` não recebe evento com coordenada)
 `STREAMING_SINAL_MIN_MIN` (1),
 `STREAMING_MODO_ESCRITA` (`individual`), `STREAMING_DEMO_TPS_INDIVIDUAL`
 (2.000), `STREAMING_DEMO_TPS` (8.000 para o modo em lote),
-`STREAMING_CS_PARTICOES` (padrão 4), `STREAMING_TTL_SEGUNDOS` (padrão 300),
+`STREAMING_CS_PARTICOES` (padrão 4), `STREAMING_CS_CHECKPOINT_MAX_S` (padrão 600; checkpoint mais velho é descartado ao subir), `STREAMING_TTL_SEGUNDOS` (padrão 300),
 `STREAMING_DROP_ACIMA_DE` (padrão 25.000), `STREAMING_DEMO_DURATION_S` (30),
 `STREAMING_CONCEPT_TPS` (200; teto de API 15.000),
 `ATLAS_TIER_INICIAL` (só a expectativa do preflight), `ATLAS_MIN_TIER`

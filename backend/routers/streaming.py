@@ -146,6 +146,11 @@ PIX_FONTE_PICO = "https://www.bcb.gov.br/Adm/Edital/pregaoe/DEMAP901082024/arq01
 TTL_SECONDS = int(os.getenv("STREAMING_TTL_SEGUNDOS", "300"))
 # Partições do consumo do change stream (um cursor + uma thread por partição).
 CS_PARTICOES = max(1, int(os.getenv("STREAMING_CS_PARTICOES", "4")))
+# Checkpoint persistido mais velho que isto é descartado ao subir o worker.
+# Medido em 2026-11-13: retomar de um token de ~18 h fazia o servidor varrer o
+# oplog inteiro do intervalo; cada getMore passava do socketTimeout (16 s) e o
+# worker ficava em "retomando do checkpoint" para sempre, com zero eventos.
+CS_CHECKPOINT_MAX_S = max(0, int(os.getenv("STREAMING_CS_CHECKPOINT_MAX_S", "600")))
 # Amostragem do feed SSE (contadores e percentis seguem cobrindo 100%).
 FEED_INTERVALO_S = 0.12
 METRICAS_INTERVALO_S = 0.5
@@ -351,6 +356,16 @@ def _sorteia_valor(tipo: str) -> float:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _idade_checkpoint_s(saved: dict | None, agora: datetime | None = None) -> float | None:
+    """Idade do checkpoint pelo `updated_at` gravado (o PyMongo devolve datetime sem fuso, em UTC)."""
+    quando = (saved or {}).get("updated_at")
+    if not isinstance(quando, datetime):
+        return None
+    if quando.tzinfo is None:
+        quando = quando.replace(tzinfo=timezone.utc)
+    return ((agora or _now()) - quando).total_seconds()
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -2477,6 +2492,7 @@ class ChangeStreamWorker:
         self._ultima_metrica = 0.0
         self._ultimo_checkpoint = 0.0
         self._checkpoint_carregado = False
+        self.checkpoint_descartado_idade_s: float | None = None
         # At-least-once significa que o MESMO evento pode chegar duas vezes
         # (retomada a partir de um token anterior, por exemplo). Aqui a gente
         # MEDE em vez de afirmar: janela limitada dos últimos ids vistos.
@@ -2530,6 +2546,14 @@ class ChangeStreamWorker:
     def _load_checkpoint(self) -> None:
         try:
             saved = sdb[COL_CHECKPOINTS].find_one({"_id": self.checkpoint_id})
+            idade = _idade_checkpoint_s(saved)
+            if idade is not None and CS_CHECKPOINT_MAX_S and idade > CS_CHECKPOINT_MAX_S:
+                # Sem isso o worker subia num token de horas atrás e nunca alcançava o presente.
+                logger.warning("Partição %d: checkpoint com %.0f s descartado (máximo %d s); abrindo do agora",
+                               self.particao, idade, CS_CHECKPOINT_MAX_S)
+                self.checkpoint_descartado_idade_s = round(idade, 1)
+                sdb[COL_CHECKPOINTS].delete_one({"_id": self.checkpoint_id})
+                saved = None
             self.token = saved.get("resume_token") if saved else None
         except PyMongoError:
             logger.exception("Falha ao carregar checkpoint da partição %d", self.particao)
@@ -2781,6 +2805,11 @@ async def changestream_status():
         "token": cs_worker.token_str(),
         "checkpoint": f"{STREAM_DB}.{COL_CHECKPOINTS}",
         "checkpoint_persistente": True,
+        "checkpoint_maximo_s": CS_CHECKPOINT_MAX_S,
+        "checkpoints_descartados_por_idade": [
+            {"particao": w.particao, "idade_s": w.checkpoint_descartado_idade_s}
+            for w in cs_worker.workers if w.checkpoint_descartado_idade_s is not None
+        ],
         **meter_cs.snapshot(),
     }
 
