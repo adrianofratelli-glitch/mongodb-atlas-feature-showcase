@@ -93,13 +93,15 @@ def criar_indice():
         return {**info, "criado": False}
     if info["estado"] != "ausente":
         return {**info, "criado": False, "query": comando_criacao()}
+    criado = True
     try:
         db[COLLECTION].create_search_index(SearchIndexModel(definition=DEFINICAO, name=INDICE))
     except OperationFailure as exc:
-        # Corrida com outra chamada: o índice já existe. Qualquer outra falha sobe.
+        # Corrida com outra chamada: o índice já existe e não foi esta que o criou.
         if "already exists" not in str(exc).lower():
             raise
-    return {**_info_indice(), "criado": True, "query": comando_criacao()}
+        criado = False
+    return {**_info_indice(), "criado": criado, "query": comando_criacao()}
 
 
 def montar_pipelines(q: str, fuzzy: bool, so_em_estoque: bool) -> dict:
@@ -155,12 +157,24 @@ def buscar(
         }
 
     col = db[COLLECTION]
-    t0 = time.perf_counter()
-    docs = list(col.aggregate(pipelines["resultados"]))
-    t_resultados = (time.perf_counter() - t0) * 1000
-    t1 = time.perf_counter()
-    meta = next(iter(col.aggregate(pipelines["facetas"])), {})
-    t_facetas = (time.perf_counter() - t1) * 1000
+    try:
+        t0 = time.perf_counter()
+        docs = list(col.aggregate(pipelines["resultados"]))
+        t_resultados = (time.perf_counter() - t0) * 1000
+        t1 = time.perf_counter()
+        meta = next(iter(col.aggregate(pipelines["facetas"])), {})
+        t_facetas = (time.perf_counter() - t1) * 1000
+    except OperationFailure as exc:
+        # O índice pode sumir ou ser reconstruído entre a checagem e o aggregate.
+        return {
+            "indice": {**info, "estado": "falhou_na_consulta"},
+            "executado": False,
+            "resultados": [],
+            "facetas": None,
+            "total": None,
+            "pipeline_nao_executado": pipelines,
+            "aviso": f"Busca não concluída: o servidor recusou o $search ({type(exc).__name__}, código {exc.code}).",
+        }
 
     buckets = meta.get("facet", {})
     for d in docs:

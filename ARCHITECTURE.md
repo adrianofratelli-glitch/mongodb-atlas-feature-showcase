@@ -110,6 +110,10 @@ transitórios preservam o checkpoint; só uma condição confirmada de
 agora: retomar de um token de ~18 h fazia cada `getMore` varrer o oplog do intervalo e
 estourar o socketTimeout, e a coluna ficava em zero eventos (medido em 2026-11-13). O
 descarte aparece em `GET /streaming/changestream/status` (`checkpoints_descartados_por_idade`).
+A idade conta a partir de `updated_at`, gravado a cada evento consumido: é a hora do último
+evento, não a do restart. Os eventos entre o checkpoint descartado e o restart são
+**pulados** (nesse caso não há at-least-once); dentro da sessão, o "Derrubar e retomar"
+usa o token em memória e não passa por essa regra.
 
 | Método | Caminho | Descrição |
 |---|---|---|

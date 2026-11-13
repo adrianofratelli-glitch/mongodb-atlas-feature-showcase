@@ -62,8 +62,10 @@ nome do connector, e o `startup.mode=latest` só vale quando não há offset arm
 Como o `overview up` dropa `pix.transacoes`, esse token armazenado aponta para uma
 posição do oplog que não existe mais, e a task falha com
 `ChangeStreamHistoryLost` enquanto o connector ainda reporta `RUNNING`. Se você
-algum dia vir `RUNNING · FAILED`, a causa é essa; o endpoint de offsets exige
-Kafka Connect 3.6+.
+algum dia vir `RUNNING · FAILED`, a causa é essa. O endpoint REST de offsets do
+Connect (KIP-875) exige uma versão recente do Kafka Connect; a nota antiga dizia 3.6+,
+mas a versão está **a confirmar** (consulta de 2026-11-13 à página do KIP-875 sem número
+de release; ver `docs/status-de-produto.md`).
 
 ## 3. Crie a Stream Processing Instance
 

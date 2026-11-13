@@ -182,9 +182,9 @@ Rotas só de apoio, sem botão direto: `GET /streaming/perfil-valores` (`streami
 
 | Ação | Componente | HTTP | Handler | Função de negócio | MongoDB |
 |---|---|---|---|---|---|
-| Abrir a aba / estado do índice (repete a cada 5 s só enquanto constrói) | `Busca.jsx:34` (`carregarIndice`), timer `Busca.jsx:41` | `GET /busca/indice` | `busca.py:83` | `_info_indice` (`busca.py:53`) | `produtos`: `$listSearchIndexes` (`:60`) |
-| **Criar índice** (só com o índice ausente) | `Busca.jsx:43` (`criar`) | `POST /busca/indice` | `busca.py:89` | `criar_indice`; comando em `comando_criacao` (`:77`) | `produtos`: `createSearchIndexes` (`:97`) |
-| **Buscar** / sugestões | `Busca.jsx:48` (`buscar`), form `:86`, sugestões `:101` | `GET /busca?q=&fuzzy=&so_em_estoque=` | `busca.py:135` | `montar_pipelines` (`:105`); só executa com o índice `pronto` | `produtos`: `$search` (`:159`) e `$searchMeta` (`:162`) |
+| Abrir a aba / estado do índice (repete a cada 5 s só enquanto constrói) | `Busca.jsx:35` (`carregarIndice`), timer `Busca.jsx:42` | `GET /busca/indice` | `busca.py:83` | `_info_indice` (`busca.py:53`) | `produtos`: `$listSearchIndexes` (`:60`) |
+| **Criar índice** (só com o índice ausente) | `Busca.jsx:44` (`criar`) | `POST /busca/indice` | `busca.py:89` | `criar_indice`; comando em `comando_criacao` (`:77`) | `produtos`: `createSearchIndexes` (`:98`) |
+| **Buscar** / sugestões | `Busca.jsx:49` (`buscar`), form `:87`, sugestões `:102` | `GET /busca?q=&fuzzy=&so_em_estoque=` | `busca.py:137` | `montar_pipelines` (`:107`); só executa com o índice `pronto` | `produtos`: `$search` (`:162`) e `$searchMeta` (`:165`); `OperationFailure` no meio vira `executado: false` |
 
 ## 3. Onde estão as queries MongoDB
 
@@ -229,7 +229,7 @@ Briefing com o texto completo de cada query: [queries.md](briefing/queries.md). 
 | Reconciliação | `streaming.py::_fonte_conferivel` (`:4084`), `_reconcile_run` (`:4140`), `reconciliacao` (`:4282`) | aggregate, `find`, `count_documents` | `transacoes`, `metricas_janela`, `dlq`, `dlq_audit` |
 | Reset do streaming | `streaming.py::_drop_and_recreate` (`:2254`), `_resto_exato` (`:2271`), `_purge` (`:2286`), `reset` (`:2318`) | `drop`, `count_documents(limit=1)`, `delete_many` | coleções do streaming + `geo.sinais_ao_vivo` |
 | Controle do ASP | `streaming.py::_asp_command` (`:2203`), `_asp_stop_wait` (`:2221`), `_asp_restart_from_checkpoint` (`:3660`) | `listStreamProcessors`, `stopStreamProcessor`, `startStreamProcessor` | instância ASP (outra connection string) |
-| Busca textual | `busca.py::buscar` (`:135`), `criar_indice` (`:89`), `_info_indice` (`:53`) | `$search` (`compound`: `text` com `fuzzy`, `equals`), `$searchMeta` (`facet`), `$listSearchIndexes`, `createSearchIndexes` | `produtos` |
+| Busca textual | `busca.py::buscar` (`:137`), `criar_indice` (`:89`), `_info_indice` (`:53`) | `$search` (`compound`: `text` com `fuzzy`, `equals`), `$searchMeta` (`facet`), `$listSearchIndexes`, `createSearchIndexes` | `produtos` |
 | Reset geral | `scripts/reset_demo.py::reset` (`:92`) | drop só das coleções dos módulos + seed | vários (ver script) |
 | Monitor ao vivo | `scripts/live_monitor.py::do_read` (`:61`) / `do_write` (`:69`) | leitura e escrita em loop | coleção da demo |
 
@@ -275,7 +275,7 @@ Comando (README): `pytest` na raiz (`pyproject.toml`: `testpaths = backend/tests
 | `backend/tests/test_endpoints_adversarial.py` | Entradas hostis (operadores Mongo em query/body, JSON malformado, corpo de 1 MB), 409 em concorrência, degradação sem Mongo |
 | `backend/tests/test_features.py` | Comportamento dos módulos 01-06 |
 | `backend/tests/test_streaming.py` | Módulo 07: gerador, contadores, digest, reconciliação, DLQ, falhas (o maior arquivo) |
-| `backend/tests/test_busca.py` | Módulo 08: índice ausente/construindo/indisponível não executa `$search`; criação idempotente e só do índice próprio; pipeline devolvido = executado; preflight opcional |
+| `backend/tests/test_busca.py` | Módulo 08: índice ausente/construindo/indisponível não executa `$search`; criação idempotente e só do índice próprio; pipeline devolvido = executado; recusa do servidor entre a checagem e o aggregate vira `executado: false`; corrida na criação devolve `criado: false`; preflight opcional |
 | `backend/tests/test_replay.py` | Replay: contrato igual ao ao-vivo e que nunca toca o Mongo |
 | `backend/tests/test_security.py` | `MutationGuardMiddleware` e `ApiHardeningMiddleware` |
 | `backend/tests/test_change_streams.py` | Fila de eventos/geração do módulo 05 |

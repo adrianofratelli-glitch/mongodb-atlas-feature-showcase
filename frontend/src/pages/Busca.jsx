@@ -16,6 +16,7 @@ const ROTULO_ESTADO = {
   construindo: { classe: 'badge-yellow', texto: 'em construção' },
   ausente: { classe: 'badge-gray', texto: 'ausente' },
   falhou: { classe: 'badge-red', texto: 'falhou' },
+  falhou_na_consulta: { classe: 'badge-red', texto: 'consulta recusada' },
   indisponivel: { classe: 'badge-red', texto: 'indisponível neste cluster' },
 }
 

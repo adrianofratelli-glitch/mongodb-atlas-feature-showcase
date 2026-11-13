@@ -194,3 +194,28 @@ def test_preflight_indice_ausente_nao_reprova(monkeypatch, colecao):
     assert r.status_code == 200
     assert r.json()["checks"]["busca_indice"]["ok"] is False
     assert "ausente" in r.json()["checks"]["busca_indice"]["message"]
+
+
+def test_falha_entre_checagem_e_aggregate_nao_vira_500(colecao):
+    col = colecao(indices=[PRONTO])
+
+    def recusa(_pipeline):
+        raise OperationFailure("index not found", code=8)
+    col.aggregate = recusa
+    r = busca.buscar(q="fone", fuzzy=True, so_em_estoque=False)
+    assert r["executado"] is False
+    assert r["indice"]["estado"] == "falhou_na_consulta"
+    assert "OperationFailure" in r["aviso"] and "pipeline" not in r
+    assert TestClient(main.app).get("/busca", params={"q": "fone"}).status_code == 200
+
+
+def test_corrida_na_criacao_responde_criado_false(colecao):
+    col = colecao()
+
+    def ja_existe(_modelo):
+        col.indices.append({"name": busca.INDICE, "status": "PENDING", "queryable": False})
+        raise OperationFailure("Index already exists", code=68)
+    col.create_search_index = ja_existe
+    r = busca.criar_indice()
+    assert r["criado"] is False
+    assert r["estado"] == "construindo"
